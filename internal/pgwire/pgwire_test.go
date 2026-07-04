@@ -108,6 +108,58 @@ func TestPGXExtendedQueryWithDMLParameter(t *testing.T) {
 	}
 }
 
+func TestPGXTransactionRollbackAndCommit(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	addr, stop := startTestServer(t, ctx)
+	defer stop()
+
+	conn, err := pgx.Connect(ctx, "postgres://mini@"+addr+"/default?sslmode=disable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+
+	if _, err := conn.Exec(ctx, "create table users(id integer primary key, name text)"); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, "insert into users values (1, 'alice')"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var count int64
+	if err := conn.QueryRow(ctx, "select count(*) from users").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("count after rollback = %d, want 0", count)
+	}
+
+	tx, err = conn.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, "insert into users values (1, 'alice')"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow(ctx, "select count(*) from users").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("count after commit = %d, want 1", count)
+	}
+}
+
 func startTestServer(t *testing.T, ctx context.Context) (string, func()) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

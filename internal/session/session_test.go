@@ -69,6 +69,40 @@ func TestSessionBuiltins(t *testing.T) {
 	}
 }
 
+func TestSessionTransactions(t *testing.T) {
+	ctx := context.Background()
+	b, err := sqlite.New(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close(ctx)
+
+	s := session.New(1, 1, "default", "mini", b)
+	execOK(t, ctx, s, "create table users(id integer primary key, name text)")
+
+	execOK(t, ctx, s, "begin")
+	if s.TxState != session.TxInTx {
+		t.Fatalf("tx state after begin = %q, want %q", s.TxState, session.TxInTx)
+	}
+	execOK(t, ctx, s, "insert into users values (1, 'alice')")
+	execOK(t, ctx, s, "rollback")
+	if s.TxState != session.TxIdle {
+		t.Fatalf("tx state after rollback = %q, want %q", s.TxState, session.TxIdle)
+	}
+	result := queryOK(t, ctx, s, "select * from users")
+	if len(result.Rows) != 0 {
+		t.Fatalf("rows after rollback = %d, want 0", len(result.Rows))
+	}
+
+	execOK(t, ctx, s, "start transaction")
+	execOK(t, ctx, s, "insert into users values (1, 'alice')")
+	execOK(t, ctx, s, "commit")
+	result = queryOK(t, ctx, s, "select name from users where id = 1")
+	if got := result.Rows[0][0].Value; got != "alice" {
+		t.Fatalf("name after commit = %v, want alice", got)
+	}
+}
+
 func execOK(t *testing.T, ctx context.Context, s *session.Session, sql string) {
 	t.Helper()
 	result, tag, err := s.Execute(ctx, sql, nil)

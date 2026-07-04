@@ -50,15 +50,19 @@ func writeRowDescription(w io.Writer, cols []backend.Column) {
 	writeMsg(w, 'T', b.Bytes())
 }
 
-func writeDataRow(w io.Writer, row []backend.Value) {
+func writeDataRow(w io.Writer, row []backend.Value, cols []backend.Column) {
 	var b bytes.Buffer
 	writeInt16(&b, int16(len(row)))
-	for _, v := range row {
+	for i, v := range row {
 		if v.Kind == backend.ValueNull {
 			writeInt32(&b, -1)
 			continue
 		}
-		data := []byte(textValue(v))
+		col := backend.Column{TypeOID: compat.OIDText, Format: 0}
+		if i < len(cols) {
+			col = cols[i]
+		}
+		data := dataValue(v, col)
 		writeInt32(&b, int32(len(data)))
 		b.Write(data)
 	}
@@ -146,6 +150,66 @@ func textValue(v backend.Value) string {
 	}
 }
 
+func dataValue(v backend.Value, col backend.Column) []byte {
+	if col.Format != 1 {
+		return []byte(textValue(v))
+	}
+	var b [8]byte
+	switch col.TypeOID {
+	case compat.OIDBool:
+		if v.Kind == backend.ValueBool && v.Value.(bool) {
+			return []byte{1}
+		}
+		return []byte{0}
+	case compat.OIDInt2:
+		binary.BigEndian.PutUint16(b[:2], uint16(asInt64(v)))
+		return b[:2]
+	case compat.OIDInt4:
+		binary.BigEndian.PutUint32(b[:4], uint32(asInt64(v)))
+		return b[:4]
+	case compat.OIDInt8:
+		binary.BigEndian.PutUint64(b[:], uint64(asInt64(v)))
+		return b[:]
+	case compat.OIDFloat4:
+		binary.BigEndian.PutUint32(b[:4], math.Float32bits(float32(asFloat64(v))))
+		return b[:4]
+	case compat.OIDFloat8:
+		binary.BigEndian.PutUint64(b[:], math.Float64bits(asFloat64(v)))
+		return b[:]
+	default:
+		return []byte(textValue(v))
+	}
+}
+
+func asInt64(v backend.Value) int64 {
+	switch v.Kind {
+	case backend.ValueInt:
+		switch x := v.Value.(type) {
+		case int64:
+			return x
+		case int:
+			return int64(x)
+		}
+	case backend.ValueText:
+		n, _ := strconv.ParseInt(fmt.Sprint(v.Value), 10, 64)
+		return n
+	}
+	return 0
+}
+
+func asFloat64(v backend.Value) float64 {
+	switch v.Kind {
+	case backend.ValueFloat:
+		return v.Value.(float64)
+	case backend.ValueInt:
+		return float64(asInt64(v))
+	case backend.ValueText:
+		f, _ := strconv.ParseFloat(fmt.Sprint(v.Value), 64)
+		return f
+	}
+	return 0
+}
+
 func cstring(body []byte) string {
 	if i := bytes.IndexByte(body, 0); i >= 0 {
 		return string(body[:i])
@@ -209,8 +273,4 @@ func int32Bytes(v int32) []byte {
 	var b [4]byte
 	binary.BigEndian.PutUint32(b[:], uint32(v))
 	return b[:]
-}
-
-func init() {
-	_ = math.MaxInt32
 }

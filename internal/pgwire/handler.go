@@ -123,7 +123,7 @@ func (h *Handler) handleSimple(ctx context.Context, w io.Writer, s *session.Sess
 		if result != nil {
 			writeRowDescription(w, result.Columns)
 			for _, row := range result.Rows {
-				writeDataRow(w, row)
+				writeDataRow(w, row, result.Columns)
 			}
 			writeCommandComplete(w, "SELECT "+strconv.Itoa(len(result.Rows)))
 			continue
@@ -180,11 +180,12 @@ func (h *Handler) handleBind(w io.Writer, s *session.Session, body []byte) {
 		}
 		args[i] = decodeParam(buf, format, oidAt(stmt.ParamTypeOIDs, i))
 	}
-	resultFormats := int(readInt16(r))
-	for i := 0; i < resultFormats; i++ {
-		_ = readInt16(r)
+	resultFormatCount := int(readInt16(r))
+	resultFormats := make([]int16, resultFormatCount)
+	for i := range resultFormats {
+		resultFormats[i] = readInt16(r)
 	}
-	s.Portals[portalName] = &session.Portal{Name: portalName, StatementName: stmtName, Args: args}
+	s.Portals[portalName] = &session.Portal{Name: portalName, StatementName: stmtName, Args: args, ResultFormats: resultFormats}
 	writeBindComplete(w)
 }
 
@@ -197,8 +198,22 @@ func (h *Handler) handleDescribe(ctx context.Context, w io.Writer, s *session.Se
 	name := cstring(body[1:])
 	switch kind {
 	case 'S':
-		writeParameterDescription(w, s.PreparedStatements[name])
-		writeNoData(w)
+		stmt := s.PreparedStatements[name]
+		writeParameterDescription(w, stmt)
+		if stmt == nil || len(stmt.ParamTypeOIDs) != 0 {
+			writeNoData(w)
+			return
+		}
+		result, _, err := s.Execute(ctx, stmt.SQL, nil)
+		if err != nil {
+			writeError(w, compat.Error(err))
+			return
+		}
+		if result == nil {
+			writeNoData(w)
+			return
+		}
+		writeRowDescription(w, result.Columns)
 	case 'P':
 		p := s.Portals[name]
 		if p == nil {
@@ -210,6 +225,7 @@ func (h *Handler) handleDescribe(ctx context.Context, w io.Writer, s *session.Se
 			return
 		}
 		if p.Result != nil {
+			applyResultFormats(p.Result, p.ResultFormats)
 			writeRowDescription(w, p.Result.Columns)
 		} else {
 			writeNoData(w)
@@ -233,14 +249,30 @@ func (h *Handler) handleExecute(ctx context.Context, w io.Writer, s *session.Ses
 		return
 	}
 	if p.Result != nil {
+		applyResultFormats(p.Result, p.ResultFormats)
 		if len(p.Result.Columns) > 0 {
 			for _, row := range p.Result.Rows {
-				writeDataRow(w, row)
+				writeDataRow(w, row, p.Result.Columns)
 			}
 		}
 		writeCommandComplete(w, "SELECT "+strconv.Itoa(len(p.Result.Rows)))
 	} else if p.CommandTag != nil {
 		writeCommandComplete(w, p.CommandTag.Tag)
+	}
+}
+
+func applyResultFormats(result *backend.Result, formats []int16) {
+	if result == nil || len(formats) == 0 {
+		return
+	}
+	for i := range result.Columns {
+		if len(formats) == 1 {
+			result.Columns[i].Format = formats[0]
+			continue
+		}
+		if i < len(formats) {
+			result.Columns[i].Format = formats[i]
+		}
 	}
 }
 

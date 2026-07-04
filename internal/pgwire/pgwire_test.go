@@ -1,0 +1,83 @@
+package pgwire_test
+
+import (
+	"context"
+	"net"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/yashikota/minipostgresql/internal/compat"
+	"github.com/yashikota/minipostgresql/internal/pgwire"
+)
+
+func TestPGXSelectTypes(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	addr, stop := startTestServer(t, ctx)
+	defer stop()
+
+	conn, err := pgx.Connect(ctx, "postgres://mini@"+addr+"/default?sslmode=disable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+
+	rows, err := conn.Query(ctx, "select 1 as i, 'hello' as t, 1.5 as f")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+
+	fields := rows.FieldDescriptions()
+	if len(fields) != 3 {
+		t.Fatalf("field count = %d, want 3", len(fields))
+	}
+	if fields[0].DataTypeOID != compat.OIDInt8 {
+		t.Fatalf("int oid = %d, want %d", fields[0].DataTypeOID, compat.OIDInt8)
+	}
+	if fields[1].DataTypeOID != compat.OIDText {
+		t.Fatalf("text oid = %d, want %d", fields[1].DataTypeOID, compat.OIDText)
+	}
+	if fields[2].DataTypeOID != compat.OIDFloat8 {
+		t.Fatalf("float oid = %d, want %d", fields[2].DataTypeOID, compat.OIDFloat8)
+	}
+
+	var i int64
+	var text string
+	var f float64
+	if !rows.Next() {
+		t.Fatal("no rows")
+	}
+	if err := rows.Scan(&i, &text, &f); err != nil {
+		t.Fatal(err)
+	}
+	if i != 1 || text != "hello" || f != 1.5 {
+		t.Fatalf("row = (%d, %q, %v), want (1, hello, 1.5)", i, text, f)
+	}
+}
+
+func startTestServer(t *testing.T, ctx context.Context) (string, func()) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	handler := pgwire.NewHandler()
+	go func() {
+		defer close(done)
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go handler.ServeConn(ctx, conn)
+		}
+	}()
+	return ln.Addr().String(), func() {
+		_ = ln.Close()
+		<-done
+	}
+}

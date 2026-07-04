@@ -39,6 +39,7 @@ type Portal struct {
 	Name          string
 	StatementName string
 	Args          []backend.Value
+	ResultFormats []int16
 	Result        *backend.Result
 	CommandTag    *backend.CommandTag
 }

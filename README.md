@@ -10,6 +10,12 @@ go run ./cmd/minipsql serve
 psql -h localhost -p 15432 -U mini default -c "select 1"
 ```
 
+Run schema SQL for each new in-memory database:
+
+```bash
+go run ./cmd/minipsql serve --init schema.sql
+```
+
 ## Supported
 
 - PostgreSQL startup handshake with trust authentication
@@ -18,6 +24,7 @@ psql -h localhost -p 15432 -U mini default -c "select 1"
 - Basic SQLite-backed DDL/DML
 - Minimal PostgreSQL builtins such as `version()`, `SHOW server_version`, and `current_database()`
 - Basic transaction commands: `begin`, `commit`, `rollback`
+- Per-session initialization SQL with `--init`
 
 ## Unsupported
 

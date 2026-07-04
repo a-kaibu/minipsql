@@ -160,7 +160,33 @@ func TestPGXTransactionRollbackAndCommit(t *testing.T) {
 	}
 }
 
+func TestPGXInitSQL(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	addr, stop := startTestServerWithInit(t, ctx, "create table users(id integer primary key, name text); insert into users values (1, 'alice');")
+	defer stop()
+
+	conn, err := pgx.Connect(ctx, "postgres://mini@"+addr+"/default?sslmode=disable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+
+	var name string
+	if err := conn.QueryRow(ctx, "select name from users where id = 1").Scan(&name); err != nil {
+		t.Fatal(err)
+	}
+	if name != "alice" {
+		t.Fatalf("name = %q, want alice", name)
+	}
+}
+
 func startTestServer(t *testing.T, ctx context.Context) (string, func()) {
+	return startTestServerWithInit(t, ctx, "")
+}
+
+func startTestServerWithInit(t *testing.T, ctx context.Context, initSQL string) (string, func()) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -168,6 +194,7 @@ func startTestServer(t *testing.T, ctx context.Context) (string, func()) {
 	}
 	done := make(chan struct{})
 	handler := pgwire.NewHandler()
+	handler.InitSQL = initSQL
 	go func() {
 		defer close(done)
 		for {

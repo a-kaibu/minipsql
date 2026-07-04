@@ -23,6 +23,7 @@ func run(args []string) error {
 		fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 		host := fs.String("host", "127.0.0.1", "listen host")
 		port := fs.Int("port", 15432, "listen port")
+		initPath := fs.String("init", "", "SQL file to execute for each in-memory database")
 		var parseArgs []string
 		if len(args) > 0 {
 			parseArgs = args[1:]
@@ -32,8 +33,16 @@ func run(args []string) error {
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
+		initSQL := ""
+		if *initPath != "" {
+			data, err := os.ReadFile(*initPath)
+			if err != nil {
+				return err
+			}
+			initSQL = string(data)
+		}
 		fmt.Fprintf(os.Stderr, "minipsql listening on %s:%d\n", *host, *port)
-		err := server.New(server.Config{Host: *host, Port: *port}).ListenAndServe(ctx)
+		err := server.New(server.Config{Host: *host, Port: *port, InitSQL: initSQL}).ListenAndServe(ctx)
 		if err == context.Canceled {
 			return nil
 		}

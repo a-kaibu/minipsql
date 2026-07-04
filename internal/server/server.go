@@ -11,8 +11,9 @@ import (
 )
 
 type Config struct {
-	Host string
-	Port int
+	Host    string
+	Port    int
+	InitSQL string
 }
 
 type Server struct {
@@ -27,7 +28,9 @@ func New(cfg Config) *Server {
 	if cfg.Port == 0 {
 		cfg.Port = 15432
 	}
-	return &Server{cfg: cfg, handler: pgwire.NewHandler()}
+	handler := pgwire.NewHandler()
+	handler.InitSQL = cfg.InitSQL
+	return &Server{cfg: cfg, handler: handler}
 }
 
 func (s *Server) ListenAndServe(ctx context.Context) error {

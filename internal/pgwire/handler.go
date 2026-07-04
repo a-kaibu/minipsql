@@ -24,7 +24,9 @@ const (
 	protocol30     = 196608
 )
 
-type Handler struct{}
+type Handler struct {
+	InitSQL string
+}
 
 func NewHandler() *Handler {
 	return &Handler{}
@@ -46,6 +48,10 @@ func (h *Handler) ServeConn(ctx context.Context, conn net.Conn) {
 	defer b.Close(ctx)
 
 	s := session.New(randInt32(), randInt32(), params["database"], params["user"], b)
+	if err := h.runInitSQL(ctx, s); err != nil {
+		writeError(conn, compat.Error(err))
+		return
+	}
 	writeAuthOK(conn)
 	for k, v := range s.Params {
 		writeParameterStatus(conn, k, v)
@@ -82,6 +88,19 @@ func (h *Handler) ServeConn(ctx context.Context, conn net.Conn) {
 			writeReady(conn, s.TxState)
 		}
 	}
+}
+
+func (h *Handler) runInitSQL(ctx context.Context, s *session.Session) error {
+	if strings.TrimSpace(h.InitSQL) == "" {
+		return nil
+	}
+	for _, stmt := range compat.SplitStatements(h.InitSQL) {
+		_, _, err := s.Execute(ctx, stmt, nil)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (h *Handler) startup(ctx context.Context, br *bufio.Reader, w io.Writer) (map[string]string, bool) {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 	"strings"
 
 	"github.com/yashikota/minipsql/internal/backend"
@@ -32,6 +33,8 @@ func New(ctx context.Context) (*Backend, error) {
 }
 
 func (b *Backend) Query(ctx context.Context, query string, args []backend.Value) (*backend.Result, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	rows, err := b.queryer().QueryContext(ctx, query, sqlArgs(args)...)
 	if err != nil {
 		return nil, err
@@ -80,11 +83,16 @@ func (b *Backend) Query(ctx context.Context, query string, args []backend.Value)
 }
 
 func (b *Backend) Exec(ctx context.Context, query string, args []backend.Value) (*backend.CommandTag, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	res, err := b.execer().ExecContext(ctx, query, sqlArgs(args)...)
 	if err != nil {
 		return nil, err
 	}
-	n, _ := res.RowsAffected()
+	var n int64
+	if res != nil {
+		n, _ = res.RowsAffected()
+	}
 	return &backend.CommandTag{Tag: commandTag(query, n)}, nil
 }
 

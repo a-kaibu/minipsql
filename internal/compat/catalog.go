@@ -2,14 +2,20 @@ package compat
 
 import (
 	"context"
+	"regexp"
 	"strings"
 
 	"github.com/yashikota/minipsql/internal/backend"
 )
 
+var joinRE = regexp.MustCompile(`(?i)\b(join|left\s+outer)\b`)
+
 func tryPGCatalog(ctx context.Context, b backend.Backend, sql string, info SessionInfo) (*backend.Result, bool, error) {
 	_ = info
 	lower := strings.ToLower(strings.TrimSpace(sql))
+	if joinRE.MatchString(lower) {
+		return nil, false, nil
+	}
 	switch {
 	case strings.Contains(lower, "pg_catalog.pg_namespace"):
 		return pgNamespace(), true, nil

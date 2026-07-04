@@ -66,6 +66,11 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					_ = conn.Close()
+				}
+			}()
 			s.handler.ServeConn(ctx, conn)
 		}()
 	}

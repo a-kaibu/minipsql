@@ -14,7 +14,7 @@ tasks:
   test:
     desc: Run Go tests
     cmds:
-      - go test ./...
+      - go test -v -shuffle=on -race ./... 
 
   build:
     desc: Build minipsql host binary

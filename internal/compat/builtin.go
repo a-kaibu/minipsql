@@ -41,6 +41,10 @@ func TryHandleBuiltin(ctx context.Context, b backend.Backend, sql string, info S
 		return singleColumn(name, ""), true, nil
 	}
 
+	if result, ok, err := tryInformationSchema(ctx, b, q, info); ok || err != nil {
+		return result, ok, err
+	}
+
 	switch lower {
 	case "select version()":
 		return singleColumn("version", "PostgreSQL 14.0 compatible minipsql"), true, nil

@@ -103,6 +103,37 @@ func TestSessionTransactions(t *testing.T) {
 	}
 }
 
+func TestInformationSchema(t *testing.T) {
+	ctx := context.Background()
+	b, err := sqlite.New(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close(ctx)
+
+	s := session.New(1, 1, "default", "mini", b)
+	execOK(t, ctx, s, "create table users(id integer primary key, name text)")
+
+	tables := queryOK(t, ctx, s, "select * from information_schema.tables")
+	if len(tables.Rows) != 1 {
+		t.Fatalf("information_schema.tables rows = %d, want 1", len(tables.Rows))
+	}
+	if got := tables.Rows[0][2].Value; got != "users" {
+		t.Fatalf("table_name = %v, want users", got)
+	}
+
+	columns := queryOK(t, ctx, s, "select * from information_schema.columns")
+	if len(columns.Rows) != 2 {
+		t.Fatalf("information_schema.columns rows = %d, want 2", len(columns.Rows))
+	}
+	if got := columns.Rows[0][3].Value; got != "id" {
+		t.Fatalf("first column_name = %v, want id", got)
+	}
+	if got := columns.Rows[1][3].Value; got != "name" {
+		t.Fatalf("second column_name = %v, want name", got)
+	}
+}
+
 func execOK(t *testing.T, ctx context.Context, s *session.Session, sql string) {
 	t.Helper()
 	result, tag, err := s.Execute(ctx, sql, nil)

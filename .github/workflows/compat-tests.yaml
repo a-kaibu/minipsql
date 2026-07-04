@@ -1,0 +1,272 @@
+name: Compatibility Tests
+
+on:
+  pull_request:
+    paths:
+      - "**.go"
+      - "go.mod"
+      - "go.sum"
+      - "compose.yaml"
+      - "docker/**"
+      - "Taskfile.yml"
+      - "aqua.yaml"
+      - ".github/workflows/compat-tests.yaml"
+  push:
+    branches:
+      - main
+    paths:
+      - "**.go"
+      - "go.mod"
+      - "go.sum"
+      - "compose.yaml"
+      - "docker/**"
+      - "Taskfile.yml"
+      - "aqua.yaml"
+      - ".github/workflows/compat-tests.yaml"
+  workflow_dispatch:
+
+jobs:
+  compat-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      has_results: ${{ steps.summary.outputs.has_results }}
+      passed: ${{ steps.summary.outputs.passed }}
+      failed: ${{ steps.summary.outputs.failed }}
+      skipped: ${{ steps.summary.outputs.skipped }}
+      errors: ${{ steps.summary.outputs.errors }}
+      pass_rate: ${{ steps.summary.outputs.pass_rate }}
+      sqlancer_status: ${{ steps.summary.outputs.sqlancer_status }}
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          submodules: recursive
+
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ~/.local/share/aquaproj-aqua
+          key: v2-aqua-installer-${{runner.os}}-${{runner.arch}}-${{hashFiles('aqua.yaml')}}
+          restore-keys: |
+            v2-aqua-installer-${{runner.os}}-${{runner.arch}}-
+
+      - uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
+        with:
+          aqua_version: v2.60.1
+
+      - name: Run PostgreSQL regress
+        id: regress
+        run: |
+          task regress || true
+
+      - name: Run SQLancer
+        id: sqlancer
+        run: |
+          set +e
+          task sqlancer
+          status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Generate summary
+        id: summary
+        run: |
+          summary_file="reports/postgres-regress/summary.txt"
+          if [ ! -f "$summary_file" ]; then
+            echo "compat regress summary not found"
+            echo "has_results=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          get_value() {
+            key="$1"
+            grep -E "^${key}=" "$summary_file" | tail -1 | cut -d= -f2- || true
+          }
+
+          passed="$(get_value success_files)"
+          failed="$(get_value failed_files)"
+          skipped="$(get_value not_completed_files)"
+          errors="$(get_value error_count)"
+          psql_status="$(get_value psql_exit_status)"
+          sqlancer_status="${{ steps.sqlancer.outputs.status }}"
+
+          passed="${passed:-0}"
+          failed="${failed:-0}"
+          skipped="${skipped:-0}"
+          errors="${errors:-0}"
+          psql_status="${psql_status:-1}"
+          sqlancer_status="${sqlancer_status:-1}"
+          total=$((passed + failed + errors))
+          if [ "$total" -gt 0 ]; then
+            pass_rate=$(awk "BEGIN { printf \"%.2f\", $passed * 100 / $total }")
+          else
+            pass_rate="0"
+          fi
+
+          if [ "$psql_status" -ne 0 ] && [ "$errors" -eq 0 ]; then
+            errors=1
+          fi
+          if [ "$sqlancer_status" -ne 0 ]; then
+            errors=$((errors + 1))
+          fi
+
+          echo "passed=$passed" >> "$GITHUB_OUTPUT"
+          echo "failed=$failed" >> "$GITHUB_OUTPUT"
+          echo "skipped=$skipped" >> "$GITHUB_OUTPUT"
+          echo "errors=$errors" >> "$GITHUB_OUTPUT"
+          echo "pass_rate=$pass_rate" >> "$GITHUB_OUTPUT"
+          echo "sqlancer_status=$sqlancer_status" >> "$GITHUB_OUTPUT"
+          echo "has_results=true" >> "$GITHUB_OUTPUT"
+
+      - name: Write Job Summary
+        run: |
+          echo "## Compatibility Tests Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Workflow: \`${{ github.workflow }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Run ID: \`${{ github.run_id }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Commit: \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${{ steps.summary.outputs.has_results }}" != "true" ]; then
+            echo ":warning: No parsable compatibility results were found in \`reports/postgres-regress/summary.txt\`." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          passed='${{ steps.summary.outputs.passed }}'
+          failed='${{ steps.summary.outputs.failed }}'
+          skipped='${{ steps.summary.outputs.skipped }}'
+          errors='${{ steps.summary.outputs.errors }}'
+          pass_rate='${{ steps.summary.outputs.pass_rate }}'
+          sqlancer_status='${{ steps.summary.outputs.sqlancer_status }}'
+
+          echo "| Metric | Count |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|--------|------:|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Passed | ${passed} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Failed | ${failed} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Skipped | ${skipped} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Errors | ${errors} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| SQLancer status | ${sqlancer_status} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Pass Rate** | **${pass_rate}%** |" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request' && steps.summary.outputs.has_results == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const passed = '${{ steps.summary.outputs.passed }}';
+            const failed = '${{ steps.summary.outputs.failed }}';
+            const skipped = '${{ steps.summary.outputs.skipped }}';
+            const errors = '${{ steps.summary.outputs.errors }}';
+            const passRate = '${{ steps.summary.outputs.pass_rate }}';
+            const sqlancerStatus = '${{ steps.summary.outputs.sqlancer_status }}';
+
+            const body = `## Compatibility Test Summary
+
+            | Metric | Count |
+            |--------|-------|
+            | Passed | ${passed} |
+            | Failed | ${failed} |
+            | Skipped | ${skipped} |
+            | Errors | ${errors} |
+            | SQLancer status | ${sqlancerStatus} |
+            | **Pass Rate** | **${passRate}%** |
+
+            <details>
+            <summary>Run details</summary>
+
+            - Workflow: \`${{ github.workflow }}\`
+            - Run ID: \`${{ github.run_id }}\`
+            - Commit: \`${{ github.sha }}\`
+            </details>`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.find(c =>
+              c.user.type === 'Bot' && c.body.includes('## Compatibility Test Summary')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body
+              });
+            }
+
+      - name: Fail on compatibility failures
+        if: steps.summary.outputs.has_results != 'true' || steps.summary.outputs.failed != '0' || steps.summary.outputs.errors != '0'
+        run: exit 1
+
+  publish-badge:
+    needs: compat-tests
+    if: always() && needs.compat-tests.outputs.has_results == 'true' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Build badge payload
+        run: |
+          passed='${{ needs.compat-tests.outputs.passed }}'
+          failed='${{ needs.compat-tests.outputs.failed }}'
+          skipped='${{ needs.compat-tests.outputs.skipped }}'
+          errors='${{ needs.compat-tests.outputs.errors }}'
+
+          if [ "$failed" -eq 0 ] && [ "$errors" -eq 0 ]; then
+            color="brightgreen"
+          elif [ "$passed" -gt 0 ]; then
+            color="yellow"
+          else
+            color="red"
+          fi
+
+          mkdir -p .github/badges
+          cat > .github/badges/compat-tests.json <<EOF
+          {
+            "schemaVersion": 1,
+            "label": "compat-tests",
+            "message": "success ${passed}, fail ${failed}, skip ${skipped}, error ${errors}",
+            "color": "${color}"
+          }
+          EOF
+
+      - name: Update badge data
+        run: |
+          if git diff --quiet -- .github/badges/compat-tests.json; then
+            echo "No badge changes"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/badges/compat-tests.json
+          git commit -m "chore: update compatibility test badge data"
+          git fetch origin "${GITHUB_REF_NAME}"
+          if ! git rebase "origin/${GITHUB_REF_NAME}"; then
+            echo "::warning::Failed to rebase badge update onto latest ${GITHUB_REF_NAME}; skipping push."
+            git rebase --abort || true
+            exit 0
+          fi
+          if ! git push origin HEAD:${GITHUB_REF_NAME}; then
+            echo "::warning::Failed to push badge update (likely concurrent push); skipping."
+            exit 0
+          fi

@@ -274,3 +274,13 @@ func int32Bytes(v int32) []byte {
 	binary.BigEndian.PutUint32(b[:], uint32(v))
 	return b[:]
 }
+
+func writeCopyInResponse(w io.Writer, numColumns int16) {
+	var b bytes.Buffer
+	b.WriteByte(0) // overall format: text
+	writeInt16(&b, numColumns)
+	for i := int16(0); i < numColumns; i++ {
+		writeInt16(&b, 0) // per-column format: text
+	}
+	writeMsg(w, 'G', b.Bytes())
+}

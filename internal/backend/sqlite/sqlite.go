@@ -223,3 +223,99 @@ func commandTag(query string, affected int64) string {
 		return strings.ToUpper(fields[0])
 	}
 }
+
+func (b *Backend) TableColumns(ctx context.Context, table string) ([]string, error) {
+	rows, err := b.queryer().QueryContext(ctx, "PRAGMA table_info(\""+table+"\")")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var cols []string
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull int
+		var dflt any
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return nil, err
+		}
+		cols = append(cols, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(cols) == 0 {
+		return nil, fmt.Errorf("relation %q does not exist", table)
+	}
+	return cols, nil
+}
+
+func (b *Backend) BulkInsert(ctx context.Context, table string, columns []string, rows [][]backend.Value) (int64, error) {
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	if len(columns) == 0 {
+		cols, err := b.TableColumns(ctx, table)
+		if err != nil {
+			return 0, err
+		}
+		columns = cols
+	}
+
+	colList := make([]string, len(columns))
+	for i, c := range columns {
+		colList[i] = "\"" + c + "\""
+	}
+	colSQL := strings.Join(colList, ", ")
+
+	ncols := len(columns)
+	placeholders := "(" + strings.Repeat("?, ", ncols-1) + "?)"
+
+	const batchSize = 200
+	var total int64
+	for start := 0; start < len(rows); start += batchSize {
+		end := start + batchSize
+		if end > len(rows) {
+			end = len(rows)
+		}
+		batch := rows[start:end]
+
+		var sb strings.Builder
+		sb.WriteString("INSERT INTO \"")
+		sb.WriteString(table)
+		sb.WriteString("\" (")
+		sb.WriteString(colSQL)
+		sb.WriteString(") VALUES ")
+		for i := range batch {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			sb.WriteString(placeholders)
+		}
+
+		args := make([]any, 0, len(batch)*ncols)
+		for _, row := range batch {
+			for j := 0; j < ncols; j++ {
+				if j < len(row) {
+					switch row[j].Kind {
+					case backend.ValueNull:
+						args = append(args, nil)
+					default:
+						args = append(args, row[j].Value)
+					}
+				} else {
+					args = append(args, nil)
+				}
+			}
+		}
+
+		res, err := b.execer().ExecContext(ctx, sb.String(), args...)
+		if err != nil {
+			return total, err
+		}
+		n, _ := res.RowsAffected()
+		total += n
+	}
+	return total, nil
+}

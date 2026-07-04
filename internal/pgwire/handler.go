@@ -10,12 +10,14 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 
 	"github.com/yashikota/minipsql/internal/backend"
 	"github.com/yashikota/minipsql/internal/backend/sqlite"
 	"github.com/yashikota/minipsql/internal/compat"
+	pgcopy "github.com/yashikota/minipsql/internal/copy"
 	"github.com/yashikota/minipsql/internal/session"
 )
 
@@ -74,7 +76,7 @@ func (h *Handler) ServeConn(ctx context.Context, conn net.Conn) {
 		}
 		switch typ {
 		case 'Q':
-			h.handleSimple(ctx, conn, s, cstring(body))
+			h.handleSimple(ctx, conn, br, s, cstring(body))
 		case 'P':
 			if !h.handleParse(conn, s, body) {
 				errorPending = true
@@ -148,8 +150,17 @@ func (h *Handler) startup(ctx context.Context, br *bufio.Reader, w io.Writer) (m
 	}
 }
 
-func (h *Handler) handleSimple(ctx context.Context, w io.Writer, s *session.Session, sql string) {
+func (h *Handler) handleSimple(ctx context.Context, w io.Writer, br *bufio.Reader, s *session.Session, sql string) {
 	for _, stmt := range compat.SplitStatements(sql) {
+		if copyStmt, _ := pgcopy.Parse(stmt); copyStmt != nil && copyStmt.Direction == "from" {
+			if copyStmt.Source == "stdin" {
+				h.handleCopyIn(ctx, w, br, s, copyStmt)
+			} else {
+				h.handleCopyFile(ctx, w, s, copyStmt)
+			}
+			writeReady(w, s.TxState)
+			return
+		}
 		result, tag, err := h.executeRecover(ctx, s, stmt, nil)
 		if err != nil {
 			writeError(w, compat.Error(err))
@@ -432,4 +443,68 @@ func randInt32() int32 {
 	var b [4]byte
 	_, _ = rand.Read(b[:])
 	return int32(binary.BigEndian.Uint32(b[:]))
+}
+
+func (h *Handler) handleCopyIn(ctx context.Context, w io.Writer, br *bufio.Reader, s *session.Session, stmt *pgcopy.Statement) {
+	defer func() {
+		if r := recover(); r != nil {
+			writeError(w, compat.PGError{Code: "XX000", Message: fmt.Sprintf("internal error during COPY: %v", r)})
+		}
+	}()
+	// resolve column count for CopyInResponse
+	numCols := int16(len(stmt.Columns))
+	if numCols == 0 {
+		cols, err := s.Backend.TableColumns(ctx, stmt.TableName)
+		if err != nil {
+			writeError(w, compat.Error(err))
+			return
+		}
+		numCols = int16(len(cols))
+	}
+	writeCopyInResponse(w, numCols)
+
+	var dataBuf bytes.Buffer
+	for {
+		typ, body, err := readMessage(br)
+		if err != nil {
+			return
+		}
+		switch typ {
+		case 'd':
+			dataBuf.Write(body)
+		case 'c': // CopyDone
+			tag, err := s.ExecuteCopyFrom(ctx, stmt, dataBuf.Bytes())
+			if err != nil {
+				writeError(w, compat.Error(err))
+			} else {
+				writeCommandComplete(w, tag.Tag)
+			}
+			return
+		case 'f': // CopyFail
+			msg := cstring(body)
+			writeError(w, compat.PGError{Code: "57014", Message: "COPY failed: " + msg})
+			return
+		default:
+			writeError(w, compat.PGError{Code: "08P01", Message: fmt.Sprintf("unexpected message during COPY: %q", typ)})
+			return
+		}
+	}
+}
+
+func (h *Handler) handleCopyFile(ctx context.Context, w io.Writer, s *session.Session, stmt *pgcopy.Statement) {
+	data, err := readFile(stmt.Source)
+	if err != nil {
+		writeError(w, compat.PGError{Code: "58030", Message: fmt.Sprintf("COPY: cannot read file %q: %v", stmt.Source, err)})
+		return
+	}
+	tag, err := s.ExecuteCopyFrom(ctx, stmt, data)
+	if err != nil {
+		writeError(w, compat.Error(err))
+		return
+	}
+	writeCommandComplete(w, tag.Tag)
+}
+
+func readFile(path string) ([]byte, error) {
+	return os.ReadFile(path)
 }

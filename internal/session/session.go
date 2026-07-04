@@ -2,9 +2,10 @@ package session
 
 import (
 	"context"
-
+	"fmt"
 	"strings"
 
+	pgcopy "github.com/yashikota/minipsql/internal/copy"
 	"github.com/yashikota/minipsql/internal/backend"
 	"github.com/yashikota/minipsql/internal/compat"
 )
@@ -181,10 +182,6 @@ func checkUnsupportedDDL(sql string) error {
 		}
 	}
 
-	if strings.HasPrefix(lower, "copy ") {
-		return &compat.PGError{Code: "0A000", Message: "COPY is not supported"}
-	}
-
 	if strings.HasPrefix(lower, "do ") && strings.Contains(lower, "$$") {
 		return &compat.PGError{Code: "0A000", Message: "DO blocks are not supported"}
 	}
@@ -255,4 +252,63 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 	}
 
 	return nil, false
+}
+
+func (s *Session) ExecuteCopyFrom(ctx context.Context, stmt *pgcopy.Statement, data []byte) (*backend.CommandTag, error) {
+	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
+
+	if stmt.Header && len(lines) > 0 {
+		lines = lines[1:]
+	}
+
+	// resolve columns
+	columns := stmt.Columns
+	if len(columns) == 0 {
+		cols, err := s.Backend.TableColumns(ctx, stmt.TableName)
+		if err != nil {
+			return nil, fmt.Errorf("COPY: cannot resolve columns for %q: %w", stmt.TableName, err)
+		}
+		columns = cols
+	}
+
+	var rows [][]backend.Value
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		var fields []string
+		var eof bool
+		var err error
+		if stmt.Format == "csv" {
+			fields, eof, err = pgcopy.ParseCSVRow(line, stmt.Delimiter, stmt.NullString, stmt.Quote, stmt.Escape)
+		} else {
+			fields, eof, err = pgcopy.ParseTextRow(line, stmt.Delimiter, stmt.NullString)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("COPY: parse error: %w", err)
+		}
+		if eof {
+			break
+		}
+		row := make([]backend.Value, len(columns))
+		for i := 0; i < len(columns); i++ {
+			if i < len(fields) {
+				f := fields[i]
+				if pgcopy.IsNullMarker(f) {
+					row[i] = backend.Value{Kind: backend.ValueNull}
+				} else {
+					row[i] = backend.Value{Kind: backend.ValueText, Value: f}
+				}
+			} else {
+				row[i] = backend.Value{Kind: backend.ValueNull}
+			}
+		}
+		rows = append(rows, row)
+	}
+
+	n, err := s.Backend.BulkInsert(ctx, stmt.TableName, columns, rows)
+	if err != nil {
+		return nil, err
+	}
+	return &backend.CommandTag{Tag: fmt.Sprintf("COPY %d", n)}, nil
 }

@@ -9,6 +9,8 @@ type Backend interface {
 	Commit(ctx context.Context) error
 	Rollback(ctx context.Context) error
 	Close(ctx context.Context) error
+	BulkInsert(ctx context.Context, table string, columns []string, rows [][]Value) (int64, error)
+	TableColumns(ctx context.Context, table string) ([]string, error)
 }
 
 type Result struct {

@@ -6,6 +6,7 @@ vars:
   MINIPSQL_USER: '{{.MINIPSQL_USER | default "mini"}}'
   MINIPSQL_DB: '{{.MINIPSQL_DB | default "default"}}'
   SQLANCER_TRIES: '{{.SQLANCER_TRIES | default "1000"}}'
+  SQLANCER_TIMEOUT_SECONDS: '{{.SQLANCER_TIMEOUT_SECONDS | default "600"}}'
   POSTGRES_REGRESS_IMAGE: '{{.POSTGRES_REGRESS_IMAGE | default "postgres:latest"}}'
 
 tasks:
@@ -47,6 +48,7 @@ tasks:
       MINIPSQL_USER: '{{.MINIPSQL_USER}}'
       MINIPSQL_DB: '{{.MINIPSQL_DB}}'
       SQLANCER_TRIES: '{{.SQLANCER_TRIES}}'
+      SQLANCER_TIMEOUT_SECONDS: '{{.SQLANCER_TIMEOUT_SECONDS}}'
     cmds:
       - scripts/run-sqlancer-postgres.sh
 

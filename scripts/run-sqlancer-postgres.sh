@@ -9,6 +9,7 @@ host="${MINIPSQL_HOST:-127.0.0.1}"
 user="${MINIPSQL_USER:-mini}"
 db="${MINIPSQL_DB:-default}"
 tries="${SQLANCER_TRIES:-1000}"
+timeout_seconds="${SQLANCER_TIMEOUT_SECONDS:-600}"
 
 if [[ ! -x "${JAVA_HOME:-}/bin/java" && -x /usr/bin/java ]]; then
   java_path="$(readlink -f /usr/bin/java)"
@@ -53,14 +54,14 @@ if command -v mvn >/dev/null 2>&1 && command -v java >/dev/null 2>&1; then
     printf 'SQLancer jar was not produced under %s/target\n' "$sqlancer" >&2
     exit 2
   fi
-  java -jar "$jar" --num-tries "$tries" postgres --host "$host" --port "$port" --username "$user" --database-name "$db" \
+  java -jar "$jar" --timeout-seconds "$timeout_seconds" --num-tries "$tries" postgres --host "$host" --port "$port" --username "$user" --database-name "$db" \
     >"$report_dir/sqlancer.stdout" 2>"$report_dir/sqlancer.stderr"
   exit $?
 fi
 
 if command -v docker >/dev/null 2>&1; then
   docker build -t minipsql-sqlancer "$sqlancer" >"$report_dir/docker-build.log" 2>&1
-  docker run --rm --network host minipsql-sqlancer --num-tries "$tries" postgres --host "$host" --port "$port" --username "$user" --database-name "$db" \
+  docker run --rm --network host minipsql-sqlancer --timeout-seconds "$timeout_seconds" --num-tries "$tries" postgres --host "$host" --port "$port" --username "$user" --database-name "$db" \
     >"$report_dir/sqlancer.stdout" 2>"$report_dir/sqlancer.stderr"
   exit $?
 fi

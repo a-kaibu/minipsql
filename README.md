@@ -42,6 +42,7 @@ scripts/run-sqlancer-postgres.sh
 ```
 
 SQLancer is built with local Java/Maven when available, otherwise the script tries Docker.
+It runs for 600 seconds by default; override with `SQLANCER_TIMEOUT_SECONDS=<seconds>`.
 Reports are written under `reports/sqlancer/`.
 
 ## Supported

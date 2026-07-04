@@ -1,0 +1,63 @@
+version: '3'
+
+vars:
+  MINIPSQL_HOST: '{{.MINIPSQL_HOST | default "127.0.0.1"}}'
+  MINIPSQL_PORT: '{{.MINIPSQL_PORT | default "15432"}}'
+  MINIPSQL_USER: '{{.MINIPSQL_USER | default "mini"}}'
+  MINIPSQL_DB: '{{.MINIPSQL_DB | default "default"}}'
+  SQLANCER_TRIES: '{{.SQLANCER_TRIES | default "1000"}}'
+  POSTGRES_REGRESS_IMAGE: '{{.POSTGRES_REGRESS_IMAGE | default "postgres:latest"}}'
+
+tasks:
+  test:
+    desc: Run Go tests
+    cmds:
+      - go test ./...
+
+  build:
+    desc: Build minipsql
+    cmds:
+      - mkdir -p bin
+      - go build -o bin/minipsql ./cmd/minipsql
+
+  serve:
+    desc: Start minipsql
+    deps: [build]
+    cmds:
+      - ./bin/minipsql serve --host {{.MINIPSQL_HOST}} --port {{.MINIPSQL_PORT}}
+
+  fetch-tests:
+    desc: Fetch upstream PostgreSQL regress tests and SQLancer
+    cmds:
+      - scripts/fetch-test-sources.sh
+
+  regress:
+    desc: Run all upstream PostgreSQL regress SQL files against minipsql
+    deps: [build]
+    env:
+      MINIPSQL_HOST: '{{.MINIPSQL_HOST}}'
+      MINIPSQL_PORT: '{{.MINIPSQL_PORT}}'
+      MINIPSQL_USER: '{{.MINIPSQL_USER}}'
+      MINIPSQL_DB: '{{.MINIPSQL_DB}}'
+      POSTGRES_REGRESS_IMAGE: '{{.POSTGRES_REGRESS_IMAGE}}'
+    cmds:
+      - scripts/run-postgres-regress.sh
+
+  sqlancer:
+    desc: Run SQLancer PostgreSQL provider against minipsql
+    deps: [build]
+    env:
+      MINIPSQL_HOST: '{{.MINIPSQL_HOST}}'
+      MINIPSQL_PORT: '{{.MINIPSQL_PORT}}'
+      MINIPSQL_USER: '{{.MINIPSQL_USER}}'
+      MINIPSQL_DB: '{{.MINIPSQL_DB}}'
+      SQLANCER_TRIES: '{{.SQLANCER_TRIES}}'
+    cmds:
+      - scripts/run-sqlancer-postgres.sh
+
+  compat:
+    desc: Run Go tests, PostgreSQL regress, and SQLancer
+    cmds:
+      - task: test
+      - task: regress
+      - task: sqlancer

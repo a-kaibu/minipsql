@@ -16,6 +16,34 @@ Run schema SQL for each new in-memory database:
 go run ./cmd/minipsql serve --init schema.sql
 ```
 
+## Compatibility Stress Tests
+
+Fetch upstream test sources:
+
+```bash
+scripts/fetch-test-sources.sh
+```
+
+Run every SQL file under PostgreSQL's `src/test/regress/sql` against minipsql:
+
+```bash
+scripts/run-postgres-regress.sh
+```
+
+The runner generates one psql input that includes every upstream regress SQL file in sorted order.
+It does not skip known-incompatible files, does not rewrite upstream SQL, and exits non-zero when psql reports any `ERROR`, `FATAL`, or `PANIC`.
+The PostgreSQL client is run via Docker using `postgres:latest` by default; override with `POSTGRES_REGRESS_IMAGE=postgres:<tag>`.
+Reports are written under `reports/postgres-regress/`.
+
+Run SQLancer's PostgreSQL provider against minipsql:
+
+```bash
+scripts/run-sqlancer-postgres.sh
+```
+
+SQLancer is built with local Java/Maven when available, otherwise the script tries Docker.
+Reports are written under `reports/sqlancer/`.
+
 ## Supported
 
 - PostgreSQL startup handshake with trust authentication

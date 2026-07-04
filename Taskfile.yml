@@ -1,10 +1,12 @@
 version: '3'
 
 vars:
+  MINIPSQL_BIN: '{{.MINIPSQL_BIN | default "dist/minipsql"}}'
   MINIPSQL_HOST: '{{.MINIPSQL_HOST | default "127.0.0.1"}}'
   MINIPSQL_PORT: '{{.MINIPSQL_PORT | default "15432"}}'
   MINIPSQL_USER: '{{.MINIPSQL_USER | default "mini"}}'
   MINIPSQL_DB: '{{.MINIPSQL_DB | default "default"}}'
+  DOCKER_MINIPSQL_HOST: '{{.DOCKER_MINIPSQL_HOST | default "host.docker.internal"}}'
   SQLANCER_TRIES: '{{.SQLANCER_TRIES | default "1000"}}'
   SQLANCER_TIMEOUT_SECONDS: '{{.SQLANCER_TIMEOUT_SECONDS | default "600"}}'
 
@@ -15,15 +17,22 @@ tasks:
       - go test ./...
 
   build:
-    desc: Build minipsql
+    desc: Build minipsql host binary
     cmds:
-      - docker compose build minipsql
+      - mkdir -p dist
+      - CGO_ENABLED=0 go build -trimpath -o {{.MINIPSQL_BIN}} .
+      - |
+        cgo_packages="$(CGO_ENABLED=0 go list -deps -f '{{`{{if .CgoFiles}}{{.ImportPath}}{{end}}`}}' ./... | sed '/^$/d')"
+        if [ -n "$cgo_packages" ]; then
+          printf '%s\n' "$cgo_packages"
+          exit 1
+        fi
 
   serve:
     desc: Start minipsql
     deps: [build]
     cmds:
-      - docker compose up minipsql
+      - ./{{.MINIPSQL_BIN}} serve --host {{.MINIPSQL_HOST}} --port {{.MINIPSQL_PORT}}
 
   docker:regress:
     desc: Build PostgreSQL regress psql image
@@ -45,6 +54,7 @@ tasks:
     desc: Run all upstream PostgreSQL regress SQL files against minipsql
     deps: [build, docker:regress]
     env:
+      MINIPSQL_HOST: '{{.DOCKER_MINIPSQL_HOST}}'
       MINIPSQL_PORT: '{{.MINIPSQL_PORT}}'
       MINIPSQL_USER: '{{.MINIPSQL_USER}}'
       MINIPSQL_DB: '{{.MINIPSQL_DB}}'
@@ -52,16 +62,17 @@ tasks:
       - mkdir -p reports/postgres-regress
       - |
         status=0
-        docker compose up -d minipsql
+        ./{{.MINIPSQL_BIN}} serve --host 0.0.0.0 --port {{.MINIPSQL_PORT}} &
+        server_pid=$!
+        trap 'kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true' EXIT
         docker compose run --rm postgres-regress || status=$?
-        docker compose down
         exit $status
 
   sqlancer:
     desc: Run SQLancer PostgreSQL provider against minipsql
     deps: [build, docker:sqlancer]
     env:
-      MINIPSQL_HOST: '{{.MINIPSQL_HOST}}'
+      MINIPSQL_HOST: '{{.DOCKER_MINIPSQL_HOST}}'
       MINIPSQL_PORT: '{{.MINIPSQL_PORT}}'
       MINIPSQL_USER: '{{.MINIPSQL_USER}}'
       MINIPSQL_DB: '{{.MINIPSQL_DB}}'
@@ -71,9 +82,10 @@ tasks:
       - mkdir -p reports/sqlancer
       - |
         status=0
-        docker compose up -d minipsql
+        ./{{.MINIPSQL_BIN}} serve --host 0.0.0.0 --port {{.MINIPSQL_PORT}} &
+        server_pid=$!
+        trap 'kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true' EXIT
         docker compose run --rm sqlancer > reports/sqlancer/sqlancer.stdout 2> reports/sqlancer/sqlancer.stderr || status=$?
-        docker compose down
         exit $status
 
   compat:

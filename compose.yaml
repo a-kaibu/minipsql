@@ -1,25 +1,16 @@
 services:
-  minipsql:
-    build:
-      context: .
-      dockerfile: docker/minipsql.Dockerfile
-    image: minipsql:local
-    command: ["serve", "--host", "0.0.0.0", "--port", "15432"]
-    ports:
-      - "${MINIPSQL_PORT:-15432}:15432"
-
   postgres-regress:
     build:
       context: .
       dockerfile: docker/postgres-regress.Dockerfile
     image: minipsql-postgres-regress:latest
-    depends_on:
-      - minipsql
     environment:
-      MINIPSQL_HOST: minipsql
-      MINIPSQL_PORT: "15432"
+      MINIPSQL_HOST: "${MINIPSQL_HOST:-host.docker.internal}"
+      MINIPSQL_PORT: "${MINIPSQL_PORT:-15432}"
       MINIPSQL_USER: "${MINIPSQL_USER:-mini}"
       MINIPSQL_DB: "${MINIPSQL_DB:-default}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./external/postgres:/workspace/external/postgres:ro
       - ./reports/postgres-regress:/workspace/reports/postgres-regress
@@ -29,8 +20,8 @@ services:
       context: .
       dockerfile: docker/sqlancer.Dockerfile
     image: minipsql-sqlancer:latest
-    depends_on:
-      - minipsql
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     command:
       - "--timeout-seconds"
       - "${SQLANCER_TIMEOUT_SECONDS:-600}"
@@ -39,9 +30,9 @@ services:
       - "--username"
       - "${MINIPSQL_USER:-mini}"
       - "--port"
-      - "15432"
+      - "${MINIPSQL_PORT:-15432}"
       - "--host"
-      - "minipsql"
+      - "${MINIPSQL_HOST:-host.docker.internal}"
       - "postgres"
-      - "--connection-url=postgresql://minipsql:15432/${MINIPSQL_DB:-default}"
+      - "--connection-url=postgresql://${MINIPSQL_HOST:-host.docker.internal}:${MINIPSQL_PORT:-15432}/${MINIPSQL_DB:-default}"
       - "--test-tablespaces=false"

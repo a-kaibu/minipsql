@@ -13,7 +13,7 @@ pgroot="${POSTGRES_SRC:-/workspace/external/postgres}"
 regress="$pgroot/src/test/regress"
 sqldir="$regress/sql"
 report_dir="${REPORT_DIR:-/workspace/reports/postgres-regress}"
-host="${MINIPSQL_HOST:-minipsql}"
+host="${MINIPSQL_HOST:-host.docker.internal}"
 port="${MINIPSQL_PORT:-15432}"
 user="${MINIPSQL_USER:-mini}"
 db="${MINIPSQL_DB:-default}"
@@ -103,7 +103,7 @@ not_completed_files=$((included_count - completed_files))
 
 {
   printf 'postgres_regress_sql_dir=%s\n' "$sqldir"
-  printf 'psql_runner=docker-compose\n'
+  printf 'psql_runner=docker-compose-to-host-binary\n'
   printf 'total_files=%s\n' "$included_count"
   printf 'success_files=%s\n' "$success_files"
   printf 'failed_files=%s\n' "$failed_files"

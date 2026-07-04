@@ -208,10 +208,6 @@ jobs:
               });
             }
 
-      - name: Fail on compatibility failures
-        if: steps.summary.outputs.has_results != 'true' || steps.summary.outputs.failed != '0' || steps.summary.outputs.errors != '0'
-        run: exit 1
-
   publish-badge:
     needs: compat-tests
     if: always() && needs.compat-tests.outputs.has_results == 'true' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'

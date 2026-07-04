@@ -17,7 +17,7 @@ fi
 
 if [[ ! -d "$sqlancer" ]]; then
   printf 'missing SQLancer checkout: %s\n' "$sqlancer" >&2
-  printf 'run: scripts/fetch-test-sources.sh\n' >&2
+  printf 'run: git submodule update --init --recursive\n' >&2
   exit 2
 fi
 

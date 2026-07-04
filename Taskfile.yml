@@ -26,11 +26,6 @@ tasks:
     cmds:
       - ./bin/minipsql serve --host {{.MINIPSQL_HOST}} --port {{.MINIPSQL_PORT}}
 
-  fetch-tests:
-    desc: Fetch upstream PostgreSQL regress tests and SQLancer
-    cmds:
-      - scripts/fetch-test-sources.sh
-
   regress:
     desc: Run all upstream PostgreSQL regress SQL files against minipsql
     deps: [build]

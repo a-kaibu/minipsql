@@ -1,0 +1,6 @@
+[submodule "external/postgres"]
+	path = external/postgres
+	url = https://github.com/postgres/postgres.git
+[submodule "external/sqlancer"]
+	path = external/sqlancer
+	url = https://github.com/sqlancer/sqlancer.git

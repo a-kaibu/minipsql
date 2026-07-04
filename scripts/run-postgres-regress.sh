@@ -14,7 +14,7 @@ psql_image="${POSTGRES_REGRESS_IMAGE:-postgres:latest}"
 
 if [[ ! -d "$sqldir" ]]; then
   printf 'missing PostgreSQL regress SQL directory: %s\n' "$sqldir" >&2
-  printf 'run: scripts/fetch-test-sources.sh\n' >&2
+  printf 'run: git submodule update --init --recursive\n' >&2
   exit 2
 fi
 
@@ -23,6 +23,7 @@ rm -f "$report_dir"/*
 summary="$report_dir/summary.txt"
 stdout="$report_dir/psql.stdout"
 stderr="$report_dir/psql.stderr"
+file_results="$report_dir/file-results.tsv"
 
 mapfile -t sql_files < <(find "$sqldir" -maxdepth 1 -type f -name '*.sql' | sort)
 if [[ "${#sql_files[@]}" -eq 0 ]]; then
@@ -87,17 +88,45 @@ fatal_count="$(grep -Ec '(^|: )(FATAL|PANIC):' "$stderr" || true)"
 included_count="${#sql_files[@]}"
 last_begin="$(grep 'MINIPSQL_REGRESS_BEGIN' "$stdout" | tail -n 1 || true)"
 last_end="$(grep 'MINIPSQL_REGRESS_END' "$stdout" | tail -n 1 || true)"
+success_files=0
+failed_files=0
+completed_files=0
+
+printf 'status\tfile\terror_count\tcompleted\n' >"$file_results"
+for file in "${sql_files[@]}"; do
+  rel="${file#"$regress"/}"
+  file_error_count="$(awk -v prefix="psql:$rel:" 'index($0, prefix) == 1 && /(ERROR|FATAL|PANIC):/ { count++ } END { print count + 0 }' "$stderr")"
+  completed=0
+  if grep -Fxq "MINIPSQL_REGRESS_END $rel" "$stdout"; then
+    completed=1
+    completed_files=$((completed_files + 1))
+  fi
+  if [[ "$completed" -eq 1 && "$file_error_count" -eq 0 ]]; then
+    status=ok
+    success_files=$((success_files + 1))
+  else
+    status=failed
+    failed_files=$((failed_files + 1))
+  fi
+  printf '%s\t%s\t%s\t%s\n' "$status" "$rel" "$file_error_count" "$completed" >>"$file_results"
+done
+not_completed_files=$((included_count - completed_files))
 
 {
   printf 'postgres_regress_sql_dir=%s\n' "$sqldir"
   printf 'psql_runner=docker\n'
   printf 'psql_image=%s\n' "$psql_image"
-  printf 'included_sql_files=%s\n' "$included_count"
+  printf 'total_files=%s\n' "$included_count"
+  printf 'success_files=%s\n' "$success_files"
+  printf 'failed_files=%s\n' "$failed_files"
+  printf 'completed_files=%s\n' "$completed_files"
+  printf 'not_completed_files=%s\n' "$not_completed_files"
   printf 'psql_exit_status=%s\n' "$psql_status"
   printf 'error_count=%s\n' "$error_count"
   printf 'fatal_count=%s\n' "$fatal_count"
   printf 'last_begin=%s\n' "$last_begin"
   printf 'last_end=%s\n' "$last_end"
+  printf 'file_results=%s\n' "$file_results"
   printf '\nFirst 200 errors:\n'
   grep -E '(^|: )(ERROR|FATAL|PANIC):' "$stderr" | head -n 200 || true
 } >"$summary"

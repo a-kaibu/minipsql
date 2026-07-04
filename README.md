@@ -27,21 +27,21 @@ git submodule update --init --recursive
 Run every SQL file under PostgreSQL's `src/test/regress/sql` against minipsql:
 
 ```bash
-scripts/run-postgres-regress.sh
+task regress
 ```
 
 The runner generates one psql input that includes every upstream regress SQL file in sorted order.
 It does not skip known-incompatible files, does not rewrite upstream SQL, and exits non-zero when psql reports any `ERROR`, `FATAL`, or `PANIC`.
-The PostgreSQL client is run via Docker using `postgres:latest` by default; override with `POSTGRES_REGRESS_IMAGE=postgres:<tag>`.
+The PostgreSQL client is run via the local Docker image built from `docker/postgres-regress.Dockerfile`.
 Reports are written under `reports/postgres-regress/`, including total/success/failure counts and per-file results.
 
 Run SQLancer's PostgreSQL provider against minipsql:
 
 ```bash
-scripts/run-sqlancer-postgres.sh
+task sqlancer
 ```
 
-SQLancer is built with local Java/Maven when available, otherwise the script tries Docker.
+SQLancer is run via the local Docker image built from `docker/sqlancer.Dockerfile`.
 It runs for 600 seconds by default; override with `SQLANCER_TIMEOUT_SECONDS=<seconds>`.
 Reports are written under `reports/sqlancer/`.
 

@@ -1,16 +1,22 @@
+# syntax=docker/dockerfile:1.7
+
+FROM postgres:latest
+
+WORKDIR /work/regress
+
+RUN <<'EOF'
+cat > /usr/local/bin/run-postgres-regress <<'SCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-pgroot="${POSTGRES_SRC:-$root/external/postgres}"
+pgroot="${POSTGRES_SRC:-/workspace/external/postgres}"
 regress="$pgroot/src/test/regress"
 sqldir="$regress/sql"
-report_dir="${REPORT_DIR:-$root/reports/postgres-regress}"
+report_dir="${REPORT_DIR:-/workspace/reports/postgres-regress}"
+host="${MINIPSQL_HOST:-minipsql}"
 port="${MINIPSQL_PORT:-15432}"
-host="${MINIPSQL_HOST:-127.0.0.1}"
 user="${MINIPSQL_USER:-mini}"
 db="${MINIPSQL_DB:-default}"
-psql_image="${POSTGRES_REGRESS_IMAGE:-postgres:latest}"
 
 if [[ ! -d "$sqldir" ]]; then
   printf 'missing PostgreSQL regress SQL directory: %s\n' "$sqldir" >&2
@@ -24,6 +30,7 @@ summary="$report_dir/summary.txt"
 stdout="$report_dir/psql.stdout"
 stderr="$report_dir/psql.stderr"
 file_results="$report_dir/file-results.tsv"
+input="$report_dir/all-regress.sql"
 
 mapfile -t sql_files < <(find "$sqldir" -maxdepth 1 -type f -name '*.sql' | sort)
 if [[ "${#sql_files[@]}" -eq 0 ]]; then
@@ -31,32 +38,19 @@ if [[ "${#sql_files[@]}" -eq 0 ]]; then
   exit 2
 fi
 
-go build -o "$root/bin/minipsql" "$root/cmd/minipsql"
-
-server_log="$report_dir/server.log"
-"$root/bin/minipsql" serve --host "$host" --port "$port" >"$server_log" 2>&1 &
-server_pid="$!"
-cleanup() {
-  kill "$server_pid" >/dev/null 2>&1 || true
-  wait "$server_pid" >/dev/null 2>&1 || true
-}
-trap cleanup EXIT
-
 ready=0
 for _ in $(seq 1 100); do
-  if docker run --rm --network host -e PGPASSWORD= "$psql_image" \
-    psql -h "$host" -p "$port" -U "$user" "$db" -c 'select 1' >/dev/null 2>&1; then
+  if PGPASSWORD= psql -h "$host" -p "$port" -U "$user" "$db" -c 'select 1' >/dev/null 2>&1; then
     ready=1
     break
   fi
   sleep 0.1
 done
 if [[ "$ready" -ne 1 ]]; then
-  printf 'minipsql did not become ready; see %s\n' "$server_log" >&2
+  printf 'minipsql did not become ready at %s:%s\n' "$host" "$port" >&2
   exit 2
 fi
 
-input="$report_dir/all-regress.sql"
 {
   printf '\\set ON_ERROR_STOP off\n'
   printf '\\pset pager off\n'
@@ -70,13 +64,8 @@ input="$report_dir/all-regress.sql"
 } >"$input"
 
 if (
-  docker run --rm --network host \
-    -e PGPASSWORD= \
-    -v "$regress:/work/regress:ro" \
-    -v "$report_dir:/work/report" \
-    -w /work/regress \
-    "$psql_image" \
-    psql -X -h "$host" -p "$port" -U "$user" "$db" -f /work/report/all-regress.sql
+  cd "$regress"
+  PGPASSWORD= psql -X -h "$host" -p "$port" -U "$user" "$db" -f "$input"
 ) >"$stdout" 2>"$stderr"; then
   psql_status=0
 else
@@ -114,8 +103,7 @@ not_completed_files=$((included_count - completed_files))
 
 {
   printf 'postgres_regress_sql_dir=%s\n' "$sqldir"
-  printf 'psql_runner=docker\n'
-  printf 'psql_image=%s\n' "$psql_image"
+  printf 'psql_runner=docker-compose\n'
   printf 'total_files=%s\n' "$included_count"
   printf 'success_files=%s\n' "$success_files"
   printf 'failed_files=%s\n' "$failed_files"
@@ -137,3 +125,8 @@ cat "$summary"
 if [[ "$psql_status" -ne 0 || "$error_count" -ne 0 ]]; then
   exit 1
 fi
+SCRIPT
+chmod +x /usr/local/bin/run-postgres-regress
+EOF
+
+ENTRYPOINT ["run-postgres-regress"]

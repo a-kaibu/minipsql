@@ -44,12 +44,10 @@ func TestInsert(t *testing.T) {
 			"returning_all": {
 				SQL:  "INSERT INTO t VALUES (1, 'alice') RETURNING *",
 				Want: [][]string{{"1", "alice"}},
-				Skip: "RETURNING not implemented",
 			},
 			"returning_column": {
-				SQL:  "INSERT INTO t VALUES (1, 'alice') RETURNING id",
-				Want: [][]string{{"1"}},
-				Skip: "RETURNING not implemented",
+				SQL:  "INSERT INTO t VALUES (2, 'bob') RETURNING id",
+				Want: [][]string{{"2"}},
 			},
 		},
 	})

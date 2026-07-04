@@ -81,13 +81,18 @@ func TestAlterTable(t *testing.T) {
 		Cases: map[string]testCase{
 			"add_column": {
 				SQL:     "ALTER TABLE t1 ADD COLUMN age INTEGER",
-				WantTag: "ALTER TABLE",
-				Skip:    "ALTER TABLE rewrite not implemented",
+				WantTag: "ALTER",
 			},
+		},
+	})
+
+	run(t, testGroup{
+		Name:  "rename",
+		Setup: []string{"CREATE TABLE t1(id INTEGER, name TEXT)"},
+		Cases: map[string]testCase{
 			"rename_table": {
 				SQL:     "ALTER TABLE t1 RENAME TO t2",
-				WantTag: "ALTER TABLE",
-				Skip:    "ALTER TABLE RENAME rewrite not implemented",
+				WantTag: "ALTER",
 			},
 		},
 	})

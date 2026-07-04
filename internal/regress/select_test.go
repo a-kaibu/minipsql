@@ -94,10 +94,9 @@ func TestSelectLimitOffset(t *testing.T) {
 				SQL:  "SELECT id FROM t ORDER BY id LIMIT 2 OFFSET 2",
 				Want: [][]string{{"3"}, {"4"}},
 			},
-			"offset_only": {
+			"offset_with_limit_minus_one": {
 				SQL:  "SELECT id FROM t ORDER BY id LIMIT -1 OFFSET 3",
 				Want: [][]string{{"4"}, {"5"}},
-				Skip: "LIMIT -1 for unlimited may not work",
 			},
 			"limit_zero": {
 				SQL:  "SELECT id FROM t ORDER BY id LIMIT 0",

@@ -73,12 +73,10 @@ func TestTypeBoolean(t *testing.T) {
 			"boolean_literal_true": {
 				SQL:  "SELECT true",
 				Want: [][]string{{"1"}},
-				Skip: "boolean literal rewrite not implemented",
 			},
 			"boolean_literal_false": {
 				SQL:  "SELECT false",
 				Want: [][]string{{"0"}},
-				Skip: "boolean literal rewrite not implemented",
 			},
 		},
 	})
@@ -150,7 +148,6 @@ func TestTypeSerial(t *testing.T) {
 			"auto_increment": {
 				SQL:  "SELECT id, name FROM t ORDER BY id",
 				Want: [][]string{{"1", "alice"}, {"2", "bob"}},
-				Skip: "SERIAL auto-increment behavior may differ",
 			},
 		},
 	})

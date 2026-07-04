@@ -4,19 +4,16 @@ import "testing"
 
 func TestTransactionCommit(t *testing.T) {
 	run(t, testGroup{
-		Name: "commit",
-		Setup: []string{
-			"CREATE TABLE t(id INTEGER, name TEXT)",
-		},
+		Name:  "commit",
+		Setup: []string{"CREATE TABLE t(id INTEGER, name TEXT)"},
 		Cases: map[string]testCase{
-			"begin_insert_commit": {
+			"begin": {
 				SQL:     "BEGIN",
 				WantTag: "BEGIN",
 			},
 		},
 	})
 
-	// Full transaction flow test
 	t.Run("full_commit_flow", func(t *testing.T) {
 		s, ctx := newSession(t)
 		_, _, err := s.Execute(ctx, "CREATE TABLE t(id INTEGER, name TEXT)", nil)
@@ -100,24 +97,40 @@ func TestTransactionRollback(t *testing.T) {
 }
 
 func TestTransactionAliases(t *testing.T) {
-	run(t, testGroup{
-		Name: "aliases",
-		Cases: map[string]testCase{
-			"start_transaction": {
-				SQL:     "START TRANSACTION",
-				WantTag: "BEGIN",
-			},
-			"end": {
-				SQL:     "END",
-				WantTag: "COMMIT",
-				Skip:    "END alias may not be implemented",
-			},
-			"abort": {
-				SQL:     "ABORT",
-				WantTag: "ROLLBACK",
-				Skip:    "ABORT alias may not be implemented",
-			},
-		},
+	t.Run("start_transaction", func(t *testing.T) {
+		s, ctx := newSession(t)
+		_, tag, err := s.Execute(ctx, "START TRANSACTION", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tag.Tag != "BEGIN" {
+			t.Fatalf("tag = %q, want BEGIN", tag.Tag)
+		}
+		s.Execute(ctx, "ROLLBACK", nil)
+	})
+
+	t.Run("end_commits", func(t *testing.T) {
+		s, ctx := newSession(t)
+		s.Execute(ctx, "BEGIN", nil)
+		_, tag, err := s.Execute(ctx, "END", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tag.Tag != "COMMIT" {
+			t.Fatalf("tag = %q, want COMMIT", tag.Tag)
+		}
+	})
+
+	t.Run("abort_rolls_back", func(t *testing.T) {
+		s, ctx := newSession(t)
+		s.Execute(ctx, "BEGIN", nil)
+		_, tag, err := s.Execute(ctx, "ABORT", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tag.Tag != "ROLLBACK" {
+			t.Fatalf("tag = %q, want ROLLBACK", tag.Tag)
+		}
 	})
 }
 

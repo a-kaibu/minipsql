@@ -13,6 +13,9 @@ var (
 	serialRE    = regexp.MustCompile(`(?i)\bserial\b`)
 	boolRE      = regexp.MustCompile(`(?i)\bboolean\b|\bbool\b`)
 	nowRE       = regexp.MustCompile(`(?i)\bnow\(\)`)
+	castRE      = regexp.MustCompile(`::([A-Za-z_][A-Za-z0-9_]*)`)
+	ilikeRE     = regexp.MustCompile(`(?i)\bILIKE\b`)
+	returningRE = regexp.MustCompile(`(?i)\bRETURNING\b`)
 )
 
 func Rewrite(sql string) string {
@@ -21,7 +24,74 @@ func Rewrite(sql string) string {
 	out = serialRE.ReplaceAllString(out, "integer")
 	out = boolRE.ReplaceAllString(out, "integer")
 	out = nowRE.ReplaceAllString(out, "datetime('now')")
+	out = rewritePGCast(out)
+	out = ilikeRE.ReplaceAllString(out, "LIKE")
 	return out
+}
+
+func rewritePGCast(sql string) string {
+	for {
+		loc := castRE.FindStringIndex(sql)
+		if loc == nil {
+			break
+		}
+		typeName := castRE.FindStringSubmatch(sql[loc[0]:])[1]
+		expr := extractCastExpr(sql[:loc[0]])
+		prefix := sql[:loc[0]-len(expr)]
+		suffix := sql[loc[1]:]
+		sql = prefix + "CAST(" + expr + " AS " + typeName + ")" + suffix
+	}
+	return sql
+}
+
+func extractCastExpr(sql string) string {
+	if len(sql) == 0 {
+		return ""
+	}
+	i := len(sql) - 1
+	if sql[i] == '\'' {
+		i--
+		for i >= 0 {
+			if sql[i] == '\'' {
+				if i > 0 && sql[i-1] == '\'' {
+					i -= 2
+					continue
+				}
+				break
+			}
+			i--
+		}
+		return sql[i:]
+	}
+	if sql[i] == ')' {
+		depth := 1
+		i--
+		for i >= 0 && depth > 0 {
+			if sql[i] == ')' {
+				depth++
+			} else if sql[i] == '(' {
+				depth--
+			}
+			i--
+		}
+		i++
+		for i > 0 && isIdentByte(sql[i-1]) {
+			i--
+		}
+		return sql[i:]
+	}
+	for i > 0 && (isIdentByte(sql[i-1]) || sql[i-1] == '.') {
+		i--
+	}
+	return sql[i:]
+}
+
+func isIdentByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_'
+}
+
+func HasReturning(sql string) bool {
+	return returningRE.MatchString(sql)
 }
 
 func SplitStatements(sql string) []string {

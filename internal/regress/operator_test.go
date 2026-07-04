@@ -31,9 +31,8 @@ func TestOperatorLike(t *testing.T) {
 				Want: [][]string{{"bob"}},
 			},
 			"ilike": {
-				SQL:  "SELECT name FROM t WHERE name ILIKE 'alice'",
+				SQL:  "SELECT name FROM t WHERE name ILIKE 'alice' ORDER BY id",
 				Want: [][]string{{"alice"}, {"ALICE"}},
-				Skip: "ILIKE not supported by SQLite",
 			},
 		},
 	})

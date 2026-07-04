@@ -97,7 +97,7 @@ func (s *Session) Execute(ctx context.Context, sql string, args []backend.Value)
 	}
 
 	rewritten := compat.Rewrite(sql)
-	if compat.IsQuery(rewritten) {
+	if compat.IsQuery(rewritten) || compat.HasReturning(rewritten) {
 		result, err := s.Backend.Query(ctx, rewritten, args)
 		return result, nil, err
 	}

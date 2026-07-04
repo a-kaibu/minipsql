@@ -63,7 +63,6 @@ func TestJoinRight(t *testing.T) {
 			"basic": {
 				SQL:  "SELECT e.name, d.name FROM emps e RIGHT JOIN depts d ON e.dept_id = d.id ORDER BY d.name",
 				Want: [][]string{{"alice", "eng"}, {"<nil>", "hr"}, {"bob", "sales"}},
-				Skip: "RIGHT JOIN not supported by SQLite",
 			},
 		},
 	})

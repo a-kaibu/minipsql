@@ -65,12 +65,10 @@ func TestMathFunctions(t *testing.T) {
 			"max_scalar": {
 				SQL:  "SELECT MAX(1, 5, 3)",
 				Want: [][]string{{"5"}},
-				Skip: "multi-arg MAX is not standard SQL aggregate",
 			},
 			"min_scalar": {
 				SQL:  "SELECT MIN(5, 1, 3)",
 				Want: [][]string{{"1"}},
-				Skip: "multi-arg MIN is not standard SQL aggregate",
 			},
 		},
 	})
@@ -95,7 +93,6 @@ func TestTypeCast(t *testing.T) {
 			"pg_cast_syntax": {
 				SQL:  "SELECT '42'::INTEGER",
 				Want: [][]string{{"42"}},
-				Skip: "PostgreSQL :: cast syntax not implemented",
 			},
 		},
 	})

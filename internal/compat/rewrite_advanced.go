@@ -37,6 +37,10 @@ func rewriteRegexOp(sql string, op string, negate bool, icase bool) string {
 		rhsEnd := rhsStart + 1
 		for rhsEnd < len(sql) {
 			if sql[rhsEnd] == '\'' {
+				if rhsEnd+1 < len(sql) && sql[rhsEnd+1] == '\'' {
+					rhsEnd += 2
+					continue
+				}
 				break
 			}
 			if sql[rhsEnd] == '\\' {
@@ -68,12 +72,18 @@ func rewriteRegexOp(sql string, op string, negate bool, icase bool) string {
 
 func findRegexOp(sql string, op string) int {
 	inQuote := false
+	escaped := false
 	for i := 0; i < len(sql); i++ {
-		if sql[i] == '\'' {
+		if sql[i] == '\'' && !escaped {
+			if inQuote && i+1 < len(sql) && sql[i+1] == '\'' {
+				i++
+				continue
+			}
 			inQuote = !inQuote
 			continue
 		}
 		if inQuote {
+			escaped = sql[i] == '\\' && !escaped
 			continue
 		}
 		if i+len(op) > len(sql) {
@@ -145,8 +155,6 @@ func extractExprBefore(sql string, end int) string {
 }
 
 func rewriteSimilarTo(sql string) string {
-	// SIMILAR TO with alternation => regexp_match
-	// SIMILAR TO without alternation => LIKE
 	result := sql
 	upper := strings.ToUpper(sql)
 	for {
@@ -155,7 +163,6 @@ func rewriteSimilarTo(sql string) string {
 			break
 		}
 
-		// Find the expression before "SIMILAR TO"
 		exprEnd := idx
 		for exprEnd > 0 && result[exprEnd-1] == ' ' {
 			exprEnd--
@@ -163,7 +170,6 @@ func rewriteSimilarTo(sql string) string {
 		lhs := extractExprBefore(result, exprEnd)
 		lhsStart := exprEnd - len(lhs)
 
-		// Find the pattern after "SIMILAR TO"
 		patStart := idx + len("SIMILAR TO")
 		for patStart < len(result) && result[patStart] == ' ' {
 			patStart++
@@ -172,7 +178,17 @@ func rewriteSimilarTo(sql string) string {
 			break
 		}
 		patEnd := patStart + 1
-		for patEnd < len(result) && result[patEnd] != '\'' {
+		for patEnd < len(result) {
+			if result[patEnd] == '\'' {
+				if patEnd+1 < len(result) && result[patEnd+1] == '\'' {
+					patEnd += 2
+					continue
+				}
+				break
+			}
+			if result[patEnd] == '\\' {
+				patEnd++
+			}
 			patEnd++
 		}
 		if patEnd >= len(result) {
@@ -181,7 +197,6 @@ func rewriteSimilarTo(sql string) string {
 		patEnd++
 		pattern := result[patStart+1 : patEnd-1]
 
-		// Convert SQL SIMILAR TO pattern to regex
 		regexPat := similarToRegex(pattern)
 		replacement := fmt.Sprintf("regexp_match('%s', %s, '')", regexPat, lhs)
 
@@ -192,7 +207,6 @@ func rewriteSimilarTo(sql string) string {
 }
 
 func similarToRegex(pattern string) string {
-	// SQL SIMILAR TO: % = .*, _ = ., | = alternation, () = grouping
 	var b strings.Builder
 	b.WriteString("^")
 	for i := 0; i < len(pattern); i++ {
@@ -232,15 +246,12 @@ func rewriteNullsOrder(sql string) string {
 		return sql
 	}
 
-	// Parse ORDER BY items and rewrite ones with NULLS FIRST/LAST
 	rewritten := rewriteNullsInOrderBy(orderClause)
 	return prefix + rewritten
 }
 
 func rewriteNullsInOrderBy(orderClause string) string {
-	// "ORDER BY expr1 ASC NULLS FIRST, expr2 DESC NULLS LAST, ..."
 	afterOrderBy := orderClause[len("ORDER BY"):]
-
 	items := splitOrderByItems(afterOrderBy)
 	var rewritten []string
 	for _, item := range items {
@@ -256,6 +267,10 @@ func splitOrderByItems(s string) []string {
 	start := 0
 	for i := 0; i < len(s); i++ {
 		if s[i] == '\'' {
+			if inQuote && i+1 < len(s) && s[i+1] == '\'' {
+				i++
+				continue
+			}
 			inQuote = !inQuote
 			continue
 		}
@@ -276,28 +291,23 @@ func splitOrderByItems(s string) []string {
 }
 
 func rewriteSingleOrderItem(item string) string {
-	upper := strings.ToUpper(item)
-
-	nullsFirstIdx := strings.Index(upper, "NULLS FIRST")
-	nullsLastIdx := strings.Index(upper, "NULLS LAST")
-
-	if nullsFirstIdx < 0 && nullsLastIdx < 0 {
-		return item
-	}
+	trimmedItem := strings.TrimSpace(item)
+	upper := strings.ToUpper(trimmedItem)
 
 	var nullsPos string
 	var cutIdx int
-	if nullsFirstIdx >= 0 {
+	if strings.HasSuffix(upper, " NULLS FIRST") {
 		nullsPos = "FIRST"
-		cutIdx = nullsFirstIdx
-	} else {
+		cutIdx = len(trimmedItem) - len(" NULLS FIRST")
+	} else if strings.HasSuffix(upper, " NULLS LAST") {
 		nullsPos = "LAST"
-		cutIdx = nullsLastIdx
+		cutIdx = len(trimmedItem) - len(" NULLS LAST")
+	} else {
+		return item
 	}
 
-	exprAndDir := strings.TrimSpace(item[:cutIdx])
+	exprAndDir := strings.TrimSpace(trimmedItem[:cutIdx])
 
-	// Extract direction (ASC/DESC) if present
 	upperED := strings.ToUpper(exprAndDir)
 	direction := ""
 	expr := exprAndDir
@@ -309,7 +319,6 @@ func rewriteSingleOrderItem(item string) string {
 		expr = strings.TrimSpace(exprAndDir[:len(exprAndDir)-5])
 	}
 
-	// Build CASE WHEN expr IS NULL THEN 0/1 ELSE 1/0 END
 	var nullVal, nonNullVal string
 	if nullsPos == "FIRST" {
 		nullVal = "0"
@@ -332,20 +341,22 @@ func rewriteGenerateSeries(sql string) string {
 		return sql
 	}
 
-	// Find FROM generate_series(...) [AS alias[(col)]]
 	result := sql
 	for {
-		idx := indexOutsideQuotes(strings.ToUpper(result), "FROM GENERATE_SERIES")
+		idx := indexOutsideQuotes(strings.ToUpper(result), "GENERATE_SERIES")
 		if idx < 0 {
-			// Try without FROM (e.g., SELECT * FROM generate_series(1,5))
-			idx = indexOutsideQuotes(strings.ToUpper(result), "GENERATE_SERIES")
-			if idx < 0 {
-				break
-			}
+			break
 		}
 
-		// Parse generate_series(start, stop[, step]) AS alias(col)
-		fromIdx := strings.LastIndex(strings.ToUpper(result[:idx+5]), "FROM")
+		fromIdx := -1
+		prefix := strings.ToUpper(result[:idx])
+		candidate := strings.LastIndex(prefix, "FROM")
+		if candidate >= 0 {
+			between := strings.TrimSpace(result[candidate+4 : idx])
+			if between == "" {
+				fromIdx = candidate
+			}
+		}
 		if fromIdx < 0 {
 			fromIdx = idx
 		}
@@ -356,7 +367,6 @@ func rewriteGenerateSeries(sql string) string {
 		}
 		parenStart += idx
 
-		// Find matching close paren
 		depth := 1
 		parenEnd := parenStart + 1
 		for parenEnd < len(result) && depth > 0 {
@@ -368,10 +378,13 @@ func rewriteGenerateSeries(sql string) string {
 			parenEnd++
 		}
 
-		args := result[parenStart+1 : parenEnd-1]
-		argParts := strings.Split(args, ",")
+		argsStr := result[parenStart+1 : parenEnd-1]
+		argParts := splitOrderByItems(argsStr)
 		start := strings.TrimSpace(argParts[0])
-		stop := strings.TrimSpace(argParts[1])
+		stop := ""
+		if len(argParts) > 1 {
+			stop = strings.TrimSpace(argParts[1])
+		}
 		step := "1"
 		if len(argParts) > 2 {
 			step = strings.TrimSpace(argParts[2])
@@ -381,36 +394,36 @@ func rewriteGenerateSeries(sql string) string {
 		rest := result[parenEnd:]
 		alias := "_gs_alias"
 		colName := "value"
-		trimmed := strings.TrimSpace(rest)
 		consumed := 0
-		if len(trimmed) > 2 && strings.ToUpper(trimmed[:2]) == "AS" {
-			afterAs := strings.TrimSpace(trimmed[2:])
-			// Parse alias name
-			aliasEnd := 0
-			for aliasEnd < len(afterAs) && (isIdentByte(afterAs[aliasEnd]) || afterAs[aliasEnd] == '_') {
-				aliasEnd++
+		trimmed := strings.TrimSpace(rest)
+		leadingSpace := len(rest) - len(trimmed)
+		if len(trimmed) >= 2 && strings.ToUpper(trimmed[:2]) == "AS" {
+			pos := 2
+			for pos < len(trimmed) && trimmed[pos] == ' ' {
+				pos++
 			}
-			if aliasEnd > 0 {
-				alias = afterAs[:aliasEnd]
-				afterAlias := strings.TrimSpace(afterAs[aliasEnd:])
-				if len(afterAlias) > 0 && afterAlias[0] == '(' {
-					closeP := strings.Index(afterAlias, ")")
-					if closeP > 0 {
-						colName = strings.TrimSpace(afterAlias[1:closeP])
-						consumed = len(rest) - len(trimmed) + 2 + (len(afterAs) - len(afterAlias)) + closeP + 1 + aliasEnd
-					}
-				} else {
-					consumed = len(rest) - len(trimmed) + 2 + aliasEnd + (len(afterAs) - len(afterAlias) - aliasEnd)
+			aliasStart := pos
+			for pos < len(trimmed) && (isIdentByte(trimmed[pos]) || trimmed[pos] == '_') {
+				pos++
+			}
+			if pos > aliasStart {
+				alias = trimmed[aliasStart:pos]
+				for pos < len(trimmed) && trimmed[pos] == ' ' {
+					pos++
 				}
+				if pos < len(trimmed) && trimmed[pos] == '(' {
+					closeP := strings.Index(trimmed[pos:], ")")
+					if closeP > 0 {
+						colName = strings.TrimSpace(trimmed[pos+1 : pos+closeP])
+						pos += closeP + 1
+					}
+				}
+				consumed = leadingSpace + pos
 			}
-		}
-		if consumed == 0 {
-			consumed = 0
 		}
 
-		// Determine comparison operator based on step sign
 		cmpOp := "<="
-		if strings.HasPrefix(step, "-") {
+		if strings.HasPrefix(strings.TrimSpace(step), "-") {
 			cmpOp = ">="
 		}
 
@@ -419,20 +432,36 @@ func rewriteGenerateSeries(sql string) string {
 			colName, start, colName, step, colName, step, cmpOp, stop, colName, alias,
 		)
 
-		afterPart := result[parenEnd+consumed:]
-		result = result[:fromIdx] + "FROM " + cte + " " + afterPart
+		var afterPart string
+		if consumed > 0 {
+			afterPart = rest[consumed:]
+		} else {
+			afterPart = rest
+		}
+
+		if fromIdx == idx {
+			result = result[:fromIdx] + cte + " " + afterPart
+		} else {
+			result = result[:fromIdx] + "FROM " + cte + " " + afterPart
+		}
 	}
 	return result
 }
 
 func indexOutsideQuotes(sql string, substr string) int {
 	inQuote := false
+	escaped := false
 	for i := 0; i <= len(sql)-len(substr); i++ {
-		if sql[i] == '\'' {
+		if sql[i] == '\'' && !escaped {
+			if inQuote && i+1 < len(sql) && sql[i+1] == '\'' {
+				i++
+				continue
+			}
 			inQuote = !inQuote
 			continue
 		}
 		if inQuote {
+			escaped = sql[i] == '\\' && !escaped
 			continue
 		}
 		if sql[i:i+len(substr)] == substr {
@@ -444,13 +473,19 @@ func indexOutsideQuotes(sql string, substr string) int {
 
 func lastIndexOutsideQuotes(sql string, substr string) int {
 	inQuote := false
+	escaped := false
 	last := -1
 	for i := 0; i <= len(sql)-len(substr); i++ {
-		if sql[i] == '\'' {
+		if sql[i] == '\'' && !escaped {
+			if inQuote && i+1 < len(sql) && sql[i+1] == '\'' {
+				i++
+				continue
+			}
 			inQuote = !inQuote
 			continue
 		}
 		if inQuote {
+			escaped = sql[i] == '\\' && !escaped
 			continue
 		}
 		if sql[i:i+len(substr)] == substr {

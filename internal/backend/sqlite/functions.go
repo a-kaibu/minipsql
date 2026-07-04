@@ -4,34 +4,58 @@ import (
 	"database/sql/driver"
 	"fmt"
 	"regexp"
+	"sync"
 
 	"modernc.org/sqlite"
 )
+
+var regexCache sync.Map
 
 func init() {
 	sqlite.MustRegisterDeterministicScalarFunction("regexp_match", 3, regexpMatchFunc)
 }
 
-// regexp_match(pattern, text, flags)
-// flags: 'i' for case-insensitive, '' for case-sensitive
 func regexpMatchFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
 	if len(args) != 3 {
 		return nil, fmt.Errorf("regexp_match requires 3 arguments")
 	}
-	pattern, ok1 := args[0].(string)
-	text, ok2 := args[1].(string)
-	flags, ok3 := args[2].(string)
-	if !ok1 || !ok2 || !ok3 {
-		return int64(0), nil
+	if args[0] == nil || args[1] == nil || args[2] == nil {
+		return nil, nil
 	}
-	if flags == "i" {
-		pattern = "(?i)" + pattern
+
+	toString := func(v driver.Value) string {
+		switch val := v.(type) {
+		case string:
+			return val
+		case []byte:
+			return string(val)
+		default:
+			return fmt.Sprintf("%v", val)
+		}
 	}
-	matched, err := regexp.MatchString(pattern, text)
-	if err != nil {
-		return int64(0), nil
+
+	pattern := toString(args[0])
+	text := toString(args[1])
+	flags := toString(args[2])
+
+	cacheKey := flags + "\x00" + pattern
+	var rx *regexp.Regexp
+	if val, ok := regexCache.Load(cacheKey); ok {
+		rx = val.(*regexp.Regexp)
+	} else {
+		pat := pattern
+		if flags == "i" {
+			pat = "(?i)" + pat
+		}
+		var err error
+		rx, err = regexp.Compile(pat)
+		if err != nil {
+			return nil, nil
+		}
+		regexCache.Store(cacheKey, rx)
 	}
-	if matched {
+
+	if rx.MatchString(text) {
 		return int64(1), nil
 	}
 	return int64(0), nil

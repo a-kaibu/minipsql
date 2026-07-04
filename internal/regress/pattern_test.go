@@ -12,22 +12,18 @@ func TestRegexOperator(t *testing.T) {
 		Cases: map[string]testCase{
 			"tilde_match": {
 				SQL:  "SELECT word FROM words WHERE word ~ 'hel' ORDER BY id",
-				Skip: "not yet implemented: regex operator ~",
 				Want: [][]string{{"hello"}, {"help"}},
 			},
 			"tilde_anchored": {
 				SQL:  "SELECT word FROM words WHERE word ~ '^hel' ORDER BY id",
-				Skip: "not yet implemented: regex operator ~",
 				Want: [][]string{{"hello"}, {"help"}},
 			},
 			"tilde_star_icase": {
 				SQL:  "SELECT word FROM words WHERE word ~* 'hello' ORDER BY id",
-				Skip: "not yet implemented: regex operator ~*",
 				Want: [][]string{{"hello"}, {"Hello"}},
 			},
 			"not_tilde": {
 				SQL:  "SELECT word FROM words WHERE word !~ 'hel' ORDER BY id",
-				Skip: "not yet implemented: regex operator !~",
 				Want: [][]string{{"world"}, {"Hello"}, {"WORLD"}},
 			},
 		},
@@ -44,12 +40,10 @@ func TestSimilarTo(t *testing.T) {
 		Cases: map[string]testCase{
 			"similar_to_basic": {
 				SQL:  "SELECT val FROM texts WHERE val SIMILAR TO 'a_c' ORDER BY id",
-				Skip: "not yet implemented: SIMILAR TO",
 				Want: [][]string{{"abc"}, {"adc"}, {"aec"}},
 			},
 			"similar_to_alternation": {
 				SQL:  "SELECT val FROM texts WHERE val SIMILAR TO '(abc|xyz)' ORDER BY id",
-				Skip: "not yet implemented: SIMILAR TO",
 				Want: [][]string{{"abc"}, {"xyz"}},
 			},
 		},

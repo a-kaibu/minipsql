@@ -40,17 +40,14 @@ func TestOrderByNulls(t *testing.T) {
 		Cases: map[string]testCase{
 			"nulls_first": {
 				SQL:  "SELECT id, value FROM nullable ORDER BY value NULLS FIRST, id",
-				Skip: "not yet implemented: NULLS FIRST/LAST",
 				Want: [][]string{{"2", "<nil>"}, {"4", "<nil>"}, {"1", "10"}, {"5", "20"}, {"3", "30"}},
 			},
 			"nulls_last": {
 				SQL:  "SELECT id, value FROM nullable ORDER BY value NULLS LAST, id",
-				Skip: "not yet implemented: NULLS FIRST/LAST",
 				Want: [][]string{{"1", "10"}, {"5", "20"}, {"3", "30"}, {"2", "<nil>"}, {"4", "<nil>"}},
 			},
 			"desc_nulls_first": {
 				SQL:  "SELECT id, value FROM nullable ORDER BY value DESC NULLS FIRST, id",
-				Skip: "not yet implemented: NULLS FIRST/LAST",
 				Want: [][]string{{"2", "<nil>"}, {"4", "<nil>"}, {"3", "30"}, {"5", "20"}, {"1", "10"}},
 			},
 		},

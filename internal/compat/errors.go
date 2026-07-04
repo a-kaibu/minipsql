@@ -23,3 +23,7 @@ func Error(err error) PGError {
 		return PGError{Code: "XX000", Message: msg}
 	}
 }
+
+func (e *PGError) Error() string {
+	return e.Message
+}

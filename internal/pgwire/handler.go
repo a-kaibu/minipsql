@@ -63,27 +63,40 @@ func (h *Handler) ServeConn(ctx context.Context, conn net.Conn) {
 	writeBackendKeyData(conn, s.ID, s.Secret)
 	writeReady(conn, s.TxState)
 
+	errorPending := false
 	for {
 		typ, body, err := readMessage(br)
 		if err != nil {
 			return
 		}
+		if errorPending && typ != 'S' {
+			continue
+		}
 		switch typ {
 		case 'Q':
 			h.handleSimple(ctx, conn, s, cstring(body))
 		case 'P':
-			h.handleParse(conn, s, body)
+			if !h.handleParse(conn, s, body) {
+				errorPending = true
+			}
 		case 'B':
-			h.handleBind(conn, s, body)
+			if !h.handleBind(conn, s, body) {
+				errorPending = true
+			}
 		case 'D':
-			h.handleDescribe(ctx, conn, s, body)
+			if !h.handleDescribe(ctx, conn, s, body) {
+				errorPending = true
+			}
 		case 'E':
-			h.handleExecute(ctx, conn, s, body)
+			if !h.handleExecute(ctx, conn, s, body) {
+				errorPending = true
+			}
 		case 'C':
 			writeCloseComplete(conn)
 		case 'H':
 			writeFlush(conn)
 		case 'S':
+			errorPending = false
 			writeReady(conn, s.TxState)
 		case 'X':
 			return
@@ -137,7 +150,7 @@ func (h *Handler) startup(ctx context.Context, br *bufio.Reader, w io.Writer) (m
 
 func (h *Handler) handleSimple(ctx context.Context, w io.Writer, s *session.Session, sql string) {
 	for _, stmt := range compat.SplitStatements(sql) {
-		result, tag, err := s.Execute(ctx, stmt, nil)
+		result, tag, err := h.executeRecover(ctx, s, stmt, nil)
 		if err != nil {
 			writeError(w, compat.Error(err))
 			writeReady(w, s.TxState)
@@ -158,7 +171,16 @@ func (h *Handler) handleSimple(ctx context.Context, w io.Writer, s *session.Sess
 	writeReady(w, s.TxState)
 }
 
-func (h *Handler) handleParse(w io.Writer, s *session.Session, body []byte) {
+func (h *Handler) executeRecover(ctx context.Context, s *session.Session, sql string, args []backend.Value) (result *backend.Result, tag *backend.CommandTag, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("internal error: %v", r)
+		}
+	}()
+	return s.Execute(ctx, sql, args)
+}
+
+func (h *Handler) handleParse(w io.Writer, s *session.Session, body []byte) bool {
 	r := bytes.NewReader(body)
 	name := readCString(r)
 	sql := readCString(r)
@@ -172,16 +194,17 @@ func (h *Handler) handleParse(w io.Writer, s *session.Session, body []byte) {
 	}
 	s.PreparedStatements[name] = &session.PreparedStatement{Name: name, SQL: sql, ParamTypeOIDs: oids, RewrittenSQL: compat.Rewrite(sql)}
 	writeParseComplete(w)
+	return true
 }
 
-func (h *Handler) handleBind(w io.Writer, s *session.Session, body []byte) {
+func (h *Handler) handleBind(w io.Writer, s *session.Session, body []byte) bool {
 	r := bytes.NewReader(body)
 	portalName := readCString(r)
 	stmtName := readCString(r)
 	stmt, ok := s.PreparedStatements[stmtName]
 	if !ok {
 		writeError(w, compat.PGError{Code: "26000", Message: "prepared statement does not exist"})
-		return
+		return false
 	}
 	formatCount := int(readInt16(r))
 	formats := make([]int16, formatCount)
@@ -213,12 +236,13 @@ func (h *Handler) handleBind(w io.Writer, s *session.Session, body []byte) {
 	}
 	s.Portals[portalName] = &session.Portal{Name: portalName, StatementName: stmtName, Args: args, ResultFormats: resultFormats}
 	writeBindComplete(w)
+	return true
 }
 
-func (h *Handler) handleDescribe(ctx context.Context, w io.Writer, s *session.Session, body []byte) {
+func (h *Handler) handleDescribe(ctx context.Context, w io.Writer, s *session.Session, body []byte) bool {
 	if len(body) == 0 {
 		writeNoData(w)
-		return
+		return true
 	}
 	kind := body[0]
 	name := cstring(body[1:])
@@ -228,7 +252,7 @@ func (h *Handler) handleDescribe(ctx context.Context, w io.Writer, s *session.Se
 		writeParameterDescription(w, stmt)
 		if stmt == nil || !compat.IsQuery(stmt.RewrittenSQL) {
 			writeNoData(w)
-			return
+			return true
 		}
 		args := make([]backend.Value, len(stmt.ParamTypeOIDs))
 		for i := range args {
@@ -237,22 +261,23 @@ func (h *Handler) handleDescribe(ctx context.Context, w io.Writer, s *session.Se
 		result, _, err := s.Execute(ctx, stmt.SQL, args)
 		if err != nil {
 			writeError(w, compat.Error(err))
-			return
+			return false
 		}
 		if result == nil {
 			writeNoData(w)
-			return
+			return true
 		}
 		writeRowDescription(w, result.Columns)
+		return true
 	case 'P':
 		p := s.Portals[name]
 		if p == nil {
 			writeError(w, compat.PGError{Code: "34000", Message: "portal does not exist"})
-			return
+			return false
 		}
 		if err := h.ensurePortalExecuted(ctx, s, p); err != nil {
 			writeError(w, compat.Error(err))
-			return
+			return false
 		}
 		if p.Result != nil {
 			applyResultFormats(p.Result, p.ResultFormats)
@@ -260,23 +285,25 @@ func (h *Handler) handleDescribe(ctx context.Context, w io.Writer, s *session.Se
 		} else {
 			writeNoData(w)
 		}
+		return true
 	default:
 		writeNoData(w)
+		return true
 	}
 }
 
-func (h *Handler) handleExecute(ctx context.Context, w io.Writer, s *session.Session, body []byte) {
+func (h *Handler) handleExecute(ctx context.Context, w io.Writer, s *session.Session, body []byte) bool {
 	r := bytes.NewReader(body)
 	name := readCString(r)
 	_ = readInt32(r)
 	p := s.Portals[name]
 	if p == nil {
 		writeError(w, compat.PGError{Code: "34000", Message: "portal does not exist"})
-		return
+		return false
 	}
 	if err := h.ensurePortalExecuted(ctx, s, p); err != nil {
 		writeError(w, compat.Error(err))
-		return
+		return false
 	}
 	if p.Result != nil {
 		applyResultFormats(p.Result, p.ResultFormats)
@@ -289,6 +316,7 @@ func (h *Handler) handleExecute(ctx context.Context, w io.Writer, s *session.Ses
 	} else if p.CommandTag != nil {
 		writeCommandComplete(w, p.CommandTag.Tag)
 	}
+	return true
 }
 
 func applyResultFormats(result *backend.Result, formats []int16) {
@@ -306,7 +334,12 @@ func applyResultFormats(result *backend.Result, formats []int16) {
 	}
 }
 
-func (h *Handler) ensurePortalExecuted(ctx context.Context, s *session.Session, p *session.Portal) error {
+func (h *Handler) ensurePortalExecuted(ctx context.Context, s *session.Session, p *session.Portal) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("internal error: %v", r)
+		}
+	}()
 	if p.Result != nil || p.CommandTag != nil {
 		return nil
 	}

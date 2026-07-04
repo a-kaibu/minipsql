@@ -10,6 +10,9 @@ import (
 func tryPGCatalog(ctx context.Context, b backend.Backend, sql string, info SessionInfo) (*backend.Result, bool, error) {
 	_ = info
 	lower := strings.ToLower(strings.TrimSpace(sql))
+	if strings.Contains(lower, "join") || strings.Contains(lower, "left outer") {
+		return nil, false, nil
+	}
 	switch {
 	case strings.Contains(lower, "pg_catalog.pg_namespace"):
 		return pgNamespace(), true, nil

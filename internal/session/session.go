@@ -3,8 +3,8 @@ package session
 import (
 	"context"
 
-	"github.com/yashikota/minipostgresql/internal/backend"
-	"github.com/yashikota/minipostgresql/internal/compat"
+	"github.com/yashikota/minipsql/internal/backend"
+	"github.com/yashikota/minipsql/internal/compat"
 )
 
 type TxState byte

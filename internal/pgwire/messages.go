@@ -8,9 +8,9 @@ import (
 	"math"
 	"strconv"
 
-	"github.com/yashikota/minipostgresql/internal/backend"
-	"github.com/yashikota/minipostgresql/internal/compat"
-	"github.com/yashikota/minipostgresql/internal/session"
+	"github.com/yashikota/minipsql/internal/backend"
+	"github.com/yashikota/minipsql/internal/compat"
+	"github.com/yashikota/minipsql/internal/session"
 )
 
 func writeAuthOK(w io.Writer) {

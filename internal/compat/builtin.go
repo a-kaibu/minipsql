@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/yashikota/minipostgresql/internal/backend"
+	"github.com/yashikota/minipsql/internal/backend"
 )
 
 type SessionInfo struct {

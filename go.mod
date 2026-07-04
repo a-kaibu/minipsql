@@ -1,4 +1,4 @@
-module github.com/yashikota/minipostgresql
+module github.com/yashikota/minipsql
 
 go 1.26.4
 

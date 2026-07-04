@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/yashikota/minipostgresql/internal/backend"
-	"github.com/yashikota/minipostgresql/internal/backend/sqlite"
-	"github.com/yashikota/minipostgresql/internal/session"
+	"github.com/yashikota/minipsql/internal/backend"
+	"github.com/yashikota/minipsql/internal/backend/sqlite"
+	"github.com/yashikota/minipsql/internal/session"
 )
 
 func TestSessionBasicDDLDML(t *testing.T) {
@@ -15,7 +15,9 @@ func TestSessionBasicDDLDML(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer b.Close(ctx)
+	defer func() {
+		_ = b.Close(ctx)
+	}()
 
 	s := session.New(1, 1, "default", "mini", b)
 	execOK(t, ctx, s, "create table users(id integer primary key, name text)")
@@ -45,7 +47,9 @@ func TestSessionBuiltins(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer b.Close(ctx)
+	defer func() {
+		_ = b.Close(ctx)
+	}()
 
 	s := session.New(1, 1, "default", "mini", b)
 	cases := map[string]string{
@@ -75,7 +79,9 @@ func TestSessionTransactions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer b.Close(ctx)
+	defer func() {
+		_ = b.Close(ctx)
+	}()
 
 	s := session.New(1, 1, "default", "mini", b)
 	execOK(t, ctx, s, "create table users(id integer primary key, name text)")
@@ -109,7 +115,9 @@ func TestInformationSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer b.Close(ctx)
+	defer func() {
+		_ = b.Close(ctx)
+	}()
 
 	s := session.New(1, 1, "default", "mini", b)
 	execOK(t, ctx, s, "create table users(id integer primary key, name text)")
@@ -140,7 +148,9 @@ func TestPGCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer b.Close(ctx)
+	defer func() {
+		_ = b.Close(ctx)
+	}()
 
 	s := session.New(1, 1, "default", "mini", b)
 	execOK(t, ctx, s, "create table users(id integer primary key, name text)")

@@ -6,14 +6,14 @@ It accepts PostgreSQL client connections and uses SQLite as the execution backen
 ## Usage
 
 ```bash
-go run ./cmd/minipsql serve
+go run . serve
 psql -h localhost -p 15432 -U mini default -c "select 1"
 ```
 
 Run schema SQL for each new in-memory database:
 
 ```bash
-go run ./cmd/minipsql serve --init schema.sql
+go run . serve --init schema.sql
 ```
 
 ## Compatibility Stress Tests

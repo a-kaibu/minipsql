@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/yashikota/minipostgresql/internal/backend"
+	"github.com/yashikota/minipsql/internal/backend"
 )
 
 func tryPGCatalog(ctx context.Context, b backend.Backend, sql string, info SessionInfo) (*backend.Result, bool, error) {

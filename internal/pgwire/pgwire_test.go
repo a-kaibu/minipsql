@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/yashikota/minipostgresql/internal/compat"
-	"github.com/yashikota/minipostgresql/internal/pgwire"
+	"github.com/yashikota/minipsql/internal/compat"
+	"github.com/yashikota/minipsql/internal/pgwire"
 )
 
 func TestPGXSelectTypes(t *testing.T) {
@@ -22,7 +22,9 @@ func TestPGXSelectTypes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close(ctx)
+	defer func() {
+		_ = conn.Close(ctx)
+	}()
 
 	rows, err := conn.Query(ctx, "select 1 as i, 'hello' as t, 1.5 as f")
 	if err != nil {
@@ -69,7 +71,9 @@ func TestPGXExtendedQueryWithParameter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close(ctx)
+	defer func() {
+		_ = conn.Close(ctx)
+	}()
 
 	var got string
 	if err := conn.QueryRow(ctx, "select $1::text", "hello").Scan(&got); err != nil {
@@ -91,7 +95,9 @@ func TestPGXExtendedQueryWithDMLParameter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close(ctx)
+	defer func() {
+		_ = conn.Close(ctx)
+	}()
 
 	if _, err := conn.Exec(ctx, "create table users(id integer primary key, name text)"); err != nil {
 		t.Fatal(err)
@@ -119,7 +125,9 @@ func TestPGXTransactionRollbackAndCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close(ctx)
+	defer func() {
+		_ = conn.Close(ctx)
+	}()
 
 	if _, err := conn.Exec(ctx, "create table users(id integer primary key, name text)"); err != nil {
 		t.Fatal(err)
@@ -171,7 +179,9 @@ func TestPGXInitSQL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close(ctx)
+	defer func() {
+		_ = conn.Close(ctx)
+	}()
 
 	var name string
 	if err := conn.QueryRow(ctx, "select name from users where id = 1").Scan(&name); err != nil {

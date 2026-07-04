@@ -7,7 +7,7 @@ import (
 	"net"
 	"sync"
 
-	"github.com/yashikota/minipostgresql/internal/pgwire"
+	"github.com/yashikota/minipsql/internal/pgwire"
 )
 
 type Config struct {
@@ -38,7 +38,9 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer ln.Close()
+	defer func() {
+		_ = ln.Close()
+	}()
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, 1)

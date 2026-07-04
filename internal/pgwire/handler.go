@@ -13,10 +13,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yashikota/minipostgresql/internal/backend"
-	"github.com/yashikota/minipostgresql/internal/backend/sqlite"
-	"github.com/yashikota/minipostgresql/internal/compat"
-	"github.com/yashikota/minipostgresql/internal/session"
+	"github.com/yashikota/minipsql/internal/backend"
+	"github.com/yashikota/minipsql/internal/backend/sqlite"
+	"github.com/yashikota/minipsql/internal/compat"
+	"github.com/yashikota/minipsql/internal/session"
 )
 
 const (
@@ -33,7 +33,9 @@ func NewHandler() *Handler {
 }
 
 func (h *Handler) ServeConn(ctx context.Context, conn net.Conn) {
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close()
+	}()
 	br := bufio.NewReader(conn)
 	params, ok := h.startup(ctx, br, conn)
 	if !ok {
@@ -45,7 +47,9 @@ func (h *Handler) ServeConn(ctx context.Context, conn net.Conn) {
 		writeError(conn, compat.Error(err))
 		return
 	}
-	defer b.Close(ctx)
+	defer func() {
+		_ = b.Close(ctx)
+	}()
 
 	s := session.New(randInt32(), randInt32(), params["database"], params["user"], b)
 	if err := h.runInitSQL(ctx, s); err != nil {

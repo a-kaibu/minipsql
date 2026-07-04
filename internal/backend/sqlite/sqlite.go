@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yashikota/minipostgresql/internal/backend"
-	"github.com/yashikota/minipostgresql/internal/compat"
+	"github.com/yashikota/minipsql/internal/backend"
+	"github.com/yashikota/minipsql/internal/compat"
 	_ "modernc.org/sqlite"
 )
 
@@ -36,7 +36,9 @@ func (b *Backend) Query(ctx context.Context, query string, args []backend.Value)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() {
+		_ = rows.Close()
+	}()
 
 	names, err := rows.Columns()
 	if err != nil {

@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yashikota/minipostgresql/internal/backend"
+	"github.com/yashikota/minipsql/internal/backend"
 )
 
 func tryInformationSchema(ctx context.Context, b backend.Backend, sql string, info SessionInfo) (*backend.Result, bool, error) {

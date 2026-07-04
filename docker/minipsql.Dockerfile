@@ -3,9 +3,9 @@ FROM golang:1.26-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
-COPY cmd/ ./cmd/
+COPY main.go ./
 COPY internal/ ./internal/
-RUN go build -o /out/minipsql ./cmd/minipsql
+RUN go build -o /out/minipsql .
 
 FROM debian:bookworm-slim
 

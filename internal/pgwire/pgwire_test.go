@@ -58,6 +58,56 @@ func TestPGXSelectTypes(t *testing.T) {
 	}
 }
 
+func TestPGXExtendedQueryWithParameter(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	addr, stop := startTestServer(t, ctx)
+	defer stop()
+
+	conn, err := pgx.Connect(ctx, "postgres://mini@"+addr+"/default?sslmode=disable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+
+	var got string
+	if err := conn.QueryRow(ctx, "select $1::text", "hello").Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != "hello" {
+		t.Fatalf("got %q, want hello", got)
+	}
+}
+
+func TestPGXExtendedQueryWithDMLParameter(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	addr, stop := startTestServer(t, ctx)
+	defer stop()
+
+	conn, err := pgx.Connect(ctx, "postgres://mini@"+addr+"/default?sslmode=disable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+
+	if _, err := conn.Exec(ctx, "create table users(id integer primary key, name text)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, "insert into users values ($1, $2)", 1, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	var name string
+	if err := conn.QueryRow(ctx, "select name from users where id = $1", 1).Scan(&name); err != nil {
+		t.Fatal(err)
+	}
+	if name != "alice" {
+		t.Fatalf("name = %q, want alice", name)
+	}
+}
+
 func startTestServer(t *testing.T, ctx context.Context) (string, func()) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

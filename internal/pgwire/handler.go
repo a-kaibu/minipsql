@@ -144,6 +144,9 @@ func (h *Handler) handleParse(w io.Writer, s *session.Session, body []byte) {
 	for i := range oids {
 		oids[i] = readUint32(r)
 	}
+	if len(oids) == 0 {
+		oids = make([]uint32, compat.ParamCount(sql))
+	}
 	s.PreparedStatements[name] = &session.PreparedStatement{Name: name, SQL: sql, ParamTypeOIDs: oids, RewrittenSQL: compat.Rewrite(sql)}
 	writeParseComplete(w)
 }
@@ -200,11 +203,15 @@ func (h *Handler) handleDescribe(ctx context.Context, w io.Writer, s *session.Se
 	case 'S':
 		stmt := s.PreparedStatements[name]
 		writeParameterDescription(w, stmt)
-		if stmt == nil || len(stmt.ParamTypeOIDs) != 0 {
+		if stmt == nil || !compat.IsQuery(stmt.RewrittenSQL) {
 			writeNoData(w)
 			return
 		}
-		result, _, err := s.Execute(ctx, stmt.SQL, nil)
+		args := make([]backend.Value, len(stmt.ParamTypeOIDs))
+		for i := range args {
+			args[i] = backend.Value{Kind: backend.ValueNull}
+		}
+		result, _, err := s.Execute(ctx, stmt.SQL, args)
 		if err != nil {
 			writeError(w, compat.Error(err))
 			return

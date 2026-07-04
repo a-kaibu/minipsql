@@ -2,6 +2,7 @@ package compat
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -75,6 +76,20 @@ func TxCommand(sql string) string {
 	default:
 		return ""
 	}
+}
+
+func ParamCount(sql string) int {
+	max := 0
+	for _, match := range paramRE.FindAllStringSubmatch(sql, -1) {
+		if len(match) < 2 {
+			continue
+		}
+		n, err := strconv.Atoi(match[1])
+		if err == nil && n > max {
+			max = n
+		}
+	}
+	return max
 }
 
 func firstWord(sql string) string {

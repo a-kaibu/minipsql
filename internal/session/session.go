@@ -197,11 +197,13 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 	lower := strings.ToLower(q)
 
 	if strings.HasPrefix(lower, "set ") {
-		parts := strings.SplitN(q[4:], "=", 2)
-		if len(parts) == 1 {
-			parts = strings.SplitN(q[4:], " to ", 2)
-			if len(parts) == 1 {
-				parts = strings.SplitN(strings.ToLower(q[4:]), " to ", 2)
+		var parts []string
+		if idx := strings.Index(q[4:], "="); idx >= 0 {
+			parts = []string{q[4 : 4+idx], q[4+idx+1:]}
+		} else {
+			lowerSuffix := strings.ToLower(q[4:])
+			if idx := strings.Index(lowerSuffix, " to "); idx >= 0 {
+				parts = []string{q[4 : 4+idx], q[4+idx+4:]}
 			}
 		}
 		if len(parts) == 2 {

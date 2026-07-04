@@ -126,7 +126,7 @@ func extractCastExpr(sql string) string {
 		}
 		return sql[i:]
 	}
-	for i > 0 && (isIdentByte(sql[i-1]) || sql[i-1] == '.' || sql[i-1] == '-') {
+	for i > 0 && (isIdentByte(sql[i-1]) || sql[i-1] == '.') {
 		i--
 	}
 	return sql[i:]

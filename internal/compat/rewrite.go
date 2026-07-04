@@ -26,6 +26,10 @@ func Rewrite(sql string) string {
 	out = nowRE.ReplaceAllString(out, "datetime('now')")
 	out = rewritePGCast(out)
 	out = ilikeRE.ReplaceAllString(out, "LIKE")
+	out = rewriteRegexOps(out)
+	out = rewriteSimilarTo(out)
+	out = rewriteNullsOrder(out)
+	out = rewriteGenerateSeries(out)
 	return out
 }
 

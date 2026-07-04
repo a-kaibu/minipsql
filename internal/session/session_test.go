@@ -134,6 +134,39 @@ func TestInformationSchema(t *testing.T) {
 	}
 }
 
+func TestPGCatalog(t *testing.T) {
+	ctx := context.Background()
+	b, err := sqlite.New(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close(ctx)
+
+	s := session.New(1, 1, "default", "mini", b)
+	execOK(t, ctx, s, "create table users(id integer primary key, name text)")
+
+	namespace := queryOK(t, ctx, s, "select * from pg_catalog.pg_namespace")
+	if got := namespace.Rows[0][1].Value; got != "public" {
+		t.Fatalf("nspname = %v, want public", got)
+	}
+	types := queryOK(t, ctx, s, "select * from pg_catalog.pg_type")
+	if len(types.Rows) == 0 {
+		t.Fatal("pg_type returned no rows")
+	}
+	classes := queryOK(t, ctx, s, "select * from pg_catalog.pg_class")
+	if got := classes.Rows[0][1].Value; got != "users" {
+		t.Fatalf("relname = %v, want users", got)
+	}
+	attrs := queryOK(t, ctx, s, "select * from pg_catalog.pg_attribute")
+	if len(attrs.Rows) != 2 {
+		t.Fatalf("pg_attribute rows = %d, want 2", len(attrs.Rows))
+	}
+	tables := queryOK(t, ctx, s, "select * from pg_catalog.pg_tables")
+	if got := tables.Rows[0][1].Value; got != "users" {
+		t.Fatalf("tablename = %v, want users", got)
+	}
+}
+
 func execOK(t *testing.T, ctx context.Context, s *session.Session, sql string) {
 	t.Helper()
 	result, tag, err := s.Execute(ctx, sql, nil)

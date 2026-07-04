@@ -44,6 +44,9 @@ func TryHandleBuiltin(ctx context.Context, b backend.Backend, sql string, info S
 	if result, ok, err := tryInformationSchema(ctx, b, q, info); ok || err != nil {
 		return result, ok, err
 	}
+	if result, ok, err := tryPGCatalog(ctx, b, q, info); ok || err != nil {
+		return result, ok, err
+	}
 
 	switch lower {
 	case "select version()":

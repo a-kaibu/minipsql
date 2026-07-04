@@ -39,6 +39,36 @@ func TestSessionBasicDDLDML(t *testing.T) {
 	}
 }
 
+func TestSessionBuiltins(t *testing.T) {
+	ctx := context.Background()
+	b, err := sqlite.New(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close(ctx)
+
+	s := session.New(1, 1, "default", "mini", b)
+	cases := map[string]string{
+		"select version()":                 "PostgreSQL 14.0 compatible minipsql",
+		"show server_version":              "14.0",
+		"show server_version_num":          "140000",
+		"show client_encoding":             "UTF8",
+		"show standard_conforming_strings": "on",
+		"show search_path":                 "\"$user\", public",
+		"select current_database()":        "default",
+		"select current_schema()":          "public",
+		"select current_user":              "mini",
+	}
+	for sql, want := range cases {
+		t.Run(sql, func(t *testing.T) {
+			result := queryOK(t, ctx, s, sql)
+			if got := result.Rows[0][0].Value; got != want {
+				t.Fatalf("%s = %v, want %v", sql, got, want)
+			}
+		})
+	}
+}
+
 func execOK(t *testing.T, ctx context.Context, s *session.Session, sql string) {
 	t.Helper()
 	result, tag, err := s.Execute(ctx, sql, nil)

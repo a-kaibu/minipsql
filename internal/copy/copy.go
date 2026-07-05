@@ -370,7 +370,9 @@ func tokenize(sql string) []string {
 				}
 				j++
 			}
-			j++ // closing quote
+			if j < n {
+				j++ // closing quote
+			}
 			tokens = append(tokens, string(runes[i:j]))
 			i = j
 			continue

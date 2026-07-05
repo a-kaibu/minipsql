@@ -25,6 +25,10 @@ on:
       - ".github/workflows/compat-tests.yaml"
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   compat-tests:
     runs-on: ubuntu-latest
@@ -57,19 +61,85 @@ jobs:
         with:
           aqua_version: v2.60.1
 
-      - name: Run PostgreSQL regress
-        id: regress
-        run: |
-          task regress || true
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
 
-      - name: Run SQLancer
-        id: sqlancer
+      - name: Cache Docker layers (postgres-regress)
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: /tmp/.buildx-cache-regress
+          key: v1-buildx-regress-${{ runner.os }}-${{ hashFiles('docker/postgres-regress.Dockerfile') }}
+          restore-keys: |
+            v1-buildx-regress-${{ runner.os }}-
+
+      - name: Cache Docker layers (sqlancer)
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: /tmp/.buildx-cache-sqlancer
+          key: v1-buildx-sqlancer-${{ runner.os }}-${{ hashFiles('docker/sqlancer.Dockerfile') }}
+          restore-keys: |
+            v1-buildx-sqlancer-${{ runner.os }}-
+
+      - parallel:
+        - name: Build postgres-regress image
+          uses: docker/build-push-action@14487ce63c7a62a4a324b0bfb37086795e31c6c1 # v6.16.0
+          with:
+            context: .
+            file: docker/postgres-regress.Dockerfile
+            load: true
+            tags: minipsql-postgres-regress:latest
+            cache-from: type=local,src=/tmp/.buildx-cache-regress
+            cache-to: type=local,dest=/tmp/.buildx-cache-regress-new,mode=max
+
+        - name: Build sqlancer image
+          uses: docker/build-push-action@14487ce63c7a62a4a324b0bfb37086795e31c6c1 # v6.16.0
+          with:
+            context: .
+            file: docker/sqlancer.Dockerfile
+            load: true
+            tags: minipsql-sqlancer:latest
+            cache-from: type=local,src=/tmp/.buildx-cache-sqlancer
+            cache-to: type=local,dest=/tmp/.buildx-cache-sqlancer-new,mode=max
+
+      - name: Move Docker layer caches
         run: |
-          set +e
-          task sqlancer
-          status=$?
-          echo "status=$status" >> "$GITHUB_OUTPUT"
-          exit 0
+          rm -rf /tmp/.buildx-cache-regress /tmp/.buildx-cache-sqlancer
+          mv /tmp/.buildx-cache-regress-new /tmp/.buildx-cache-regress
+          mv /tmp/.buildx-cache-sqlancer-new /tmp/.buildx-cache-sqlancer
+
+      - name: Start minipsql server
+        background: true
+        run: |
+          task build
+          ./dist/minipsql serve --host 0.0.0.0 --port 15432
+
+      - name: Wait for minipsql to be ready
+        run: |
+          for _ in $(seq 1 100); do
+            if pg_isready -h 127.0.0.1 -p 15432 -U mini 2>/dev/null; then
+              exit 0
+            fi
+            sleep 0.2
+          done
+          echo "minipsql did not become ready" >&2
+          exit 1
+
+      - parallel:
+        - name: Run PostgreSQL regress
+          id: regress
+          env:
+            REGRESS_PARALLELISM: "16"
+          run: |
+            task regress:ci || true
+
+        - name: Run SQLancer
+          id: sqlancer
+          run: |
+            set +e
+            task sqlancer:ci
+            status=$?
+            echo "status=$status" >> "$GITHUB_OUTPUT"
+            exit 0
 
       - name: Generate summary
         id: summary

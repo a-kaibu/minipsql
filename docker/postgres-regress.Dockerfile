@@ -26,7 +26,7 @@ if [[ ! -d "$sqldir" ]]; then
 fi
 
 mkdir -p "$report_dir"
-rm -f "$report_dir"/*
+rm -rf "$report_dir"/*
 summary="$report_dir/summary.txt"
 file_results="$report_dir/file-results.tsv"
 per_file_dir="$report_dir/per-file"
@@ -96,8 +96,9 @@ for file in "${sql_files[@]}"; do
 
   if [[ -f "$err_file" ]]; then
     file_error_count="$(grep -Ec '(^|: )(ERROR|FATAL|PANIC):' "$err_file" || true)"
+    file_fatal_count="$(grep -Ec '(^|: )(FATAL|PANIC):' "$err_file" || true)"
     total_errors=$((total_errors + file_error_count))
-    total_fatals=$((total_fatals + $(grep -Ec '(^|: )(FATAL|PANIC):' "$err_file" || true)))
+    total_fatals=$((total_fatals + file_fatal_count))
   fi
 
   if [[ -f "$out_file" ]]; then
@@ -118,7 +119,7 @@ done
 included_count="${#sql_files[@]}"
 not_completed_files=$((included_count - completed_files))
 overall_status=0
-if [[ "$total_errors" -gt 0 ]]; then
+if [[ "$total_errors" -gt 0 || "$failed_files" -gt 0 ]]; then
   overall_status=1
 fi
 

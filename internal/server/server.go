@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"runtime/debug"
 	"sync"
 
 	"github.com/yashikota/minipsql/internal/pgwire"
@@ -68,6 +69,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 			defer wg.Done()
 			defer func() {
 				if r := recover(); r != nil {
+					fmt.Printf("panic in connection handler: %v\n%s\n", r, string(debug.Stack()))
 					_ = conn.Close()
 				}
 			}()

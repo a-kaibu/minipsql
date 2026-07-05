@@ -68,6 +68,18 @@ tasks:
         docker compose run --rm postgres-regress || status=$?
         exit $status
 
+  regress:ci:
+    desc: Run PostgreSQL regress assuming minipsql is already running (CI use)
+    deps: [build, docker:regress]
+    env:
+      MINIPSQL_HOST: '{{.DOCKER_MINIPSQL_HOST}}'
+      MINIPSQL_PORT: '{{.MINIPSQL_PORT}}'
+      MINIPSQL_USER: '{{.MINIPSQL_USER}}'
+      MINIPSQL_DB: '{{.MINIPSQL_DB}}'
+    cmds:
+      - mkdir -p reports/postgres-regress
+      - docker compose run --rm postgres-regress
+
   sqlancer:
     desc: Run SQLancer PostgreSQL provider against minipsql
     deps: [build, docker:sqlancer]
@@ -87,6 +99,20 @@ tasks:
         trap 'kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true' EXIT
         docker compose run --rm sqlancer > reports/sqlancer/sqlancer.stdout 2> reports/sqlancer/sqlancer.stderr || status=$?
         exit $status
+
+  sqlancer:ci:
+    desc: Run SQLancer assuming minipsql is already running (CI use)
+    deps: [build, docker:sqlancer]
+    env:
+      MINIPSQL_HOST: '{{.DOCKER_MINIPSQL_HOST}}'
+      MINIPSQL_PORT: '{{.MINIPSQL_PORT}}'
+      MINIPSQL_USER: '{{.MINIPSQL_USER}}'
+      MINIPSQL_DB: '{{.MINIPSQL_DB}}'
+      SQLANCER_TRIES: '{{.SQLANCER_TRIES}}'
+      SQLANCER_TIMEOUT_SECONDS: '{{.SQLANCER_TIMEOUT_SECONDS}}'
+    cmds:
+      - mkdir -p reports/sqlancer
+      - docker compose run --rm sqlancer > reports/sqlancer/sqlancer.stdout 2> reports/sqlancer/sqlancer.stderr
 
   compat:
     desc: Run Go tests, PostgreSQL regress, and SQLancer

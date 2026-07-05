@@ -17,6 +17,7 @@ host="${MINIPSQL_HOST:-host.docker.internal}"
 port="${MINIPSQL_PORT:-15432}"
 user="${MINIPSQL_USER:-mini}"
 db="${MINIPSQL_DB:-default}"
+parallelism="${REGRESS_PARALLELISM:-8}"
 
 if [[ ! -d "$sqldir" ]]; then
   printf 'missing PostgreSQL regress SQL directory: %s\n' "$sqldir" >&2
@@ -27,10 +28,9 @@ fi
 mkdir -p "$report_dir"
 rm -f "$report_dir"/*
 summary="$report_dir/summary.txt"
-stdout="$report_dir/psql.stdout"
-stderr="$report_dir/psql.stderr"
 file_results="$report_dir/file-results.tsv"
-input="$report_dir/all-regress.sql"
+per_file_dir="$report_dir/per-file"
+mkdir -p "$per_file_dir"
 
 mapfile -t sql_files < <(find "$sqldir" -maxdepth 1 -type f -name '*.sql' | sort)
 if [[ "${#sql_files[@]}" -eq 0 ]]; then
@@ -51,45 +51,60 @@ if [[ "$ready" -ne 1 ]]; then
   exit 2
 fi
 
-{
-  printf '\\set ON_ERROR_STOP off\n'
-  printf '\\pset pager off\n'
-  printf '\\timing off\n'
-  for file in "${sql_files[@]}"; do
-    rel="${file#"$regress"/}"
-    printf '\\echo MINIPSQL_REGRESS_BEGIN %s\n' "$rel"
-    printf '\\i %s\n' "$rel"
-    printf '\\echo MINIPSQL_REGRESS_END %s\n' "$rel"
-  done
-} >"$input"
+run_one_file() {
+  local file="$1"
+  local rel="${file#"$regress"/}"
+  local slug
+  slug="$(printf '%s' "$rel" | tr '/' '_')"
+  local out="$per_file_dir/${slug}.stdout"
+  local err="$per_file_dir/${slug}.stderr"
 
-if (
-  cd "$regress"
-  PGPASSWORD= psql -X -h "$host" -p "$port" -U "$user" "$db" -f "$input"
-) >"$stdout" 2>"$stderr"; then
-  psql_status=0
-else
-  psql_status="$?"
-fi
+  if (
+    cd "$regress"
+    PGPASSWORD= psql -X -h "$host" -p "$port" -U "$user" "$db" \
+      -c '\set ON_ERROR_STOP off' \
+      -c '\pset pager off' \
+      -c '\timing off' \
+      -f "$rel"
+  ) >"$out" 2>"$err"; then
+    : # success
+  fi
+}
+export -f run_one_file
+export regress host port user db per_file_dir
 
-error_count="$(grep -Ec '(^|: )(ERROR|FATAL|PANIC):' "$stderr" || true)"
-fatal_count="$(grep -Ec '(^|: )(FATAL|PANIC):' "$stderr" || true)"
-included_count="${#sql_files[@]}"
-last_begin="$(grep 'MINIPSQL_REGRESS_BEGIN' "$stdout" | tail -n 1 || true)"
-last_end="$(grep 'MINIPSQL_REGRESS_END' "$stdout" | tail -n 1 || true)"
+printf 'Running %d SQL files with parallelism=%s\n' "${#sql_files[@]}" "$parallelism"
+
+printf '%s\n' "${sql_files[@]}" | \
+  xargs -P "$parallelism" -I{} bash -c 'run_one_file "$@"' _ {}
+
 success_files=0
 failed_files=0
 completed_files=0
+total_errors=0
+total_fatals=0
 
 printf 'status\tfile\terror_count\tcompleted\n' >"$file_results"
 for file in "${sql_files[@]}"; do
   rel="${file#"$regress"/}"
-  file_error_count="$(awk -v prefix="psql:$rel:" 'index($0, prefix) == 1 && /(ERROR|FATAL|PANIC):/ { count++ } END { print count + 0 }' "$stderr")"
+  slug="$(printf '%s' "$rel" | tr '/' '_')"
+  err_file="$per_file_dir/${slug}.stderr"
+  out_file="$per_file_dir/${slug}.stdout"
+
+  file_error_count=0
   completed=0
-  if grep -Fxq "MINIPSQL_REGRESS_END $rel" "$stdout"; then
+
+  if [[ -f "$err_file" ]]; then
+    file_error_count="$(grep -Ec '(^|: )(ERROR|FATAL|PANIC):' "$err_file" || true)"
+    total_errors=$((total_errors + file_error_count))
+    total_fatals=$((total_fatals + $(grep -Ec '(^|: )(FATAL|PANIC):' "$err_file" || true)))
+  fi
+
+  if [[ -f "$out_file" ]]; then
     completed=1
     completed_files=$((completed_files + 1))
   fi
+
   if [[ "$completed" -eq 1 && "$file_error_count" -eq 0 ]]; then
     status=ok
     success_files=$((success_files + 1))
@@ -99,32 +114,35 @@ for file in "${sql_files[@]}"; do
   fi
   printf '%s\t%s\t%s\t%s\n' "$status" "$rel" "$file_error_count" "$completed" >>"$file_results"
 done
+
+included_count="${#sql_files[@]}"
 not_completed_files=$((included_count - completed_files))
+overall_status=0
+if [[ "$total_errors" -gt 0 ]]; then
+  overall_status=1
+fi
 
 {
   printf 'postgres_regress_sql_dir=%s\n' "$sqldir"
-  printf 'psql_runner=docker-compose-to-host-binary\n'
+  printf 'psql_runner=parallel-per-file\n'
+  printf 'parallelism=%s\n' "$parallelism"
   printf 'total_files=%s\n' "$included_count"
   printf 'success_files=%s\n' "$success_files"
   printf 'failed_files=%s\n' "$failed_files"
   printf 'completed_files=%s\n' "$completed_files"
   printf 'not_completed_files=%s\n' "$not_completed_files"
-  printf 'psql_exit_status=%s\n' "$psql_status"
-  printf 'error_count=%s\n' "$error_count"
-  printf 'fatal_count=%s\n' "$fatal_count"
-  printf 'last_begin=%s\n' "$last_begin"
-  printf 'last_end=%s\n' "$last_end"
+  printf 'psql_exit_status=%s\n' "$overall_status"
+  printf 'error_count=%s\n' "$total_errors"
+  printf 'fatal_count=%s\n' "$total_fatals"
   printf 'file_results=%s\n' "$file_results"
-  printf '\nFirst 200 errors:\n'
-  grep -E '(^|: )(ERROR|FATAL|PANIC):' "$stderr" | head -n 200 || true
+  printf '\nFirst 200 errors (across all files):\n'
+  find "$per_file_dir" -name '*.stderr' -exec grep -h -E '(^|: )(ERROR|FATAL|PANIC):' {} + 2>/dev/null | head -n 200 || true
 } >"$summary"
 
 printf '%s\n' "PostgreSQL regress run complete."
 cat "$summary"
 
-if [[ "$psql_status" -ne 0 || "$error_count" -ne 0 ]]; then
-  exit 1
-fi
+exit "$overall_status"
 SCRIPT
 chmod +x /usr/local/bin/run-postgres-regress
 EOF

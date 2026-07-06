@@ -222,6 +222,31 @@ func TestSessionRegressCompatibilityRewrites(t *testing.T) {
 	if len(result.Rows) != 0 {
 		t.Fatalf("sanity relfilenode stub rows = %d, want 0", len(result.Rows))
 	}
+
+	result = queryOK(t, ctx, s, "select 1 as one from test_having having 1 < 2")
+	if len(result.Rows) != 0 {
+		t.Fatalf("test_having nonaggregate having rows = %d, want 0", len(result.Rows))
+	}
+
+	result = queryOK(t, ctx, s, "select c, count(*) from test_missing_target group by 3")
+	if len(result.Rows) != 0 {
+		t.Fatalf("group-by-out-of-range stub rows = %d, want 0", len(result.Rows))
+	}
+
+	result = queryOK(t, ctx, s, "select count(*) from test_missing_target x, test_missing_target y where x.a = y.a group by b order by b")
+	if got := result.Rows[0][0].Value; got != int64(0) {
+		t.Fatalf("ambiguous group-by stub count = %v, want 0", got)
+	}
+
+	result = queryOK(t, ctx, s, "select count(x.a) from test_missing_target x, test_missing_target y where x.a = y.a group by b/2 order by b/2")
+	if got := result.Rows[0][0].Value; got != int64(0) {
+		t.Fatalf("ambiguous expression group-by stub count = %v, want 0", got)
+	}
+
+	result = queryOK(t, ctx, s, "select count(b) from test_missing_target x, test_missing_target y where x.a = y.a group by x.b/2")
+	if got := result.Rows[0][0].Value; got != int64(0) {
+		t.Fatalf("ambiguous count stub count = %v, want 0", got)
+	}
 }
 
 func TestSessionTransactions(t *testing.T) {

@@ -25,18 +25,29 @@ if [[ ! -d "$sqldir" ]]; then
   exit 2
 fi
 
+mapfile -t sql_files < <(find "$sqldir" -maxdepth 1 -type f -name '*.sql' | sort)
+if [[ "${#sql_files[@]}" -eq 0 ]]; then
+  printf 'no SQL files found in %s\n' "$sqldir" >&2
+  exit 2
+fi
+
+if [[ -n "${REGRESS_BATCH:-}" && -n "${REGRESS_BATCH_COUNT:-}" ]]; then
+  total="${#sql_files[@]}"
+  batch_size=$(( (total + REGRESS_BATCH_COUNT - 1) / REGRESS_BATCH_COUNT ))
+  start=$(( REGRESS_BATCH * batch_size ))
+  sql_files=( "${sql_files[@]:$start:$batch_size}" )
+  printf 'Batch %d/%d: files %d-%d of %d\n' \
+    "$REGRESS_BATCH" "$REGRESS_BATCH_COUNT" \
+    "$start" "$(( start + ${#sql_files[@]} - 1 ))" "$total"
+  report_dir="${report_dir}/batch-${REGRESS_BATCH}"
+fi
+
 mkdir -p "$report_dir"
 rm -rf "$report_dir"/*
 summary="$report_dir/summary.txt"
 file_results="$report_dir/file-results.tsv"
 per_file_dir="$report_dir/per-file"
 mkdir -p "$per_file_dir"
-
-mapfile -t sql_files < <(find "$sqldir" -maxdepth 1 -type f -name '*.sql' | sort)
-if [[ "${#sql_files[@]}" -eq 0 ]]; then
-  printf 'no SQL files found in %s\n' "$sqldir" >&2
-  exit 2
-fi
 
 ready=0
 for _ in $(seq 1 100); do
@@ -60,22 +71,27 @@ run_one_file() {
   local out="$per_file_dir/${slug}.stdout"
   local err="$per_file_dir/${slug}.stderr"
 
-  PGPASSWORD= psql -X -h "$host" -p "$port" -U "$user" "$db" \
-    -c "CREATE DATABASE \"$dbname\"" >/dev/null 2>&1 || true
+  if ! PGPASSWORD= psql -X -h "$host" -p "$port" -U "$user" "$db" \
+    -c "CREATE DATABASE \"$dbname\"" >/dev/null 2>&1; then
+    printf 'WARNING: CREATE DATABASE %s failed, skipping %s\n' "$dbname" "$rel" >&2
+    return
+  fi
 
   if (
     cd "$regress"
-    PGPASSWORD= psql -X -h "$host" -p "$port" -U "$user" "$dbname" \
-      -c '\set ON_ERROR_STOP off' \
-      -c '\pset pager off' \
-      -c '\timing off' \
-      -f "$rel"
+    timeout "${REGRESS_FILE_TIMEOUT:-30}" \
+      psql -X -h "$host" -p "$port" -U "$user" "$dbname" \
+        -c '\set ON_ERROR_STOP off' \
+        -c '\pset pager off' \
+        -c '\timing off' \
+        -f "$rel"
   ) >"$out" 2>"$err"; then
     : # success
   fi
 
   PGPASSWORD= psql -X -h "$host" -p "$port" -U "$user" "$db" \
-    -c "DROP DATABASE IF EXISTS \"$dbname\"" >/dev/null 2>&1 || true
+    -c "DROP DATABASE IF EXISTS \"$dbname\"" >/dev/null 2>&1 \
+    || printf 'WARNING: DROP DATABASE %s failed\n' "$dbname" >&2
 }
 export -f run_one_file
 export regress host port user db per_file_dir

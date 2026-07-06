@@ -127,19 +127,70 @@ jobs:
       - parallel:
         - name: Run PostgreSQL regress
           id: regress
-          env:
-            REGRESS_PARALLELISM: "16"
           run: |
-            task regress:ci || true
+            task regress:ci:parallel || true
 
         - name: Run SQLancer
           id: sqlancer
+          env:
+            SQLANCER_DB: sqlancer_test
           run: |
             set +e
-            task sqlancer:ci
+            PGPASSWORD= psql -h 127.0.0.1 -p 15432 -U mini default \
+              -c "CREATE DATABASE \"$SQLANCER_DB\""
+            MINIPSQL_DB="$SQLANCER_DB" task sqlancer:ci
             status=$?
+            PGPASSWORD= psql -h 127.0.0.1 -p 15432 -U mini default \
+              -c "DROP DATABASE IF EXISTS \"$SQLANCER_DB\"" || true
             echo "status=$status" >> "$GITHUB_OUTPUT"
             exit 0
+
+      - name: Aggregate regress reports
+        run: |
+          report_dir="reports/postgres-regress"
+          combined_tsv="$report_dir/file-results.tsv"
+          combined_per_file="$report_dir/per-file"
+          mkdir -p "$combined_per_file"
+
+          printf 'status\tfile\terror_count\tcompleted\n' > "$combined_tsv"
+
+          success_files=0; failed_files=0; completed_files=0
+          not_completed_files=0; total_errors=0; total_fatals=0; total_files=0
+
+          for batch_dir in "$report_dir"/batch-*; do
+            [ -d "$batch_dir" ] || continue
+            [ -d "$batch_dir/per-file" ] && cp "$batch_dir/per-file"/* "$combined_per_file/" 2>/dev/null || true
+            [ -f "$batch_dir/file-results.tsv" ] && tail -n +2 "$batch_dir/file-results.tsv" >> "$combined_tsv"
+            if [ -f "$batch_dir/summary.txt" ]; then
+              get() { grep -m1 "^$1=" "$batch_dir/summary.txt" | cut -d= -f2-; }
+              success_files=$((success_files + $(get success_files)))
+              failed_files=$((failed_files + $(get failed_files)))
+              completed_files=$((completed_files + $(get completed_files)))
+              not_completed_files=$((not_completed_files + $(get not_completed_files)))
+              total_errors=$((total_errors + $(get error_count)))
+              total_fatals=$((total_fatals + $(get fatal_count)))
+              total_files=$((total_files + $(get total_files)))
+            fi
+          done
+
+          overall_status=0
+          [ "$total_errors" -gt 0 ] || [ "$failed_files" -gt 0 ] && overall_status=1
+
+          {
+            printf 'psql_runner=parallel-batched\n'
+            printf 'batch_count=4\n'
+            printf 'total_files=%s\n' "$total_files"
+            printf 'success_files=%s\n' "$success_files"
+            printf 'failed_files=%s\n' "$failed_files"
+            printf 'completed_files=%s\n' "$completed_files"
+            printf 'not_completed_files=%s\n' "$not_completed_files"
+            printf 'psql_exit_status=%s\n' "$overall_status"
+            printf 'error_count=%s\n' "$total_errors"
+            printf 'fatal_count=%s\n' "$total_fatals"
+            printf '\nFirst 200 errors (across all batches):\n'
+            find "$combined_per_file" -name '*.stderr' \
+              -exec grep -h -E '(^|: )(ERROR|FATAL|PANIC):' {} + 2>/dev/null | head -n 200 || true
+          } > "$report_dir/summary.txt"
 
       - name: Generate summary
         id: summary

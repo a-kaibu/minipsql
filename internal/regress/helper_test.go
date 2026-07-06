@@ -32,7 +32,7 @@ func newSession(t *testing.T) (*session.Session, context.Context) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = b.Close(ctx) })
-	return session.New(1, 1, "testdb", "testuser", b), ctx
+	return session.New(1, 1, "testdb", "testuser", b, nil), ctx
 }
 
 func run(t *testing.T, g testGroup) {

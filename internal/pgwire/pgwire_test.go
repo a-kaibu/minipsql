@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/yashikota/minipsql/internal/catalog"
 	"github.com/yashikota/minipsql/internal/compat"
 	"github.com/yashikota/minipsql/internal/pgwire"
 )
@@ -203,8 +204,11 @@ func startTestServerWithInit(t *testing.T, ctx context.Context, initSQL string) 
 		t.Fatal(err)
 	}
 	done := make(chan struct{})
-	handler := pgwire.NewHandler()
-	handler.InitSQL = initSQL
+	cat, err := catalog.New(ctx, initSQL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := pgwire.NewHandler(cat)
 	go func() {
 		defer close(done)
 		for {
@@ -218,5 +222,6 @@ func startTestServerWithInit(t *testing.T, ctx context.Context, initSQL string) 
 	return ln.Addr().String(), func() {
 		_ = ln.Close()
 		<-done
+		cat.Close(ctx)
 	}
 }

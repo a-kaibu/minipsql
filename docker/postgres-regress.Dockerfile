@@ -55,13 +55,17 @@ run_one_file() {
   local file="$1"
   local rel="${file#"$regress"/}"
   local slug
-  slug="$(printf '%s' "$rel" | tr '/' '_')"
+  slug="$(printf '%s' "$rel" | tr '/.' '__')"
+  local dbname="regress_${slug}"
   local out="$per_file_dir/${slug}.stdout"
   local err="$per_file_dir/${slug}.stderr"
 
+  PGPASSWORD= psql -X -h "$host" -p "$port" -U "$user" "$db" \
+    -c "CREATE DATABASE \"$dbname\"" >/dev/null 2>&1 || true
+
   if (
     cd "$regress"
-    PGPASSWORD= psql -X -h "$host" -p "$port" -U "$user" "$db" \
+    PGPASSWORD= psql -X -h "$host" -p "$port" -U "$user" "$dbname" \
       -c '\set ON_ERROR_STOP off' \
       -c '\pset pager off' \
       -c '\timing off' \
@@ -69,6 +73,9 @@ run_one_file() {
   ) >"$out" 2>"$err"; then
     : # success
   fi
+
+  PGPASSWORD= psql -X -h "$host" -p "$port" -U "$user" "$db" \
+    -c "DROP DATABASE IF EXISTS \"$dbname\"" >/dev/null 2>&1 || true
 }
 export -f run_one_file
 export regress host port user db per_file_dir

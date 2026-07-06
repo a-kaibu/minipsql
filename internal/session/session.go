@@ -18,6 +18,12 @@ const (
 	TxFailed TxState = 'E'
 )
 
+// CatalogOperations is implemented by catalog.Catalog; defined here to avoid import cycles.
+type CatalogOperations interface {
+	CreateDatabase(ctx context.Context, name string) error
+	DropDatabase(ctx context.Context, name string) error
+}
+
 type Session struct {
 	ID       int32
 	Secret   int32
@@ -26,6 +32,7 @@ type Session struct {
 	TxState  TxState
 	Params   map[string]string
 	Backend  backend.Backend
+	Catalog  CatalogOperations
 
 	PreparedStatements map[string]*PreparedStatement
 	Portals            map[string]*Portal
@@ -47,7 +54,7 @@ type Portal struct {
 	CommandTag    *backend.CommandTag
 }
 
-func New(id, secret int32, dbname, user string, b backend.Backend) *Session {
+func New(id, secret int32, dbname, user string, b backend.Backend, cat CatalogOperations) *Session {
 	if dbname == "" {
 		dbname = "default"
 	}
@@ -62,6 +69,7 @@ func New(id, secret int32, dbname, user string, b backend.Backend) *Session {
 		TxState:            TxIdle,
 		Params:             compat.DefaultParams(),
 		Backend:            b,
+		Catalog:            cat,
 		PreparedStatements: map[string]*PreparedStatement{},
 		Portals:            map[string]*Portal{},
 	}
@@ -92,6 +100,10 @@ func (s *Session) Execute(ctx context.Context, sql string, args []backend.Value)
 			s.TxState = TxIdle
 			return nil, &backend.CommandTag{Tag: "ROLLBACK"}, nil
 		}
+	}
+
+	if tag, err := s.tryDatabaseCommand(ctx, sql); tag != nil || err != nil {
+		return nil, tag, err
 	}
 
 	if tag, ok := s.tryNoopCommand(sql); ok {
@@ -252,6 +264,74 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 	}
 
 	return nil, false
+}
+
+func (s *Session) tryDatabaseCommand(ctx context.Context, sql string) (*backend.CommandTag, error) {
+	q := strings.TrimSpace(strings.TrimSuffix(strings.TrimSuffix(sql, ";"), " "))
+	lower := strings.ToLower(q)
+
+	if strings.HasPrefix(lower, "create database ") {
+		rest := q[len("create database "):]
+		ifNotExists := false
+		if strings.HasPrefix(strings.ToLower(rest), "if not exists ") {
+			ifNotExists = true
+			rest = rest[len("if not exists "):]
+		}
+		name := parseDatabaseName(rest)
+		if s.Catalog == nil {
+			return &backend.CommandTag{Tag: "CREATE DATABASE"}, nil
+		}
+		err := s.Catalog.CreateDatabase(ctx, name)
+		if err != nil {
+			if ifNotExists {
+				if pg, ok := err.(*compat.PGError); ok && pg.Code == "42P04" {
+					return &backend.CommandTag{Tag: "CREATE DATABASE"}, nil
+				}
+			}
+			return nil, err
+		}
+		return &backend.CommandTag{Tag: "CREATE DATABASE"}, nil
+	}
+
+	if strings.HasPrefix(lower, "drop database ") {
+		rest := q[len("drop database "):]
+		ifExists := false
+		if strings.HasPrefix(strings.ToLower(rest), "if exists ") {
+			ifExists = true
+			rest = rest[len("if exists "):]
+		}
+		name := parseDatabaseName(rest)
+		if s.Catalog == nil {
+			return &backend.CommandTag{Tag: "DROP DATABASE"}, nil
+		}
+		err := s.Catalog.DropDatabase(ctx, name)
+		if err != nil {
+			if ifExists {
+				if pg, ok := err.(*compat.PGError); ok && pg.Code == "3D000" {
+					return &backend.CommandTag{Tag: "DROP DATABASE"}, nil
+				}
+			}
+			return nil, err
+		}
+		return &backend.CommandTag{Tag: "DROP DATABASE"}, nil
+	}
+
+	return nil, nil
+}
+
+func parseDatabaseName(s string) string {
+	name := strings.TrimSpace(s)
+	if strings.HasPrefix(name, "\"") {
+		end := strings.Index(name[1:], "\"")
+		if end >= 0 {
+			return name[1 : end+1]
+		}
+	}
+	// stop at first whitespace (strips trailing options like WITH OWNER …)
+	if idx := strings.IndexAny(name, " \t\n\r"); idx >= 0 {
+		name = name[:idx]
+	}
+	return strings.ToLower(name)
 }
 
 func (s *Session) ExecuteCopyFrom(ctx context.Context, stmt *pgcopy.Statement, data []byte) (*backend.CommandTag, error) {

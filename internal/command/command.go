@@ -54,7 +54,11 @@ func runServe(args []string, stderr io.Writer) error {
 		initSQL = string(data)
 	}
 	_, _ = fmt.Fprintf(stderr, "minipsql listening on %s:%d\n", *host, *port)
-	err := server.New(server.Config{Host: *host, Port: *port, InitSQL: initSQL}).ListenAndServe(ctx)
+	srv, err := server.New(ctx, server.Config{Host: *host, Port: *port, InitSQL: initSQL})
+	if err != nil {
+		return err
+	}
+	err = srv.ListenAndServe(ctx)
 	if err == context.Canceled {
 		return nil
 	}

@@ -96,12 +96,18 @@ tasks:
         status=0
         pids=()
         for b in $(seq 0 $(({{.BATCH_COUNT}} - 1))); do
-          REGRESS_BATCH=$b REGRESS_BATCH_COUNT={{.BATCH_COUNT}} REGRESS_PARALLELISM={{.PARALLELISM}} \
-            docker compose run --rm \
-              -e REGRESS_BATCH=$b \
-              -e REGRESS_BATCH_COUNT={{.BATCH_COUNT}} \
-              -e REGRESS_PARALLELISM={{.PARALLELISM}} \
-              postgres-regress > /tmp/regress-batch-$b.log 2>&1 &
+          docker run --rm \
+            --add-host=host.docker.internal:host-gateway \
+            -e MINIPSQL_HOST={{.DOCKER_MINIPSQL_HOST}} \
+            -e MINIPSQL_PORT={{.MINIPSQL_PORT}} \
+            -e MINIPSQL_USER={{.MINIPSQL_USER}} \
+            -e MINIPSQL_DB={{.MINIPSQL_DB}} \
+            -e REGRESS_BATCH=$b \
+            -e REGRESS_BATCH_COUNT={{.BATCH_COUNT}} \
+            -e REGRESS_PARALLELISM={{.PARALLELISM}} \
+            -v "$(pwd)/external/postgres:/workspace/external/postgres:ro" \
+            -v "$(pwd)/reports/postgres-regress:/workspace/reports/postgres-regress" \
+            minipsql-postgres-regress:latest > /tmp/regress-batch-$b.log 2>&1 &
           pids+=($!)
         done
         for pid in "${pids[@]}"; do

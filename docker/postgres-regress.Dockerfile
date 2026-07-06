@@ -43,7 +43,7 @@ if [[ -n "${REGRESS_BATCH:-}" && -n "${REGRESS_BATCH_COUNT:-}" ]]; then
 fi
 
 mkdir -p "$report_dir"
-rm -rf "$report_dir"/*
+rm -rf "$report_dir"/* 2>/dev/null || true
 summary="$report_dir/summary.txt"
 file_results="$report_dir/file-results.tsv"
 per_file_dir="$report_dir/per-file"

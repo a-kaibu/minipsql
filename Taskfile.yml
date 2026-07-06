@@ -93,10 +93,16 @@ tasks:
     cmds:
       - mkdir -p reports/postgres-regress
       - |
+        # clean up any root-owned files from a previous run using a privileged container
+        docker run --rm \
+          -v "$(pwd)/reports/postgres-regress:/workspace/reports/postgres-regress" \
+          alpine:latest sh -c 'rm -rf /workspace/reports/postgres-regress/*' 2>/dev/null || true
+      - |
         status=0
         pids=()
         for b in $(seq 0 $(({{.BATCH_COUNT}} - 1))); do
           docker run --rm \
+            --user "$(id -u):$(id -g)" \
             --add-host=host.docker.internal:host-gateway \
             -e MINIPSQL_HOST={{.DOCKER_MINIPSQL_HOST}} \
             -e MINIPSQL_PORT={{.MINIPSQL_PORT}} \

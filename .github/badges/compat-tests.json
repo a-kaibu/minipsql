@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "label": "compat-tests",
+  "message": "success 1, fail 246, skip 0, error 37102",
+  "color": "yellow"
+}

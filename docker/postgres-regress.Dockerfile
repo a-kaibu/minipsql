@@ -94,7 +94,7 @@ total_fatals=0
 printf 'status\tfile\terror_count\tcompleted\n' >"$file_results"
 for file in "${sql_files[@]}"; do
   rel="${file#"$regress"/}"
-  slug="$(printf '%s' "$rel" | tr '/' '_')"
+  slug="$(printf '%s' "$rel" | tr '/.' '__')"
   err_file="$per_file_dir/${slug}.stderr"
   out_file="$per_file_dir/${slug}.stdout"
 

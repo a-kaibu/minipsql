@@ -12,9 +12,14 @@ import (
 )
 
 type dbEntry struct {
-	b       backend.Backend
-	refs    atomic.Int32
-	dropped bool
+	b         backend.Backend
+	refs      atomic.Int32
+	dropped   bool
+	closeOnce sync.Once
+}
+
+func (e *dbEntry) close(ctx context.Context) {
+	e.closeOnce.Do(func() { _ = e.b.Close(ctx) })
 }
 
 // Catalog manages named in-memory databases shared across connections.
@@ -67,6 +72,7 @@ func (c *Catalog) GetOrCreate(name string) (backend.Backend, error) {
 	if name == "" {
 		name = "default"
 	}
+	name = strings.ToLower(name)
 	c.mu.RLock()
 	e, ok := c.dbs[name]
 	c.mu.RUnlock()
@@ -78,6 +84,7 @@ func (c *Catalog) GetOrCreate(name string) (backend.Backend, error) {
 
 // Connect increments the connection reference count for a database.
 func (c *Catalog) Connect(name string) {
+	name = strings.ToLower(name)
 	c.mu.RLock()
 	e := c.dbs[name]
 	c.mu.RUnlock()
@@ -89,6 +96,7 @@ func (c *Catalog) Connect(name string) {
 // Disconnect decrements the connection reference count.
 // When refs drop to zero and the database has been dropped, the backend is closed.
 func (c *Catalog) Disconnect(ctx context.Context, name string) {
+	name = strings.ToLower(name)
 	c.mu.RLock()
 	e := c.dbs[name]
 	c.mu.RUnlock()
@@ -96,7 +104,7 @@ func (c *Catalog) Disconnect(ctx context.Context, name string) {
 		return
 	}
 	if e.refs.Add(-1) == 0 && e.dropped {
-		_ = e.b.Close(ctx)
+		e.close(ctx)
 	}
 }
 
@@ -129,7 +137,7 @@ func (c *Catalog) DropDatabase(ctx context.Context, name string) error {
 	delete(c.dbs, name)
 	// Close immediately if no active connections; otherwise Disconnect will close.
 	if e.refs.Load() == 0 {
-		_ = e.b.Close(ctx)
+		e.close(ctx)
 	}
 	return nil
 }
@@ -139,7 +147,7 @@ func (c *Catalog) Close(ctx context.Context) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, e := range c.dbs {
-		_ = e.b.Close(ctx)
+		e.close(ctx)
 	}
 	c.dbs = make(map[string]*dbEntry)
 }

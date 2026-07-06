@@ -109,6 +109,43 @@ func TestSessionRegressCompatibilityStubs(t *testing.T) {
 	}
 }
 
+func TestSessionStringFunctions(t *testing.T) {
+	ctx := context.Background()
+	b, err := sqlite.New(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = b.Close(ctx)
+	}()
+
+	s := session.New(1, 1, "default", "mini", b, nil)
+	cases := map[string]any{
+		"select repeat('ab', 3)":                "ababab",
+		"select reverse('abc')":                 "cba",
+		"select char_length('あbc')":             int64(3),
+		"select character_length('あbc')":        int64(3),
+		"select left('abcdef', 2)":              "ab",
+		"select right('abcdef', 3)":             "def",
+		"select lpad('42', 5, '0')":             "00042",
+		"select rpad('42', 5, '0')":             "42000",
+		"select btrim('  padded  ')":            "padded",
+		"select btrim('xyhelloxy', 'xy')":       "hello",
+		"select chr(65)":                        "A",
+		"select ascii('A')":                     int64(65),
+		"select md5('abc')":                     "900150983cd24fb0d6963f7d28e17f72",
+		"select convert_from('text', 'EUC_KR')": "text",
+	}
+	for sql, want := range cases {
+		t.Run(sql, func(t *testing.T) {
+			result := queryOK(t, ctx, s, sql)
+			if got := result.Rows[0][0].Value; got != want {
+				t.Fatalf("%s = %v (%T), want %v (%T)", sql, got, got, want, want)
+			}
+		})
+	}
+}
+
 func TestSessionTransactions(t *testing.T) {
 	ctx := context.Background()
 	b, err := sqlite.New(ctx)

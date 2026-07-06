@@ -150,7 +150,10 @@ jobs:
         run: pkill -f 'minipsql serve' || true
 
       - name: Fix report directory ownership
-        run: sudo chown -R "$(id -u):$(id -g)" reports/ || true
+        run: |
+          sudo chown -R "$(id -u):$(id -g)" reports/ || true
+          echo "=== reports/ contents ==="
+          find reports/ -maxdepth 3 -ls 2>/dev/null || echo "reports/ not found"
 
       - name: Aggregate regress reports
         run: |

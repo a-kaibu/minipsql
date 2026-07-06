@@ -149,6 +149,9 @@ jobs:
       - name: Stop minipsql server
         run: pkill -f 'minipsql serve' || true
 
+      - name: Fix report directory ownership
+        run: sudo chown -R "$(id -u):$(id -g)" reports/ || true
+
       - name: Aggregate regress reports
         run: |
           report_dir="reports/postgres-regress"

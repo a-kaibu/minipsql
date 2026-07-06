@@ -129,7 +129,7 @@ jobs:
         - name: Run PostgreSQL regress
           id: regress
           run: |
-            task regress:ci:batched || true
+            task test:regress || true
 
         - name: Run SQLancer
           id: sqlancer

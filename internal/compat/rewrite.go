@@ -59,15 +59,17 @@ func rewritePGCast(sql string) string {
 			break
 		}
 		typeName := strings.TrimSpace(castRE.FindStringSubmatch(sql[loc[0]:])[1])
+		typeName, trailing := splitCastTypeTrailingSQL(typeName)
 		typeName = strings.TrimSuffix(typeName, "[]")
 		typeName = strings.TrimSpace(typeName)
 		if idx := strings.Index(typeName, "("); idx >= 0 {
 			typeName = typeName[:idx]
 		}
 		typeName = mapPGType(typeName)
-		expr := extractCastExpr(sql[:loc[0]])
-		prefix := sql[:loc[0]-len(expr)]
-		suffix := sql[loc[1]:]
+		beforeCast := strings.TrimRightFunc(sql[:loc[0]], unicode.IsSpace)
+		expr := extractCastExpr(beforeCast)
+		prefix := beforeCast[:len(beforeCast)-len(expr)]
+		suffix := trailing + sql[loc[1]:]
 		if expr == "" {
 			sql = prefix + suffix
 		} else {
@@ -75,6 +77,16 @@ func rewritePGCast(sql string) string {
 		}
 	}
 	return sql
+}
+
+func splitCastTypeTrailingSQL(typeName string) (string, string) {
+	lower := strings.ToLower(typeName)
+	for _, keyword := range []string{" from ", " where ", " order ", " group ", " limit ", " union ", " intersect ", " except ", " and ", " or ", " is ", " in ", " as "} {
+		if idx := strings.Index(lower, keyword); idx >= 0 {
+			return strings.TrimSpace(typeName[:idx]), typeName[idx:]
+		}
+	}
+	return typeName, ""
 }
 
 func mapPGType(t string) string {

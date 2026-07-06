@@ -28,6 +28,7 @@ func init() {
 	sqlite.MustRegisterDeterministicScalarFunction("left", 2, leftFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("line", 2, lineFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("lpad", 3, lpadFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("macaddr8_set7bit", 1, macaddr8Set7BitFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("md5", 1, md5Func)
 	sqlite.MustRegisterDeterministicScalarFunction("pg_numa_available", 0, pgNumaAvailableFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("pg_input_is_valid", 2, pgInputIsValidFunc)
@@ -171,6 +172,16 @@ func lineFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, err
 
 func lpadFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
 	return padFunc("lpad", args, true)
+}
+
+func macaddr8Set7BitFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("macaddr8_set7bit requires 1 argument")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	return valueString(args[0]), nil
 }
 
 func md5Func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {

@@ -15,7 +15,7 @@ import (
 	"strings"
 
 	"github.com/yashikota/minipsql/internal/backend"
-	"github.com/yashikota/minipsql/internal/backend/sqlite"
+	"github.com/yashikota/minipsql/internal/catalog"
 	"github.com/yashikota/minipsql/internal/compat"
 	pgcopy "github.com/yashikota/minipsql/internal/copy"
 	"github.com/yashikota/minipsql/internal/session"
@@ -27,11 +27,11 @@ const (
 )
 
 type Handler struct {
-	InitSQL string
+	Catalog *catalog.Catalog
 }
 
-func NewHandler() *Handler {
-	return &Handler{}
+func NewHandler(cat *catalog.Catalog) *Handler {
+	return &Handler{Catalog: cat}
 }
 
 func (h *Handler) ServeConn(ctx context.Context, conn net.Conn) {
@@ -44,20 +44,19 @@ func (h *Handler) ServeConn(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	b, err := sqlite.New(ctx)
+	dbname := params["database"]
+	if dbname == "" {
+		dbname = "default"
+	}
+	b, err := h.Catalog.GetOrCreate(dbname)
 	if err != nil {
 		writeError(conn, compat.Error(err))
 		return
 	}
-	defer func() {
-		_ = b.Close(ctx)
-	}()
+	h.Catalog.Connect(dbname)
+	defer h.Catalog.Disconnect(ctx, dbname)
 
-	s := session.New(randInt32(), randInt32(), params["database"], params["user"], b)
-	if err := h.runInitSQL(ctx, s); err != nil {
-		writeError(conn, compat.Error(err))
-		return
-	}
+	s := session.New(randInt32(), randInt32(), dbname, params["user"], b, h.Catalog)
 	writeAuthOK(conn)
 	for k, v := range s.Params {
 		writeParameterStatus(conn, k, v)
@@ -107,19 +106,6 @@ func (h *Handler) ServeConn(ctx context.Context, conn net.Conn) {
 			writeReady(conn, s.TxState)
 		}
 	}
-}
-
-func (h *Handler) runInitSQL(ctx context.Context, s *session.Session) error {
-	if strings.TrimSpace(h.InitSQL) == "" {
-		return nil
-	}
-	for _, stmt := range compat.SplitStatements(h.InitSQL) {
-		_, _, err := s.Execute(ctx, stmt, nil)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (h *Handler) startup(ctx context.Context, br *bufio.Reader, w io.Writer) (map[string]string, bool) {

@@ -9,6 +9,7 @@ import (
 	"runtime/debug"
 	"sync"
 
+	"github.com/yashikota/minipsql/internal/catalog"
 	"github.com/yashikota/minipsql/internal/pgwire"
 )
 
@@ -23,16 +24,19 @@ type Server struct {
 	handler *pgwire.Handler
 }
 
-func New(cfg Config) *Server {
+func New(ctx context.Context, cfg Config) (*Server, error) {
 	if cfg.Host == "" {
 		cfg.Host = "127.0.0.1"
 	}
 	if cfg.Port == 0 {
 		cfg.Port = 15432
 	}
-	handler := pgwire.NewHandler()
-	handler.InitSQL = cfg.InitSQL
-	return &Server{cfg: cfg, handler: handler}
+	cat, err := catalog.New(ctx, cfg.InitSQL)
+	if err != nil {
+		return nil, err
+	}
+	handler := pgwire.NewHandler(cat)
+	return &Server{cfg: cfg, handler: handler}, nil
 }
 
 func (s *Server) ListenAndServe(ctx context.Context) error {

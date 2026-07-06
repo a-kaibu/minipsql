@@ -19,7 +19,7 @@ func TestSessionBasicDDLDML(t *testing.T) {
 		_ = b.Close(ctx)
 	}()
 
-	s := session.New(1, 1, "default", "mini", b)
+	s := session.New(1, 1, "default", "mini", b, nil)
 	execOK(t, ctx, s, "create table users(id integer primary key, name text)")
 	execOK(t, ctx, s, "insert into users values (1, 'alice')")
 
@@ -51,7 +51,7 @@ func TestSessionBuiltins(t *testing.T) {
 		_ = b.Close(ctx)
 	}()
 
-	s := session.New(1, 1, "default", "mini", b)
+	s := session.New(1, 1, "default", "mini", b, nil)
 	cases := map[string]string{
 		"select version()":                 "PostgreSQL 14.0 compatible minipsql",
 		"show server_version":              "14.0",
@@ -83,7 +83,7 @@ func TestSessionTransactions(t *testing.T) {
 		_ = b.Close(ctx)
 	}()
 
-	s := session.New(1, 1, "default", "mini", b)
+	s := session.New(1, 1, "default", "mini", b, nil)
 	execOK(t, ctx, s, "create table users(id integer primary key, name text)")
 
 	execOK(t, ctx, s, "begin")
@@ -119,7 +119,7 @@ func TestInformationSchema(t *testing.T) {
 		_ = b.Close(ctx)
 	}()
 
-	s := session.New(1, 1, "default", "mini", b)
+	s := session.New(1, 1, "default", "mini", b, nil)
 	execOK(t, ctx, s, "create table users(id integer primary key, name text)")
 
 	tables := queryOK(t, ctx, s, "select * from information_schema.tables")
@@ -152,7 +152,7 @@ func TestPGCatalog(t *testing.T) {
 		_ = b.Close(ctx)
 	}()
 
-	s := session.New(1, 1, "default", "mini", b)
+	s := session.New(1, 1, "default", "mini", b, nil)
 	execOK(t, ctx, s, "create table users(id integer primary key, name text)")
 
 	namespace := queryOK(t, ctx, s, "select * from pg_catalog.pg_namespace")

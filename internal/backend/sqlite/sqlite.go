@@ -32,6 +32,161 @@ func New(ctx context.Context) (*Backend, error) {
 	return &Backend{db: db}, nil
 }
 
+// NewSession returns a per-connection Backend that shares the underlying
+// *sql.DB but has its own transaction state. Close is a no-op; the DB
+// lifetime is managed by the owner Backend.
+func (b *Backend) NewSession() backend.Backend {
+	return &sessionBackend{db: b.db}
+}
+
+// sessionBackend wraps a shared *sql.DB with per-session transaction state.
+type sessionBackend struct {
+	db *sql.DB
+	tx *sql.Tx
+}
+
+func (s *sessionBackend) queryer() interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+} {
+	if s.tx != nil {
+		return s.tx
+	}
+	return s.db
+}
+
+func (s *sessionBackend) execer() interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+} {
+	if s.tx != nil {
+		return s.tx
+	}
+	return s.db
+}
+
+func (s *sessionBackend) Query(ctx context.Context, query string, args []backend.Value) (*backend.Result, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	rows, err := s.queryer().QueryContext(ctx, query, sqlArgs(args)...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	names, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+	types, _ := rows.ColumnTypes()
+	cols := make([]backend.Column, len(names))
+	for i, name := range names {
+		dbType := ""
+		if i < len(types) {
+			dbType = types[i].DatabaseTypeName()
+		}
+		cols[i] = backend.Column{Name: name, TypeOID: compat.TypeOID(dbType)}
+	}
+	var out [][]backend.Value
+	for rows.Next() {
+		raw := make([]any, len(names))
+		ptrs := make([]any, len(names))
+		for i := range raw {
+			ptrs[i] = &raw[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			return nil, err
+		}
+		row := make([]backend.Value, len(raw))
+		for i, v := range raw {
+			row[i] = valueFromDB(v)
+			if cols[i].TypeOID == compat.OIDText && row[i].Kind != backend.ValueNull {
+				cols[i].TypeOID = oidFromValue(row[i])
+			}
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return &backend.Result{Columns: cols, Rows: out}, nil
+}
+
+func (s *sessionBackend) Exec(ctx context.Context, query string, args []backend.Value) (*backend.CommandTag, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	res, err := s.execer().ExecContext(ctx, query, sqlArgs(args)...)
+	if err != nil {
+		return nil, err
+	}
+	var n int64
+	if res != nil {
+		n, _ = res.RowsAffected()
+	}
+	return &backend.CommandTag{Tag: commandTag(query, n)}, nil
+}
+
+func (s *sessionBackend) Begin(ctx context.Context) error {
+	if s.tx != nil {
+		return errors.New("transaction already in progress")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	s.tx = tx
+	return nil
+}
+
+func (s *sessionBackend) Commit(context.Context) error {
+	if s.tx == nil {
+		return errors.New("no transaction in progress")
+	}
+	err := s.tx.Commit()
+	s.tx = nil
+	return err
+}
+
+func (s *sessionBackend) Rollback(context.Context) error {
+	if s.tx == nil {
+		return errors.New("no transaction in progress")
+	}
+	err := s.tx.Rollback()
+	s.tx = nil
+	return err
+}
+
+func (s *sessionBackend) Close(context.Context) error { return nil }
+
+func (s *sessionBackend) BulkInsert(ctx context.Context, table string, columns []string, rows [][]backend.Value) (int64, error) {
+	b := &Backend{db: s.db, tx: s.tx}
+	return b.BulkInsert(ctx, table, columns, rows)
+}
+
+func (s *sessionBackend) TableColumns(ctx context.Context, table string) ([]string, error) {
+	rows, err := s.queryer().QueryContext(ctx, "PRAGMA table_info(\""+table+"\")")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var cols []string
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull int
+		var dflt any
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return nil, err
+		}
+		cols = append(cols, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(cols) == 0 {
+		return nil, fmt.Errorf("relation %q does not exist", table)
+	}
+	return cols, nil
+}
+
 func (b *Backend) Query(ctx context.Context, query string, args []backend.Value) (*backend.Result, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()

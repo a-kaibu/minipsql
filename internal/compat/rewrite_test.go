@@ -53,3 +53,19 @@ func TestRewritePositionIn(t *testing.T) {
 		t.Fatalf("Rewrite() = %q, want %q", got, want)
 	}
 }
+
+func TestRewriteCharLiteral(t *testing.T) {
+	sql := "SELECT char 'c' = char 'c'"
+	want := "SELECT 'c' = 'c'"
+	if got := Rewrite(sql); got != want {
+		t.Fatalf("Rewrite() = %q, want %q", got, want)
+	}
+}
+
+func TestRewriteQuotedCharCast(t *testing.T) {
+	sql := `SELECT 'a'::"char"::text`
+	want := "SELECT CAST(CAST('a' AS text) AS text)"
+	if got := Rewrite(sql); got != want {
+		t.Fatalf("Rewrite() = %q, want %q", got, want)
+	}
+}

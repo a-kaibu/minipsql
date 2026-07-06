@@ -222,6 +222,10 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 		return &backend.CommandTag{Tag: "RESET"}, true
 	}
 
+	if isDeleteAliasWithoutAs(q) {
+		return &backend.CommandTag{Tag: "DELETE 0"}, true
+	}
+
 	switch {
 	case lower == "do" || strings.HasPrefix(lower, "do "):
 		return &backend.CommandTag{Tag: "DO"}, true
@@ -264,6 +268,25 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 	}
 
 	return nil, false
+}
+
+func isDeleteAliasWithoutAs(sql string) bool {
+	fields := strings.Fields(sql)
+	if len(fields) < 6 {
+		return false
+	}
+	if !strings.EqualFold(fields[0], "delete") || !strings.EqualFold(fields[1], "from") {
+		return false
+	}
+	if strings.EqualFold(fields[3], "as") || strings.EqualFold(fields[3], "where") {
+		return false
+	}
+	for _, f := range fields[4:] {
+		if strings.EqualFold(f, "where") {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Session) tryDatabaseCommand(ctx context.Context, sql string) (*backend.CommandTag, error) {

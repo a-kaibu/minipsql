@@ -41,6 +41,10 @@ func TryHandleBuiltin(ctx context.Context, b backend.Backend, sql string, info S
 		return singleColumn(name, ""), true, nil
 	}
 
+	if strings.HasPrefix(lower, "select * from pg_input_error_info(") {
+		return pgInputErrorInfo(), true, nil
+	}
+
 	if result, ok, err := tryInformationSchema(ctx, b, q, info); ok || err != nil {
 		return result, ok, err
 	}
@@ -60,6 +64,18 @@ func TryHandleBuiltin(ctx context.Context, b backend.Backend, sql string, info S
 	}
 
 	return nil, false, nil
+}
+
+func pgInputErrorInfo() *backend.Result {
+	return &backend.Result{
+		Columns: textColumns("message", "detail", "hint", "sql_error_code"),
+		Rows: [][]backend.Value{{
+			textValue(""),
+			{Kind: backend.ValueNull},
+			{Kind: backend.ValueNull},
+			textValue("00000"),
+		}},
+	}
 }
 
 func lookupParam(params map[string]string, name string) (string, bool) {

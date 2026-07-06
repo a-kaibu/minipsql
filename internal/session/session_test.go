@@ -121,20 +121,23 @@ func TestSessionStringFunctions(t *testing.T) {
 
 	s := session.New(1, 1, "default", "mini", b, nil)
 	cases := map[string]any{
-		"select repeat('ab', 3)":                "ababab",
-		"select reverse('abc')":                 "cba",
-		"select char_length('あbc')":             int64(3),
-		"select character_length('あbc')":        int64(3),
-		"select left('abcdef', 2)":              "ab",
-		"select right('abcdef', 3)":             "def",
-		"select lpad('42', 5, '0')":             "00042",
-		"select rpad('42', 5, '0')":             "42000",
-		"select btrim('  padded  ')":            "padded",
-		"select btrim('xyhelloxy', 'xy')":       "hello",
-		"select chr(65)":                        "A",
-		"select ascii('A')":                     int64(65),
-		"select md5('abc')":                     "900150983cd24fb0d6963f7d28e17f72",
-		"select convert_from('text', 'EUC_KR')": "text",
+		"select repeat('ab', 3)":                  "ababab",
+		"select reverse('abc')":                   "cba",
+		"select char_length('あbc')":               int64(3),
+		"select character_length('あbc')":          int64(3),
+		"select left('abcdef', 2)":                "ab",
+		"select right('abcdef', 3)":               "def",
+		"select lpad('42', 5, '0')":               "00042",
+		"select rpad('42', 5, '0')":               "42000",
+		"select btrim('  padded  ')":              "padded",
+		"select btrim('xyhelloxy', 'xy')":         "hello",
+		"select chr(65)":                          "A",
+		"select ascii('A')":                       int64(65),
+		"select md5('abc')":                       "900150983cd24fb0d6963f7d28e17f72",
+		"select convert_from('text', 'EUC_KR')":   "text",
+		"select pg_input_is_valid('abc', 'text')": int64(1),
+		"select point(1, 2)":                      "(1,2)",
+		"select lseg(point(1, 2), point(3, 4))":   "[(1,2),(3,4)]",
 	}
 	for sql, want := range cases {
 		t.Run(sql, func(t *testing.T) {
@@ -143,6 +146,36 @@ func TestSessionStringFunctions(t *testing.T) {
 				t.Fatalf("%s = %v (%T), want %v (%T)", sql, got, got, want, want)
 			}
 		})
+	}
+}
+
+func TestSessionRegressCompatibilityRewrites(t *testing.T) {
+	ctx := context.Background()
+	b, err := sqlite.New(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = b.Close(ctx)
+	}()
+
+	s := session.New(1, 1, "default", "mini", b, nil)
+	result := queryOK(t, ctx, s, "select char 'c' = char 'c'")
+	if got := result.Rows[0][0].Value; got != int64(1) {
+		t.Fatalf("char literal equality = %v, want 1", got)
+	}
+
+	result = queryOK(t, ctx, s, "select * from pg_input_error_info('abc', 'text')")
+	if len(result.Rows) != 1 {
+		t.Fatalf("pg_input_error_info rows = %d, want 1", len(result.Rows))
+	}
+
+	execOK(t, ctx, s, "create table delete_test(id integer primary key, a integer)")
+	execOK(t, ctx, s, "insert into delete_test values (1, 10)")
+	execOK(t, ctx, s, "delete from delete_test dt where delete_test.a > 0")
+	result = queryOK(t, ctx, s, "select count(*) from delete_test")
+	if got := result.Rows[0][0].Value; got != int64(1) {
+		t.Fatalf("rows after no-op delete alias = %v, want 1", got)
 	}
 }
 

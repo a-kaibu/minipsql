@@ -27,11 +27,14 @@ func init() {
 	sqlite.MustRegisterDeterministicScalarFunction("lpad", 3, lpadFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("md5", 1, md5Func)
 	sqlite.MustRegisterDeterministicScalarFunction("pg_numa_available", 0, pgNumaAvailableFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_input_is_valid", 2, pgInputIsValidFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("point", 2, pointFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("regexp_match", 3, regexpMatchFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("repeat", 2, repeatFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("reverse", 1, reverseFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("right", 2, rightFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("rpad", 3, rpadFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("lseg", 2, lsegFunc)
 }
 
 func asciiFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
@@ -136,6 +139,16 @@ func md5Func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, erro
 	return hex.EncodeToString(sum[:]), nil
 }
 
+func lsegFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 {
+		return nil, fmt.Errorf("lseg requires 2 arguments")
+	}
+	if args[0] == nil || args[1] == nil {
+		return nil, nil
+	}
+	return "[" + valueString(args[0]) + "," + valueString(args[1]) + "]", nil
+}
+
 func getDatabaseEncodingFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
 	if len(args) != 0 {
 		return nil, fmt.Errorf("getdatabaseencoding requires 0 arguments")
@@ -148,6 +161,26 @@ func pgNumaAvailableFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver
 		return nil, fmt.Errorf("pg_numa_available requires 0 arguments")
 	}
 	return int64(0), nil
+}
+
+func pgInputIsValidFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 {
+		return nil, fmt.Errorf("pg_input_is_valid requires 2 arguments")
+	}
+	if args[0] == nil || args[1] == nil {
+		return nil, nil
+	}
+	return int64(1), nil
+}
+
+func pointFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 {
+		return nil, fmt.Errorf("point requires 2 arguments")
+	}
+	if args[0] == nil || args[1] == nil {
+		return nil, nil
+	}
+	return "(" + valueString(args[0]) + "," + valueString(args[1]) + ")", nil
 }
 
 func repeatFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {

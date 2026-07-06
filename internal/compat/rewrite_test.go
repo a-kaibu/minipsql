@@ -179,3 +179,19 @@ func TestRewriteDistanceOperator(t *testing.T) {
 		})
 	}
 }
+
+func TestRewriteTypedLiterals(t *testing.T) {
+	cases := map[string]string{
+		"SELECT int2 '2'":                "SELECT CAST('2' AS integer)",
+		"SELECT int4 '10' + int8 '20'":   "SELECT CAST('10' AS integer) + CAST('20' AS integer)",
+		"SELECT numeric '1.5'":           "SELECT CAST('1.5' AS numeric)",
+		"SELECT timestamp '2020-01-01'": "SELECT CAST('2020-01-01' AS text)",
+	}
+	for sql, want := range cases {
+		t.Run(sql, func(t *testing.T) {
+			if got := Rewrite(sql); got != want {
+				t.Fatalf("Rewrite() = %q, want %q", got, want)
+			}
+		})
+	}
+}

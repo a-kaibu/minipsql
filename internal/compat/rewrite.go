@@ -19,6 +19,7 @@ var (
 	charLiteralRE      = regexp.MustCompile(`(?i)\bchar\s+('(?:''|[^'])*')`)
 	pgLsnLiteralRE     = regexp.MustCompile(`(?i)\bpg_lsn\s+('(?:''|[^'])*')`)
 	pointLiteralRE     = regexp.MustCompile(`(?i)\bpoint\s+('(?:''|[^'])*')`)
+	typedLiteralRE     = regexp.MustCompile(`(?i)\b(int2|int4|int8|float4|float8|numeric|decimal|real|double|integer|smallint|bigint|text|varchar|bpchar|char|pg_lsn|point|bit|varbit|date|time|timestamp|timestamptz|interval|macaddr|macaddr8|uuid|regclass|regtype|oid|regproc|regoper|circle|path|line|lseg|polygon|box|cidr|inet)\s+('(?:''|[^'])*')`)
 	createIndexUsingRE = regexp.MustCompile(`(?i)(CREATE\s+(?:UNIQUE\s+)?INDEX\b.+?\bON\s+\S+)\s+USING\s+\S+\s*(\()`)
 	ilikeRE            = regexp.MustCompile(`(?i)\bILIKE\b`)
 	returningRE        = regexp.MustCompile(`(?i)\bRETURNING\b`)
@@ -47,6 +48,15 @@ func Rewrite(sql string) string {
 	out = charLiteralRE.ReplaceAllString(out, "$1")
 	out = pgLsnLiteralRE.ReplaceAllString(out, "$1")
 	out = pointLiteralRE.ReplaceAllString(out, "$1")
+	out = typedLiteralRE.ReplaceAllStringFunc(out, func(m string) string {
+		sub := typedLiteralRE.FindStringSubmatch(m)
+		tName := strings.ToLower(sub[1])
+		if tName == "char" || tName == "pg_lsn" || tName == "point" {
+			return sub[2]
+		}
+		mapped := mapPGType(tName)
+		return "CAST(" + sub[2] + " AS " + mapped + ")"
+	})
 	out = rewriteAnonymousIndex(out)
 	out = createIndexUsingRE.ReplaceAllString(out, "$1 $2")
 	out = ilikeRE.ReplaceAllString(out, "LIKE")

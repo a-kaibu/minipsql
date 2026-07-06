@@ -76,6 +76,12 @@ func New(id, secret int32, dbname, user string, b backend.Backend, cat CatalogOp
 }
 
 func (s *Session) Execute(ctx context.Context, sql string, args []backend.Value) (*backend.Result, *backend.CommandTag, error) {
+	var err error
+	sql, err = s.rewriteInherits(ctx, sql)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	if tx := compat.TxCommand(sql); tx != "" {
 		switch tx {
 		case "begin":
@@ -243,6 +249,10 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 		return &backend.CommandTag{Tag: "CREATE SCHEMA"}, true
 	case strings.HasPrefix(lower, "drop schema"):
 		return &backend.CommandTag{Tag: "DROP SCHEMA"}, true
+	case strings.HasPrefix(lower, "create tablespace"):
+		return &backend.CommandTag{Tag: "CREATE TABLESPACE"}, true
+	case strings.HasPrefix(lower, "drop tablespace"):
+		return &backend.CommandTag{Tag: "DROP TABLESPACE"}, true
 	case strings.HasPrefix(lower, "grant "):
 		return &backend.CommandTag{Tag: "GRANT"}, true
 	case strings.HasPrefix(lower, "revoke "):

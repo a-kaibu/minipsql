@@ -492,5 +492,8 @@ func (h *Handler) handleCopyFile(ctx context.Context, w io.Writer, s *session.Se
 }
 
 func readFile(path string) ([]byte, error) {
+	if strings.HasPrefix(path, "/workspace/") {
+		path = "./" + strings.TrimPrefix(path, "/workspace/")
+	}
 	return os.ReadFile(path)
 }

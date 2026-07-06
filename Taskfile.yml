@@ -53,11 +53,15 @@ tasks:
   regress:
     desc: Run all upstream PostgreSQL regress SQL files against minipsql
     deps: [build, docker:regress]
+    vars:
+      FILTER: '{{.FILTER | default ""}}'
+      REGRESS_FILTER: '{{.REGRESS_FILTER | default .FILTER}}'
     env:
       MINIPSQL_HOST: '{{.DOCKER_MINIPSQL_HOST}}'
       MINIPSQL_PORT: '{{.MINIPSQL_PORT}}'
       MINIPSQL_USER: '{{.MINIPSQL_USER}}'
       MINIPSQL_DB: '{{.MINIPSQL_DB}}'
+      REGRESS_FILTER: '{{.REGRESS_FILTER}}'
     cmds:
       - mkdir -p reports/postgres-regress
       - |
@@ -65,31 +69,38 @@ tasks:
         ./{{.MINIPSQL_BIN}} serve --host 0.0.0.0 --port {{.MINIPSQL_PORT}} &
         server_pid=$!
         trap 'kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true' EXIT
-        docker compose run --rm postgres-regress || status=$?
+        docker compose run --rm -e REGRESS_FILTER="$REGRESS_FILTER" postgres-regress || status=$?
         exit $status
 
   regress:ci:
     desc: Run PostgreSQL regress assuming minipsql is already running (CI use)
     deps: [build, docker:regress]
+    vars:
+      FILTER: '{{.FILTER | default ""}}'
+      REGRESS_FILTER: '{{.REGRESS_FILTER | default .FILTER}}'
     env:
       MINIPSQL_HOST: '{{.DOCKER_MINIPSQL_HOST}}'
       MINIPSQL_PORT: '{{.MINIPSQL_PORT}}'
       MINIPSQL_USER: '{{.MINIPSQL_USER}}'
       MINIPSQL_DB: '{{.MINIPSQL_DB}}'
+      REGRESS_FILTER: '{{.REGRESS_FILTER}}'
     cmds:
       - mkdir -p reports/postgres-regress
-      - docker compose run --rm postgres-regress
+      - docker compose run --rm -e REGRESS_FILTER="$REGRESS_FILTER" postgres-regress
 
   test:regress:
     desc: Run PostgreSQL regress in parallel batches assuming minipsql is already running (CI use)
     vars:
       BATCH_COUNT: '{{.BATCH_COUNT | default "4"}}'
       PARALLELISM: '{{.PARALLELISM | default "4"}}'
+      FILTER: '{{.FILTER | default ""}}'
+      REGRESS_FILTER: '{{.REGRESS_FILTER | default .FILTER}}'
     env:
       MINIPSQL_HOST: '{{.DOCKER_MINIPSQL_HOST}}'
       MINIPSQL_PORT: '{{.MINIPSQL_PORT}}'
       MINIPSQL_USER: '{{.MINIPSQL_USER}}'
       MINIPSQL_DB: '{{.MINIPSQL_DB}}'
+      REGRESS_FILTER: '{{.REGRESS_FILTER}}'
     cmds:
       - mkdir -p reports/postgres-regress
       - |
@@ -111,6 +122,7 @@ tasks:
             -e REGRESS_BATCH=$b \
             -e REGRESS_BATCH_COUNT={{.BATCH_COUNT}} \
             -e REGRESS_PARALLELISM={{.PARALLELISM}} \
+            -e REGRESS_FILTER="{{.REGRESS_FILTER}}" \
             -v "$(pwd)/external/postgres:/workspace/external/postgres:ro" \
             -v "$(pwd)/reports/postgres-regress:/workspace/reports/postgres-regress" \
             minipsql-postgres-regress:latest > /tmp/regress-batch-$b.log 2>&1 &

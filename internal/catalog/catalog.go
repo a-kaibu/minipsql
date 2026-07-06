@@ -12,7 +12,7 @@ import (
 )
 
 type dbEntry struct {
-	b         backend.Backend
+	b         *sqlite.Backend
 	refs      atomic.Int32
 	dropped   bool
 	closeOnce sync.Once
@@ -66,7 +66,8 @@ func (c *Catalog) runInitSQL(ctx context.Context, b backend.Backend) error {
 	return nil
 }
 
-// GetOrCreate returns the backend for the named database.
+// GetOrCreate returns a per-session backend for the named database.
+// Each call returns an independent session with isolated transaction state.
 // Returns error 3D000 if the database does not exist.
 func (c *Catalog) GetOrCreate(name string) (backend.Backend, error) {
 	if name == "" {
@@ -79,7 +80,7 @@ func (c *Catalog) GetOrCreate(name string) (backend.Backend, error) {
 	if !ok || e.dropped {
 		return nil, &compat.PGError{Code: "3D000", Message: "database \"" + name + "\" does not exist"}
 	}
-	return e.b, nil
+	return e.b.NewSession(), nil
 }
 
 // Connect increments the connection reference count for a database.
@@ -104,6 +105,9 @@ func (c *Catalog) Disconnect(ctx context.Context, name string) {
 		return
 	}
 	if e.refs.Add(-1) == 0 && e.dropped {
+		c.mu.Lock()
+		delete(c.dbs, name)
+		c.mu.Unlock()
 		e.close(ctx)
 	}
 }
@@ -120,8 +124,10 @@ func (c *Catalog) CreateDatabase(ctx context.Context, name string) error {
 	return c.createDB(ctx, name)
 }
 
-// DropDatabase removes a named database.
+// DropDatabase marks a database as dropped.
 // Returns error 42501 for "default", error 3D000 if it does not exist.
+// The entry stays in the map until all active connections disconnect so that
+// Disconnect can still look it up and close the backend when refs reach zero.
 func (c *Catalog) DropDatabase(ctx context.Context, name string) error {
 	name = strings.ToLower(name)
 	if name == "default" {
@@ -134,9 +140,10 @@ func (c *Catalog) DropDatabase(ctx context.Context, name string) error {
 		return &compat.PGError{Code: "3D000", Message: "database \"" + name + "\" does not exist"}
 	}
 	e.dropped = true
-	delete(c.dbs, name)
+	// Keep the entry in the map so Disconnect can still find it.
 	// Close immediately if no active connections; otherwise Disconnect will close.
 	if e.refs.Load() == 0 {
+		delete(c.dbs, name)
 		e.close(ctx)
 	}
 	return nil

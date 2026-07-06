@@ -80,9 +80,8 @@ tasks:
       - mkdir -p reports/postgres-regress
       - docker compose run --rm postgres-regress
 
-  regress:ci:parallel:
+  regress:ci:batched:
     desc: Run PostgreSQL regress in parallel batches assuming minipsql is already running (CI use)
-    deps: [build, docker:regress]
     vars:
       BATCH_COUNT: '{{.BATCH_COUNT | default "4"}}'
       PARALLELISM: '{{.PARALLELISM | default "4"}}'

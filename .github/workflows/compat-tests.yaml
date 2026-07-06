@@ -107,11 +107,12 @@ jobs:
           mv /tmp/.buildx-cache-regress-new /tmp/.buildx-cache-regress
           mv /tmp/.buildx-cache-sqlancer-new /tmp/.buildx-cache-sqlancer
 
+      - name: Build minipsql
+        run: task build
+
       - name: Start minipsql server
         background: true
-        run: |
-          task build
-          ./dist/minipsql serve --host 0.0.0.0 --port 15432
+        run: ./dist/minipsql serve --host 0.0.0.0 --port 15432
 
       - name: Wait for minipsql to be ready
         run: |
@@ -128,7 +129,7 @@ jobs:
         - name: Run PostgreSQL regress
           id: regress
           run: |
-            task regress:ci:parallel || true
+            task regress:ci:batched || true
 
         - name: Run SQLancer
           id: sqlancer

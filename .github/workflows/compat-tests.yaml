@@ -146,6 +146,9 @@ jobs:
             echo "status=$status" >> "$GITHUB_OUTPUT"
             exit 0
 
+      - name: Stop minipsql server
+        run: pkill -f 'minipsql serve' || true
+
       - name: Aggregate regress reports
         run: |
           report_dir="reports/postgres-regress"

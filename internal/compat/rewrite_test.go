@@ -105,3 +105,35 @@ func TestRewriteGenerateSeriesBareAliases(t *testing.T) {
 		t.Fatalf("Rewrite() missing bare-alias column names: %q", got)
 	}
 }
+
+func TestRewritePositionEdgeCases(t *testing.T) {
+	cases := map[string]string{
+		"SELECT my_position, POSITION('a' IN 'abc')":                "SELECT my_position, instr('abc', 'a')",
+		"SELECT POSITION('a' IN 'abc'), my_position":                "SELECT instr('abc', 'a'), my_position",
+		"SELECT POSITION(x":                                         "SELECT POSITION(x",
+		"SELECT POSITION('a' IN 'abc'), POSITION('x' IN my_position)": "SELECT instr('abc', 'a'), instr(my_position, 'x')",
+	}
+	for sql, want := range cases {
+		t.Run(sql, func(t *testing.T) {
+			if got := Rewrite(sql); got != want {
+				t.Fatalf("Rewrite() = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestRewriteDeleteAlias(t *testing.T) {
+	cases := map[string]string{
+		"delete from delete_test dt where delete_test.a > 0": "delete from delete_test AS dt where dt.a > 0",
+		"DELETE FROM schema.table t WHERE schema.table.id = 1": "DELETE FROM schema.table AS t WHERE t.id = 1",
+		"DELETE FROM my_table WHERE id = 1": "DELETE FROM my_table WHERE id = 1",
+		"DELETE FROM my_table AS t WHERE t.id = 1": "DELETE FROM my_table AS t WHERE t.id = 1",
+	}
+	for sql, want := range cases {
+		t.Run(sql, func(t *testing.T) {
+			if got := Rewrite(sql); got != want {
+				t.Fatalf("Rewrite() = %q, want %q", got, want)
+			}
+		})
+	}
+}

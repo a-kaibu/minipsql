@@ -70,7 +70,7 @@ func btrimFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, er
 	cutset := " "
 	if len(args) == 2 {
 		if args[1] == nil {
-			return valueString(args[0]), nil
+			return nil, nil
 		}
 		cutset = valueString(args[1])
 	}
@@ -105,7 +105,7 @@ func convertFromFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Val
 	if len(args) != 2 {
 		return nil, fmt.Errorf("convert_from requires 2 arguments")
 	}
-	if args[0] == nil {
+	if args[0] == nil || args[1] == nil {
 		return nil, nil
 	}
 	return valueString(args[0]), nil
@@ -398,17 +398,19 @@ func padFunc(name string, args []driver.Value, left bool) (driver.Value, error) 
 }
 
 func buildPad(fill string, width int) string {
-	var b strings.Builder
-	fillRunes := []rune(fill)
-	for utf8.RuneCountInString(b.String()) < width {
-		for _, r := range fillRunes {
-			if utf8.RuneCountInString(b.String()) >= width {
-				return b.String()
-			}
-			b.WriteRune(r)
-		}
+	if width <= 0 || fill == "" {
+		return ""
 	}
-	return string([]rune(b.String())[:width])
+	fillRunes := []rune(fill)
+	if len(fillRunes) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i := 0; i < width; i++ {
+		r := fillRunes[i%len(fillRunes)]
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 func valueInt(v driver.Value) int64 {

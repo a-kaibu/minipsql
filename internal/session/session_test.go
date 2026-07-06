@@ -132,10 +132,14 @@ func TestSessionStringFunctions(t *testing.T) {
 		"select rpad('42', 5, '0')":                    "42000",
 		"select btrim('  padded  ')":                   "padded",
 		"select btrim('xyhelloxy', 'xy')":              "hello",
+		"select btrim(NULL)":                           nil,
+		"select btrim('abc', NULL)":                    nil,
 		"select chr(65)":                               "A",
 		"select ascii('A')":                            int64(65),
 		"select md5('abc')":                            "900150983cd24fb0d6963f7d28e17f72",
 		"select convert_from('text', 'EUC_KR')":        "text",
+		"select convert_from(NULL, 'EUC_KR')":          nil,
+		"select convert_from('text', NULL)":            nil,
 		"select pg_input_is_valid('abc', 'text')":      int64(1),
 		"select point(1, 2)":                           "(1,2)",
 		"select lseg(point(1, 2), point(3, 4))":        "[(1,2),(3,4)]",
@@ -186,8 +190,8 @@ func TestSessionRegressCompatibilityRewrites(t *testing.T) {
 	execOK(t, ctx, s, "insert into delete_test values (1, 10)")
 	execOK(t, ctx, s, "delete from delete_test dt where delete_test.a > 0")
 	result = queryOK(t, ctx, s, "select count(*) from delete_test")
-	if got := result.Rows[0][0].Value; got != int64(1) {
-		t.Fatalf("rows after no-op delete alias = %v, want 1", got)
+	if got := result.Rows[0][0].Value; got != int64(0) {
+		t.Fatalf("rows after delete alias = %v, want 0", got)
 	}
 
 	execOK(t, ctx, s, "insert into char_tbl (f1) values ('abcde')")

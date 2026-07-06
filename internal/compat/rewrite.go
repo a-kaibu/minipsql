@@ -27,6 +27,7 @@ var (
 	falseRE            = regexp.MustCompile(`(?i)\bFALSE\b`)
 	ifNotExistsRE      = regexp.MustCompile(`(?i)\bIF\s+NOT\s+EXISTS\b`)
 	ifExistsRE         = regexp.MustCompile(`(?i)\bIF\s+EXISTS\b`)
+	deleteFromRE       = regexp.MustCompile(`(?i)\bDELETE\s+FROM\s+([A-Za-z0-9_\".]+)\s+([A-Za-z0-9_\"]+)\s+`)
 )
 
 func Rewrite(sql string) string {
@@ -47,6 +48,7 @@ func Rewrite(sql string) string {
 	out = rewriteNullsOrder(out)
 	out = rewriteGenerateSeries(out)
 	out = rewritePosition(out)
+	out = rewriteDeleteAlias(out)
 	out = onlyRE.ReplaceAllString(out, "FROM ")
 	out = eStringRE.ReplaceAllString(out, "'")
 	return out
@@ -294,33 +296,130 @@ func dollarQuoteTagAt(sql string, start int) string {
 
 func rewritePosition(sql string) string {
 	result := sql
+	startIdx := 0
 	for {
-		idx := indexOutsideQuotes(strings.ToUpper(result), "POSITION")
-		if idx < 0 {
-			return result
+		if startIdx >= len(result) {
+			break
 		}
+		idx := indexOutsideQuotes(strings.ToUpper(result[startIdx:]), "POSITION")
+		if idx < 0 {
+			break
+		}
+		idx += startIdx
+
+		// Check if it's part of an identifier
+		isIdent := false
+		if idx > 0 && isIdentByte(result[idx-1]) {
+			isIdent = true
+		}
+		if idx+len("POSITION") < len(result) && isIdentByte(result[idx+len("POSITION")]) {
+			isIdent = true
+		}
+
+		if isIdent {
+			startIdx = idx + len("POSITION")
+			continue
+		}
+
 		open := idx + len("POSITION")
 		for open < len(result) && unicode.IsSpace(rune(result[open])) {
 			open++
 		}
 		if open >= len(result) || result[open] != '(' {
-			return result
+			startIdx = idx + len("POSITION")
+			continue
 		}
 		close := findMatchingParen(result, open)
 		if close < 0 {
-			return result
+			startIdx = open + 1
+			continue
 		}
 		body := result[open+1 : close]
 		inStart, inEnd := topLevelInBounds(body)
 		if inStart < 0 {
-			idx = close + 1
-			return result[:idx] + rewritePosition(result[idx:])
+			rewrittenBody := rewritePosition(body)
+			if rewrittenBody != body {
+				result = result[:open+1] + rewrittenBody + result[close:]
+				close = open + 1 + len(rewrittenBody)
+			}
+			startIdx = close + 1
+			continue
 		}
 		needle := strings.TrimSpace(body[:inStart])
 		haystack := strings.TrimSpace(body[inEnd:])
+		needle = rewritePosition(needle)
+		haystack = rewritePosition(haystack)
+
 		replacement := "instr(" + haystack + ", " + needle + ")"
 		result = result[:idx] + replacement + result[close+1:]
+		startIdx = idx + len(replacement)
 	}
+	return result
+}
+
+func rewriteDeleteAlias(sql string) string {
+	result := sql
+	startIdx := 0
+	for {
+		if startIdx >= len(result) {
+			break
+		}
+		loc := deleteFromRE.FindStringIndex(result[startIdx:])
+		if loc == nil {
+			break
+		}
+		matchStart := loc[0] + startIdx
+		matchEnd := loc[1] + startIdx
+		match := result[matchStart:matchEnd]
+
+		sub := deleteFromRE.FindStringSubmatch(match)
+		if len(sub) < 3 {
+			startIdx = matchEnd
+			continue
+		}
+		table := sub[1]
+		alias := sub[2]
+		lowerAlias := strings.ToLower(alias)
+		if lowerAlias == "as" || lowerAlias == "where" || lowerAlias == "using" || lowerAlias == "returning" {
+			startIdx = matchEnd
+			continue
+		}
+
+		idxTable := strings.Index(strings.ToLower(match), strings.ToLower(table))
+		if idxTable < 0 {
+			startIdx = matchEnd
+			continue
+		}
+		idxAlias := strings.Index(strings.ToLower(match[idxTable+len(table):]), strings.ToLower(alias))
+		if idxAlias < 0 {
+			startIdx = matchEnd
+			continue
+		}
+		idxAlias += idxTable + len(table)
+
+		rewrittenMatch := match[:idxAlias] + "AS " + match[idxAlias:]
+
+		stmtEnd := strings.Index(result[matchEnd:], ";")
+		var rest string
+		var suffix string
+		if stmtEnd < 0 {
+			rest = result[matchEnd:]
+			suffix = ""
+		} else {
+			rest = result[matchEnd : matchEnd+stmtEnd]
+			suffix = result[matchEnd+stmtEnd:]
+		}
+
+		escapedTable := regexp.QuoteMeta(table)
+		tableRefRE, err := regexp.Compile(`(?i)\b` + escapedTable + `\.`)
+		if err == nil {
+			rest = tableRefRE.ReplaceAllString(rest, alias+".")
+		}
+
+		result = result[:matchStart] + rewrittenMatch + rest + suffix
+		startIdx = matchStart + len(rewrittenMatch) + len(rest)
+	}
+	return result
 }
 
 func findMatchingParen(sql string, open int) int {

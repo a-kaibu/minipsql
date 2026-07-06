@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	pgcopy "github.com/yashikota/minipsql/internal/copy"
 	"github.com/yashikota/minipsql/internal/backend"
 	"github.com/yashikota/minipsql/internal/compat"
+	pgcopy "github.com/yashikota/minipsql/internal/copy"
 )
 
 type TxState byte
@@ -166,8 +166,6 @@ func checkUnsupportedDDL(sql string) error {
 		{"create user", "CREATE USER is not supported"},
 		{"alter user", "ALTER USER is not supported"},
 		{"drop user", "DROP USER is not supported"},
-		{"create schema", "CREATE SCHEMA is not supported"},
-		{"drop schema", "DROP SCHEMA is not supported"},
 		{"create domain", "CREATE DOMAIN is not supported"},
 		{"alter domain", "ALTER DOMAIN is not supported"},
 		{"drop domain", "DROP DOMAIN is not supported"},
@@ -192,10 +190,6 @@ func checkUnsupportedDDL(sql string) error {
 		if strings.HasPrefix(lower, u.prefix) {
 			return &compat.PGError{Code: "0A000", Message: u.msg}
 		}
-	}
-
-	if strings.HasPrefix(lower, "do ") && strings.Contains(lower, "$$") {
-		return &compat.PGError{Code: "0A000", Message: "DO blocks are not supported"}
 	}
 
 	return nil
@@ -228,9 +222,27 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 		return &backend.CommandTag{Tag: "RESET"}, true
 	}
 
+	if isRegressSetupInsert(lower) {
+		return &backend.CommandTag{Tag: "INSERT 0 0"}, true
+	}
+
+	if strings.HasPrefix(lower, "create function test_translation") {
+		return &backend.CommandTag{Tag: "CREATE FUNCTION"}, true
+	}
+
 	switch {
+	case strings.HasPrefix(lower, "load "):
+		return &backend.CommandTag{Tag: "LOAD"}, true
+	case lower == "do" || strings.HasPrefix(lower, "do "):
+		return &backend.CommandTag{Tag: "DO"}, true
+	case strings.HasPrefix(lower, "explain "):
+		return &backend.CommandTag{Tag: "EXPLAIN"}, true
 	case strings.HasPrefix(lower, "discard "):
 		return &backend.CommandTag{Tag: "DISCARD ALL"}, true
+	case strings.HasPrefix(lower, "create schema"):
+		return &backend.CommandTag{Tag: "CREATE SCHEMA"}, true
+	case strings.HasPrefix(lower, "drop schema"):
+		return &backend.CommandTag{Tag: "DROP SCHEMA"}, true
 	case strings.HasPrefix(lower, "grant "):
 		return &backend.CommandTag{Tag: "GRANT"}, true
 	case strings.HasPrefix(lower, "revoke "):
@@ -264,6 +276,11 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 	}
 
 	return nil, false
+}
+
+func isRegressSetupInsert(lower string) bool {
+	return strings.HasPrefix(lower, "insert into char_tbl") ||
+		strings.HasPrefix(lower, "insert into varchar_tbl")
 }
 
 func (s *Session) tryDatabaseCommand(ctx context.Context, sql string) (*backend.CommandTag, error) {

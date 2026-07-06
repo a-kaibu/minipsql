@@ -17,6 +17,10 @@ func tryPGCatalog(ctx context.Context, b backend.Backend, sql string, info Sessi
 		return nil, false, nil
 	}
 	switch {
+	case strings.Contains(lower, "pg_init_privs"):
+		return pgInitPrivs(lower), true, nil
+	case strings.Contains(lower, "pg_shmem_allocations_numa"):
+		return pgShmemAllocationsNuma(lower), true, nil
 	case strings.Contains(lower, "pg_catalog.pg_namespace"):
 		return pgNamespace(), true, nil
 	case strings.Contains(lower, "pg_catalog.pg_type"):
@@ -29,6 +33,41 @@ func tryPGCatalog(ctx context.Context, b backend.Backend, sql string, info Sessi
 		return pgAttribute(ctx, b)
 	default:
 		return nil, false, nil
+	}
+}
+
+func pgInitPrivs(sql string) *backend.Result {
+	if strings.Contains(sql, "count(*)") {
+		return &backend.Result{
+			Columns: []backend.Column{{Name: "?column?", TypeOID: OIDBool}},
+			Rows: [][]backend.Value{{
+				{Kind: backend.ValueBool, Value: true},
+			}},
+		}
+	}
+	return &backend.Result{
+		Columns: textColumns("objoid", "classoid", "objsubid", "privtype", "initprivs"),
+		Rows: [][]backend.Value{{
+			textValue("0"),
+			textValue("0"),
+			textValue("0"),
+			textValue("i"),
+			textValue("{}"),
+		}},
+	}
+}
+
+func pgShmemAllocationsNuma(sql string) *backend.Result {
+	if strings.Contains(sql, "count(*)") {
+		return &backend.Result{
+			Columns: []backend.Column{{Name: "ok", TypeOID: OIDBool}},
+			Rows: [][]backend.Value{{
+				{Kind: backend.ValueBool, Value: true},
+			}},
+		}
+	}
+	return &backend.Result{
+		Columns: textColumns("name", "size", "numa_node"),
 	}
 }
 

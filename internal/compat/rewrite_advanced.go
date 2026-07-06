@@ -390,36 +390,22 @@ func rewriteGenerateSeries(sql string) string {
 			step = strings.TrimSpace(argParts[2])
 		}
 
-		// Parse optional AS alias(col)
+		// Parse optional alias forms: AS alias(col), alias(col), or alias.
 		rest := result[parenEnd:]
 		alias := "_gs_alias"
 		colName := "value"
-		consumed := 0
 		trimmed := strings.TrimSpace(rest)
 		leadingSpace := len(rest) - len(trimmed)
-		if len(trimmed) >= 2 && strings.ToUpper(trimmed[:2]) == "AS" {
-			pos := 2
-			for pos < len(trimmed) && trimmed[pos] == ' ' {
-				pos++
+		parsedAlias, parsedCol, consumedTrimmed := parseGenerateSeriesAlias(trimmed)
+		consumed := 0
+		if parsedAlias != "" {
+			alias = parsedAlias
+			if parsedCol == "" {
+				colName = parsedAlias
+			} else {
+				colName = parsedCol
 			}
-			aliasStart := pos
-			for pos < len(trimmed) && (isIdentByte(trimmed[pos]) || trimmed[pos] == '_') {
-				pos++
-			}
-			if pos > aliasStart {
-				alias = trimmed[aliasStart:pos]
-				for pos < len(trimmed) && trimmed[pos] == ' ' {
-					pos++
-				}
-				if pos < len(trimmed) && trimmed[pos] == '(' {
-					closeP := strings.Index(trimmed[pos:], ")")
-					if closeP > 0 {
-						colName = strings.TrimSpace(trimmed[pos+1 : pos+closeP])
-						pos += closeP + 1
-					}
-				}
-				consumed = leadingSpace + pos
-			}
+			consumed = leadingSpace + consumedTrimmed
 		}
 
 		cmpOp := "<="
@@ -446,6 +432,59 @@ func rewriteGenerateSeries(sql string) string {
 		}
 	}
 	return result
+}
+
+func parseGenerateSeriesAlias(trimmed string) (alias string, colName string, consumed int) {
+	if trimmed == "" {
+		return "", "", 0
+	}
+	pos := 0
+	if len(trimmed) >= 2 && strings.EqualFold(trimmed[:2], "AS") && (len(trimmed) == 2 || trimmed[2] == ' ') {
+		pos = 2
+		for pos < len(trimmed) && trimmed[pos] == ' ' {
+			pos++
+		}
+	}
+	if startsWithKeyword(trimmed[pos:], "WHERE") ||
+		startsWithKeyword(trimmed[pos:], "ORDER") ||
+		startsWithKeyword(trimmed[pos:], "GROUP") ||
+		startsWithKeyword(trimmed[pos:], "LIMIT") {
+		return "", "", 0
+	}
+
+	aliasStart := pos
+	for pos < len(trimmed) && (isIdentByte(trimmed[pos]) || trimmed[pos] == '_') {
+		pos++
+	}
+	if pos == aliasStart {
+		return "", "", 0
+	}
+	alias = trimmed[aliasStart:pos]
+	if strings.EqualFold(alias, "WHERE") ||
+		strings.EqualFold(alias, "ORDER") ||
+		strings.EqualFold(alias, "GROUP") ||
+		strings.EqualFold(alias, "LIMIT") {
+		return "", "", 0
+	}
+
+	for pos < len(trimmed) && trimmed[pos] == ' ' {
+		pos++
+	}
+	if pos < len(trimmed) && trimmed[pos] == '(' {
+		closeP := strings.Index(trimmed[pos:], ")")
+		if closeP > 0 {
+			colName = strings.TrimSpace(trimmed[pos+1 : pos+closeP])
+			pos += closeP + 1
+		}
+	}
+	return alias, colName, pos
+}
+
+func startsWithKeyword(s string, keyword string) bool {
+	if len(s) < len(keyword) || !strings.EqualFold(s[:len(keyword)], keyword) {
+		return false
+	}
+	return len(s) == len(keyword) || s[len(keyword)] == ' '
 }
 
 func indexOutsideQuotes(sql string, substr string) int {

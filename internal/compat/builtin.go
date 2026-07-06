@@ -53,6 +53,16 @@ func TryHandleBuiltin(ctx context.Context, b backend.Backend, sql string, info S
 		return emptySingleTextColumn("f1"), true, nil
 	}
 
+	if strings.Contains(lower, "from pg_class c left join pg_namespace") &&
+		strings.Contains(lower, "from pg_index i") {
+		return emptyColumns("relname", "nspname"), true, nil
+	}
+
+	if strings.Contains(lower, "from pg_class") &&
+		strings.Contains(lower, "relfilenode <> 0") {
+		return emptyColumns("relname", "relkind"), true, nil
+	}
+
 	if result, ok, err := tryInformationSchema(ctx, b, q, info); ok || err != nil {
 		return result, ok, err
 	}
@@ -109,7 +119,11 @@ func singleColumn(name, val string) *backend.Result {
 }
 
 func emptySingleTextColumn(name string) *backend.Result {
+	return emptyColumns(name)
+}
+
+func emptyColumns(names ...string) *backend.Result {
 	return &backend.Result{
-		Columns: []backend.Column{{Name: name, TypeOID: OIDText}},
+		Columns: textColumns(names...),
 	}
 }

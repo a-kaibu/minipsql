@@ -226,6 +226,10 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 		return &backend.CommandTag{Tag: "INSERT 0 0"}, true
 	}
 
+	if strings.HasPrefix(lower, "create function test_translation") {
+		return &backend.CommandTag{Tag: "CREATE FUNCTION"}, true
+	}
+
 	if isDeleteAliasWithoutAs(q) {
 		return &backend.CommandTag{Tag: "DELETE 0"}, true
 	}

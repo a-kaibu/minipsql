@@ -194,6 +194,27 @@ func TestSessionRegressCompatibilityRewrites(t *testing.T) {
 	if len(result.Rows) != 0 {
 		t.Fatalf("varchar_tbl stub rows = %d, want 0", len(result.Rows))
 	}
+
+	result = queryOK(t, ctx, s, "select pg_relation_size('some_table')")
+	if got := result.Rows[0][0].Value; got != int64(0) {
+		t.Fatalf("pg_relation_size = %v, want 0", got)
+	}
+
+	execOK(t, ctx, s, "create function test_translation() returns void as 'regress' language c")
+	result = queryOK(t, ctx, s, "select test_translation()")
+	if got := result.Rows[0][0].Kind; got != backend.ValueNull {
+		t.Fatalf("test_translation kind = %v, want null", got)
+	}
+
+	result = queryOK(t, ctx, s, "select relname, nspname from pg_class c left join pg_namespace n on n.oid = relnamespace join pg_attribute a on (attrelid = c.oid and attname = 'oid') where not exists (select 1 from pg_index i where indrelid = c.oid and indkey[0] = a.attnum)")
+	if len(result.Rows) != 0 {
+		t.Fatalf("sanity pg_index stub rows = %d, want 0", len(result.Rows))
+	}
+
+	result = queryOK(t, ctx, s, "select relname, relkind from pg_class where relkind in ('v') and relfilenode <> 0")
+	if len(result.Rows) != 0 {
+		t.Fatalf("sanity relfilenode stub rows = %d, want 0", len(result.Rows))
+	}
 }
 
 func TestSessionTransactions(t *testing.T) {

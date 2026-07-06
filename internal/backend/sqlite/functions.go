@@ -28,12 +28,14 @@ func init() {
 	sqlite.MustRegisterDeterministicScalarFunction("md5", 1, md5Func)
 	sqlite.MustRegisterDeterministicScalarFunction("pg_numa_available", 0, pgNumaAvailableFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("pg_input_is_valid", 2, pgInputIsValidFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_relation_size", 1, pgRelationSizeFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("point", 2, pointFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("regexp_match", 3, regexpMatchFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("repeat", 2, repeatFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("reverse", 1, reverseFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("right", 2, rightFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("rpad", 3, rpadFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("test_translation", 0, testTranslationFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("lseg", 2, lsegFunc)
 }
 
@@ -173,6 +175,16 @@ func pgInputIsValidFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.
 	return int64(1), nil
 }
 
+func pgRelationSizeFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("pg_relation_size requires 1 argument")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	return int64(0), nil
+}
+
 func pointFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
 	if len(args) != 2 {
 		return nil, fmt.Errorf("point requires 2 arguments")
@@ -269,6 +281,13 @@ func regexpMatchFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Val
 		return int64(1), nil
 	}
 	return int64(0), nil
+}
+
+func testTranslationFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 0 {
+		return nil, fmt.Errorf("test_translation requires 0 arguments")
+	}
+	return nil, nil
 }
 
 func padFunc(name string, args []driver.Value, left bool) (driver.Value, error) {

@@ -1,5 +1,7 @@
 # minipsql
 
+[![s3-tests](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/yashikota/minipsql/main/.github/badges/compat-tests.json&cacheSeconds=300)](https://github.com/yashikota/minipsql/blob/main/.github/workflows/compat-tests.yaml)
+
 minipsql is a lightweight PostgreSQL-wire-compatible in-memory test database.
 It accepts PostgreSQL client connections and uses SQLite as the execution backend.
 

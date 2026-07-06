@@ -2,6 +2,7 @@ package compat
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -77,6 +78,7 @@ func TestRewriteTypedLiteralsAndCreateIndexUsing(t *testing.T) {
 		`CREATE INDEX macaddr_data_btree ON macaddr_data USING btree (b)`:               `CREATE INDEX macaddr_data_btree ON macaddr_data (b)`,
 		`SELECT '[{"attributes": [], "dependency": 2, "degree": 1}]' ::pg_dependencies`: `SELECT CAST('[{"attributes": [], "dependency": 2, "degree": 1}]' AS text)`,
 		`SELECT b::macaddr <> '08:00:2b:01:02:04'::macaddr FROM macaddr8_data`:          `SELECT CAST(b AS text)<> CAST('08:00:2b:01:02:04' AS text) FROM macaddr8_data`,
+		`SELECT (i || '/' || j)::pg_lsn f FROM t ORDER BY f`:                            `SELECT CAST((i || '/' || j) AS text) f FROM t ORDER BY f`,
 	}
 	for sql, want := range cases {
 		t.Run(sql, func(t *testing.T) {
@@ -84,5 +86,22 @@ func TestRewriteTypedLiteralsAndCreateIndexUsing(t *testing.T) {
 				t.Fatalf("Rewrite() = %q, want %q", got, want)
 			}
 		})
+	}
+}
+
+func TestRewriteGenerateSeriesBareAliases(t *testing.T) {
+	sql := `SELECT DISTINCT (i || '/' || j)::pg_lsn f FROM generate_series(1, 10) i, generate_series(1, 10) j WHERE i <= 10 ORDER BY f`
+	got := Rewrite(sql)
+	if strings.Contains(got, "generate_series") {
+		t.Fatalf("Rewrite() still contains generate_series: %q", got)
+	}
+	if strings.Contains(got, ") i,") || strings.Contains(got, ") j ") {
+		t.Fatalf("Rewrite() left bare aliases behind: %q", got)
+	}
+	if !strings.Contains(got, "AS i") || !strings.Contains(got, "AS j") {
+		t.Fatalf("Rewrite() missing aliases: %q", got)
+	}
+	if !strings.Contains(got, "_gs_cte(i)") || !strings.Contains(got, "_gs_cte(j)") {
+		t.Fatalf("Rewrite() missing bare-alias column names: %q", got)
 	}
 }

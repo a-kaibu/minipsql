@@ -60,6 +60,8 @@ func rewritePGCast(sql string) string {
 		}
 		typeName := strings.TrimSpace(castRE.FindStringSubmatch(sql[loc[0]:])[1])
 		typeName, trailing := splitCastTypeTrailingSQL(typeName)
+		typeName, aliasTrailing := splitCastTypeAlias(typeName)
+		trailing = aliasTrailing + trailing
 		typeName = strings.TrimSuffix(typeName, "[]")
 		typeName = strings.TrimSpace(typeName)
 		if idx := strings.Index(typeName, "("); idx >= 0 {
@@ -87,6 +89,22 @@ func splitCastTypeTrailingSQL(typeName string) (string, string) {
 		}
 	}
 	return typeName, ""
+}
+
+func splitCastTypeAlias(typeName string) (string, string) {
+	fields := strings.Fields(typeName)
+	if len(fields) != 2 {
+		return typeName, ""
+	}
+	lower := strings.ToLower(typeName)
+	switch lower {
+	case "double precision", "character varying":
+		return typeName, ""
+	}
+	if strings.Contains(fields[1], "(") || strings.HasSuffix(fields[0], "[]") {
+		return typeName, ""
+	}
+	return fields[0], " " + fields[1]
 }
 
 func mapPGType(t string) string {

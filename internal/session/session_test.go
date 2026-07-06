@@ -89,6 +89,7 @@ func TestSessionRegressCompatibilityStubs(t *testing.T) {
 		"DO 'begin perform 1; end'",
 		"create schema regress_schema",
 		"drop schema regress_schema",
+		"explain (costs off) select 1",
 	} {
 		execOK(t, ctx, s, sql)
 	}

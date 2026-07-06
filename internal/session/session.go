@@ -237,6 +237,8 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 	switch {
 	case lower == "do" || strings.HasPrefix(lower, "do "):
 		return &backend.CommandTag{Tag: "DO"}, true
+	case strings.HasPrefix(lower, "explain "):
+		return &backend.CommandTag{Tag: "EXPLAIN"}, true
 	case strings.HasPrefix(lower, "discard "):
 		return &backend.CommandTag{Tag: "DISCARD ALL"}, true
 	case strings.HasPrefix(lower, "create schema"):

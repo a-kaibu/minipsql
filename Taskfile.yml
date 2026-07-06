@@ -116,6 +116,48 @@ tasks:
         for b in $(seq 0 $(({{.BATCH_COUNT}} - 1))); do
           echo "=== batch $b ===" && cat /tmp/regress-batch-$b.log || true
         done
+
+        # aggregate batch results into a single summary.txt
+        report_dir="reports/postgres-regress"
+        combined_tsv="$report_dir/file-results.tsv"
+        combined_per_file="$report_dir/per-file"
+        mkdir -p "$combined_per_file"
+        printf 'status\tfile\terror_count\tcompleted\n' > "$combined_tsv"
+        sf_total=0; ff_total=0; cf_total=0; nc_total=0
+        te_total=0; tfa_total=0; tf_total=0
+        for b in $(seq 0 $(({{.BATCH_COUNT}} - 1))); do
+          batch_dir="$report_dir/batch-$b"
+          [ -d "$batch_dir" ] || continue
+          cp "$batch_dir/per-file"/* "$combined_per_file/" 2>/dev/null || true
+          [ -f "$batch_dir/file-results.tsv" ] && tail -n +2 "$batch_dir/file-results.tsv" >> "$combined_tsv"
+          summary="$batch_dir/summary.txt"
+          [ -f "$summary" ] || continue
+          sf_total=$((sf_total + $(grep -m1 '^success_files=' "$summary" | cut -d= -f2- || echo 0)))
+          ff_total=$((ff_total + $(grep -m1 '^failed_files=' "$summary" | cut -d= -f2- || echo 0)))
+          cf_total=$((cf_total + $(grep -m1 '^completed_files=' "$summary" | cut -d= -f2- || echo 0)))
+          nc_total=$((nc_total + $(grep -m1 '^not_completed_files=' "$summary" | cut -d= -f2- || echo 0)))
+          te_total=$((te_total + $(grep -m1 '^error_count=' "$summary" | cut -d= -f2- || echo 0)))
+          tfa_total=$((tfa_total + $(grep -m1 '^fatal_count=' "$summary" | cut -d= -f2- || echo 0)))
+          tf_total=$((tf_total + $(grep -m1 '^total_files=' "$summary" | cut -d= -f2- || echo 0)))
+        done
+        overall=0
+        if [ "$te_total" -gt 0 ] || [ "$ff_total" -gt 0 ]; then overall=1; fi
+        {
+          printf 'psql_runner=parallel-batched\n'
+          printf 'batch_count={{.BATCH_COUNT}}\n'
+          printf 'total_files=%s\n' "$tf_total"
+          printf 'success_files=%s\n' "$sf_total"
+          printf 'failed_files=%s\n' "$ff_total"
+          printf 'completed_files=%s\n' "$cf_total"
+          printf 'not_completed_files=%s\n' "$nc_total"
+          printf 'psql_exit_status=%s\n' "$overall"
+          printf 'error_count=%s\n' "$te_total"
+          printf 'fatal_count=%s\n' "$tfa_total"
+          printf '\nFirst 200 errors (across all batches):\n'
+          find "$combined_per_file" -name '*.stderr' \
+            -exec grep -h -E '(^|: )(ERROR|FATAL|PANIC):' {} + 2>/dev/null | head -n 200 || true
+        } > "$report_dir/summary.txt"
+
         exit $status
 
   sqlancer:

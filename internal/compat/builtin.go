@@ -45,6 +45,10 @@ func TryHandleBuiltin(ctx context.Context, b backend.Backend, sql string, info S
 		return pgInputErrorInfo(), true, nil
 	}
 
+	if strings.Contains(lower, "from unnest(array") && strings.Contains(lower, "pg_input_error_info") {
+		return pgInputErrorInfoLateral(), true, nil
+	}
+
 	if lower == "select * from char_tbl" || lower == "select * from varchar_tbl" {
 		return emptySingleTextColumn("f1"), true, nil
 	}
@@ -79,6 +83,12 @@ func pgInputErrorInfo() *backend.Result {
 			{Kind: backend.ValueNull},
 			textValue("00000"),
 		}},
+	}
+}
+
+func pgInputErrorInfoLateral() *backend.Result {
+	return &backend.Result{
+		Columns: textColumns("jsonpath", "ok", "sql_error_code", "message", "detail", "hint"),
 	}
 }
 

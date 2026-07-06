@@ -170,6 +170,11 @@ func TestSessionRegressCompatibilityRewrites(t *testing.T) {
 		t.Fatalf("pg_input_error_info rows = %d, want 1", len(result.Rows))
 	}
 
+	result = queryOK(t, ctx, s, `SELECT str as jsonpath, pg_input_is_valid(str,'jsonpath') as ok, errinfo.sql_error_code, errinfo.message, errinfo.detail, errinfo.hint FROM unnest(ARRAY['$'::text]) str, LATERAL pg_input_error_info(str, 'jsonpath') as errinfo`)
+	if len(result.Rows) != 0 {
+		t.Fatalf("pg_input_error_info lateral rows = %d, want 0", len(result.Rows))
+	}
+
 	execOK(t, ctx, s, "create table delete_test(id integer primary key, a integer)")
 	execOK(t, ctx, s, "insert into delete_test values (1, 10)")
 	execOK(t, ctx, s, "delete from delete_test dt where delete_test.a > 0")

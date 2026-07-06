@@ -23,13 +23,18 @@ func init() {
 	sqlite.MustRegisterDeterministicScalarFunction("chr", 1, chrFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("convert_from", 2, convertFromFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("getdatabaseencoding", 0, getDatabaseEncodingFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("isclosed", 1, isClosedFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("isopen", 1, isOpenFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("left", 2, leftFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("line", 2, lineFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("lpad", 3, lpadFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("md5", 1, md5Func)
 	sqlite.MustRegisterDeterministicScalarFunction("pg_numa_available", 0, pgNumaAvailableFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("pg_input_is_valid", 2, pgInputIsValidFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("pg_relation_size", 1, pgRelationSizeFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pclose", 1, pcloseFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("point", 2, pointFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("popen", 1, popenFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("regexp_match", 3, regexpMatchFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("repeat", 2, repeatFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("reverse", 1, reverseFunc)
@@ -126,6 +131,44 @@ func leftFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, err
 	return string(runes[:n]), nil
 }
 
+func isClosedFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("isclosed requires 1 argument")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	s := strings.TrimSpace(valueString(args[0]))
+	if strings.HasPrefix(s, "[") {
+		return int64(1), nil
+	}
+	return int64(0), nil
+}
+
+func isOpenFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("isopen requires 1 argument")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	s := strings.TrimSpace(valueString(args[0]))
+	if strings.HasPrefix(s, "(") {
+		return int64(1), nil
+	}
+	return int64(0), nil
+}
+
+func lineFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 {
+		return nil, fmt.Errorf("line requires 2 arguments")
+	}
+	if args[0] == nil || args[1] == nil {
+		return nil, nil
+	}
+	return valueString(args[0]) + "," + valueString(args[1]), nil
+}
+
 func lpadFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
 	return padFunc("lpad", args, true)
 }
@@ -185,6 +228,19 @@ func pgRelationSizeFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.
 	return int64(0), nil
 }
 
+func pcloseFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("pclose requires 1 argument")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	s := strings.TrimSpace(valueString(args[0]))
+	s = strings.TrimPrefix(strings.TrimSuffix(s, ")"), "(")
+	s = strings.TrimPrefix(strings.TrimSuffix(s, "]"), "[")
+	return "[" + s + "]", nil
+}
+
 func pointFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
 	if len(args) != 2 {
 		return nil, fmt.Errorf("point requires 2 arguments")
@@ -193,6 +249,19 @@ func pointFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, er
 		return nil, nil
 	}
 	return "(" + valueString(args[0]) + "," + valueString(args[1]) + ")", nil
+}
+
+func popenFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("popen requires 1 argument")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	s := strings.TrimSpace(valueString(args[0]))
+	s = strings.TrimPrefix(strings.TrimSuffix(s, ")"), "(")
+	s = strings.TrimPrefix(strings.TrimSuffix(s, "]"), "[")
+	return "(" + s + ")", nil
 }
 
 func repeatFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {

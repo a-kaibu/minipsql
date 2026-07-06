@@ -69,3 +69,18 @@ func TestRewriteQuotedCharCast(t *testing.T) {
 		t.Fatalf("Rewrite() = %q, want %q", got, want)
 	}
 }
+
+func TestRewriteTypedLiteralsAndCreateIndexUsing(t *testing.T) {
+	cases := map[string]string{
+		`SELECT pg_lsn '0/16AE7F7'`:                                        `SELECT '0/16AE7F7'`,
+		`INSERT INTO line_tbl VALUES (line(point '(3,1)', point '(3,2)'))`: `INSERT INTO line_tbl VALUES (line('(3,1)', '(3,2)'))`,
+		`CREATE INDEX macaddr_data_btree ON macaddr_data USING btree (b)`:  `CREATE INDEX macaddr_data_btree ON macaddr_data (b)`,
+	}
+	for sql, want := range cases {
+		t.Run(sql, func(t *testing.T) {
+			if got := Rewrite(sql); got != want {
+				t.Fatalf("Rewrite() = %q, want %q", got, want)
+			}
+		})
+	}
+}

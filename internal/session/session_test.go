@@ -138,6 +138,11 @@ func TestSessionStringFunctions(t *testing.T) {
 		"select pg_input_is_valid('abc', 'text')": int64(1),
 		"select point(1, 2)":                      "(1,2)",
 		"select lseg(point(1, 2), point(3, 4))":   "[(1,2),(3,4)]",
+		"select line('(1,2)', '(3,4)')":           "(1,2),(3,4)",
+		"select isopen('((1,2),(3,4))')":          int64(1),
+		"select isclosed('[(1,2),(3,4)]')":        int64(1),
+		"select pclose('((1,2),(3,4))')":          "[(1,2),(3,4)]",
+		"select popen('[(1,2),(3,4)]')":           "((1,2),(3,4))",
 	}
 	for sql, want := range cases {
 		t.Run(sql, func(t *testing.T) {

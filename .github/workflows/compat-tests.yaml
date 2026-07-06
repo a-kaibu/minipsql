@@ -157,6 +157,7 @@ jobs:
 
       - name: Aggregate regress reports
         run: |
+          set +e
           report_dir="reports/postgres-regress"
           combined_tsv="$report_dir/file-results.tsv"
           combined_per_file="$report_dir/per-file"
@@ -169,22 +170,31 @@ jobs:
 
           for batch_dir in "$report_dir"/batch-*; do
             [ -d "$batch_dir" ] || continue
-            [ -d "$batch_dir/per-file" ] && cp "$batch_dir/per-file"/* "$combined_per_file/" 2>/dev/null || true
-            [ -f "$batch_dir/file-results.tsv" ] && tail -n +2 "$batch_dir/file-results.tsv" >> "$combined_tsv"
-            if [ -f "$batch_dir/summary.txt" ]; then
-              get() { grep -m1 "^$1=" "$batch_dir/summary.txt" | cut -d= -f2-; }
-              success_files=$((success_files + $(get success_files)))
-              failed_files=$((failed_files + $(get failed_files)))
-              completed_files=$((completed_files + $(get completed_files)))
-              not_completed_files=$((not_completed_files + $(get not_completed_files)))
-              total_errors=$((total_errors + $(get error_count)))
-              total_fatals=$((total_fatals + $(get fatal_count)))
-              total_files=$((total_files + $(get total_files)))
+            cp "$batch_dir/per-file"/* "$combined_per_file/" 2>/dev/null
+            tail -n +2 "$batch_dir/file-results.tsv" >> "$combined_tsv" 2>/dev/null
+            summary="$batch_dir/summary.txt"
+            if [ -f "$summary" ]; then
+              sf=$(grep -m1 '^success_files=' "$summary" | cut -d= -f2-)
+              ff=$(grep -m1 '^failed_files=' "$summary" | cut -d= -f2-)
+              cf=$(grep -m1 '^completed_files=' "$summary" | cut -d= -f2-)
+              nc=$(grep -m1 '^not_completed_files=' "$summary" | cut -d= -f2-)
+              te=$(grep -m1 '^error_count=' "$summary" | cut -d= -f2-)
+              tfa=$(grep -m1 '^fatal_count=' "$summary" | cut -d= -f2-)
+              tf=$(grep -m1 '^total_files=' "$summary" | cut -d= -f2-)
+              success_files=$((success_files + ${sf:-0}))
+              failed_files=$((failed_files + ${ff:-0}))
+              completed_files=$((completed_files + ${cf:-0}))
+              not_completed_files=$((not_completed_files + ${nc:-0}))
+              total_errors=$((total_errors + ${te:-0}))
+              total_fatals=$((total_fatals + ${tfa:-0}))
+              total_files=$((total_files + ${tf:-0}))
             fi
           done
 
           overall_status=0
-          [ "$total_errors" -gt 0 ] || [ "$failed_files" -gt 0 ] && overall_status=1
+          if [ "$total_errors" -gt 0 ] || [ "$failed_files" -gt 0 ]; then
+            overall_status=1
+          fi
 
           {
             printf 'psql_runner=parallel-batched\n'
@@ -199,7 +209,7 @@ jobs:
             printf 'fatal_count=%s\n' "$total_fatals"
             printf '\nFirst 200 errors (across all batches):\n'
             find "$combined_per_file" -name '*.stderr' \
-              -exec grep -h -E '(^|: )(ERROR|FATAL|PANIC):' {} + 2>/dev/null | head -n 200 || true
+              -exec grep -h -E '(^|: )(ERROR|FATAL|PANIC):' {} + 2>/dev/null | head -n 200
           } > "$report_dir/summary.txt"
 
       - name: Generate summary

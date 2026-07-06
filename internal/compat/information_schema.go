@@ -91,7 +91,7 @@ type sqliteColumn struct {
 }
 
 func sqliteTables(ctx context.Context, b backend.Backend) ([]string, error) {
-	result, err := b.Query(ctx, "select name from sqlite_master where type = 'table' and name not like 'sqlite_%' order by name", nil)
+	result, err := b.Query(ctx, "select name from sqlite_master where type = 'table' and name not like 'sqlite_%' and name not like 'pg_%' order by name", nil)
 	if err != nil {
 		return nil, err
 	}

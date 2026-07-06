@@ -1,6 +1,9 @@
 package compat
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 type PGError struct {
 	Code    string
@@ -8,9 +11,11 @@ type PGError struct {
 }
 
 func Error(err error) PGError {
-	msg := err.Error()
+	msg := cleanSQLiteError(err.Error())
 	lower := strings.ToLower(msg)
 	switch {
+	case strings.Contains(lower, "invalid input syntax"):
+		return PGError{Code: "22P02", Message: msg}
 	case strings.Contains(lower, "syntax error"):
 		return PGError{Code: "42601", Message: msg}
 	case strings.Contains(lower, "no such table"):
@@ -26,4 +31,18 @@ func Error(err error) PGError {
 
 func (e *PGError) Error() string {
 	return e.Message
+}
+
+func cleanSQLiteError(msg string) string {
+	msg = strings.TrimPrefix(msg, "SQL logic error: ")
+	if idx := strings.LastIndex(msg, " ("); idx >= 0 {
+		tail := msg[idx+2:]
+		if strings.HasSuffix(tail, ")") {
+			numStr := tail[:len(tail)-1]
+			if _, err := strconv.Atoi(numStr); err == nil {
+				msg = msg[:idx]
+			}
+		}
+	}
+	return msg
 }

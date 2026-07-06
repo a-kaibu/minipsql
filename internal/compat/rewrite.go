@@ -1,14 +1,15 @@
 package compat
 
 import (
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"unicode"
 )
 
 var (
-	paramCastRE        = regexp.MustCompile(`\$([0-9]+)::([A-Za-z_][A-Za-z0-9_]*)`)
 	paramRE            = regexp.MustCompile(`\$([0-9]+)`)
 	serialRE           = regexp.MustCompile(`(?i)\bserial\b`)
 	boolRE             = regexp.MustCompile(`(?i)\bboolean\b|\bbool\b`)
@@ -18,7 +19,7 @@ var (
 	charLiteralRE      = regexp.MustCompile(`(?i)\bchar\s+('(?:''|[^'])*')`)
 	pgLsnLiteralRE     = regexp.MustCompile(`(?i)\bpg_lsn\s+('(?:''|[^'])*')`)
 	pointLiteralRE     = regexp.MustCompile(`(?i)\bpoint\s+('(?:''|[^'])*')`)
-	createIndexUsingRE = regexp.MustCompile(`(?i)(CREATE\s+(?:UNIQUE\s+)?INDEX\b.+?\bON\s+\S+)\s+USING\s+\S+\s+(\()`)
+	createIndexUsingRE = regexp.MustCompile(`(?i)(CREATE\s+(?:UNIQUE\s+)?INDEX\b.+?\bON\s+\S+)\s+USING\s+\S+\s*(\()`)
 	ilikeRE            = regexp.MustCompile(`(?i)\bILIKE\b`)
 	returningRE        = regexp.MustCompile(`(?i)\bRETURNING\b`)
 	onlyRE             = regexp.MustCompile(`(?i)\bFROM\s+ONLY\s+`)
@@ -28,11 +29,16 @@ var (
 	ifNotExistsRE      = regexp.MustCompile(`(?i)\bIF\s+NOT\s+EXISTS\b`)
 	ifExistsRE         = regexp.MustCompile(`(?i)\bIF\s+EXISTS\b`)
 	deleteFromRE       = regexp.MustCompile(`(?i)\bDELETE\s+FROM\s+([A-Za-z0-9_\".]+)\s+([A-Za-z0-9_\"]+)\s+`)
+	pgCatalogPrefixRE  = regexp.MustCompile(`(?i)\bpg_catalog\.([a-zA-Z0-9_]+)\b`)
+	anonymousIndexRE   = regexp.MustCompile(`(?i)\bCREATE\s+(UNIQUE\s+)?INDEX\s+ON\s+([A-Za-z0-9_\".]+)\b`)
+	circleColRE        = regexp.MustCompile(`(?i)\b(\w+)\s+circle\b`)
 )
 
+var idxCounter atomic.Int64
+
+
 func Rewrite(sql string) string {
-	out := paramCastRE.ReplaceAllString(sql, `cast(? as $2)`)
-	out = paramRE.ReplaceAllString(out, "?")
+	out := rewriteParametersAndCasts(sql)
 	out = serialRE.ReplaceAllString(out, "integer")
 	out = boolRE.ReplaceAllString(out, "integer")
 	out = nowRE.ReplaceAllString(out, "datetime('now')")
@@ -41,6 +47,7 @@ func Rewrite(sql string) string {
 	out = charLiteralRE.ReplaceAllString(out, "$1")
 	out = pgLsnLiteralRE.ReplaceAllString(out, "$1")
 	out = pointLiteralRE.ReplaceAllString(out, "$1")
+	out = rewriteAnonymousIndex(out)
 	out = createIndexUsingRE.ReplaceAllString(out, "$1 $2")
 	out = ilikeRE.ReplaceAllString(out, "LIKE")
 	out = rewriteRegexOps(out)
@@ -49,9 +56,196 @@ func Rewrite(sql string) string {
 	out = rewriteGenerateSeries(out)
 	out = rewritePosition(out)
 	out = rewriteDeleteAlias(out)
+	out = rewriteDistanceOperator(out)
+	out = circleColRE.ReplaceAllStringFunc(out, func(m string) string {
+		parts := strings.Fields(m)
+		first := strings.ToLower(parts[0])
+		if first == "as" || first == "cast" || first == "type" || first == "using" {
+			return m
+		}
+		return parts[0] + " text CHECK (is_valid_circle(" + parts[0] + "))"
+	})
+	out = pgCatalogPrefixRE.ReplaceAllString(out, "$1")
 	out = onlyRE.ReplaceAllString(out, "FROM ")
 	out = eStringRE.ReplaceAllString(out, "'")
 	return out
+}
+
+func rewriteAnonymousIndex(sql string) string {
+	return anonymousIndexRE.ReplaceAllStringFunc(sql, func(m string) string {
+		sub := anonymousIndexRE.FindStringSubmatch(m)
+		uniqueVal := idxCounter.Add(1)
+		uniqueName := fmt.Sprintf("idx_anon_%d", uniqueVal)
+
+		uniqueStr := "CREATE "
+		if strings.TrimSpace(sub[1]) != "" {
+			uniqueStr += "UNIQUE "
+		}
+		uniqueStr += "INDEX " + uniqueName + " ON " + sub[2]
+		return uniqueStr
+	})
+}
+
+func rewriteDistanceOperator(sql string) string {
+	idx := strings.Index(sql, "<->")
+	if idx == -1 {
+		return sql
+	}
+
+	// Parse left operand
+	leftStart := idx
+	for leftStart > 0 && (sql[leftStart-1] == ' ' || sql[leftStart-1] == '\t') {
+		leftStart--
+	}
+	leftEnd := leftStart
+	if leftStart > 0 && sql[leftStart-1] == '\'' {
+		leftStart--
+		for leftStart > 0 && sql[leftStart-1] != '\'' {
+			leftStart--
+		}
+		if leftStart > 0 {
+			leftStart--
+		}
+	} else if leftStart > 0 && sql[leftStart-1] == ')' {
+		depth := 1
+		leftStart--
+		for leftStart > 0 && depth > 0 {
+			leftStart--
+			if sql[leftStart] == ')' {
+				depth++
+			} else if sql[leftStart] == '(' {
+				depth--
+			}
+		}
+		for leftStart > 0 && isIdentByte(sql[leftStart-1]) {
+			leftStart--
+		}
+	} else {
+		for leftStart > 0 && (isIdentByte(sql[leftStart-1]) || sql[leftStart-1] == '.') {
+			leftStart--
+		}
+	}
+
+	leftExpr := sql[leftStart:leftEnd]
+
+	// Parse right operand
+	rightStart := idx + 3
+	for rightStart < len(sql) && (sql[rightStart] == ' ' || sql[rightStart] == '\t') {
+		rightStart++
+	}
+	rightEnd := rightStart
+	if rightStart < len(sql) && sql[rightStart] == '\'' {
+		rightEnd++
+		for rightEnd < len(sql) && sql[rightEnd] != '\'' {
+			rightEnd++
+		}
+		if rightEnd < len(sql) {
+			rightEnd++
+		}
+	} else if rightStart < len(sql) && isIdentByte(sql[rightStart]) {
+		for rightEnd < len(sql) && (isIdentByte(sql[rightEnd]) || sql[rightEnd] == '.') {
+			rightEnd++
+		}
+		if rightEnd < len(sql) && sql[rightEnd] == '(' {
+			depth := 1
+			rightEnd++
+			for rightEnd < len(sql) && depth > 0 {
+				if sql[rightEnd] == '(' {
+					depth++
+				} else if sql[rightEnd] == ')' {
+					depth--
+				}
+				rightEnd++
+			}
+		}
+	} else if rightStart < len(sql) && sql[rightStart] == '(' {
+		depth := 1
+		rightEnd++
+		for rightEnd < len(sql) && depth > 0 {
+			if sql[rightEnd] == '(' {
+				depth++
+			} else if sql[rightEnd] == ')' {
+				depth--
+			}
+			rightEnd++
+		}
+	}
+
+	rightExpr := sql[rightStart:rightEnd]
+
+	rewritten := sql[:leftStart] + "dist_op(" + leftExpr + ", " + rightExpr + ")" + sql[rightEnd:]
+	return rewriteDistanceOperator(rewritten)
+}
+
+func rewriteParametersAndCasts(sql string) string {
+	var sb strings.Builder
+	inQuote := false
+	inDoubleQuote := false
+	n := len(sql)
+	for i := 0; i < n; i++ {
+		ch := sql[i]
+		if inQuote {
+			sb.WriteByte(ch)
+			if ch == '\'' {
+				if i+1 < n && sql[i+1] == '\'' {
+					sb.WriteByte('\'')
+					i++
+				} else {
+					inQuote = false
+				}
+			}
+			continue
+		}
+		if inDoubleQuote {
+			sb.WriteByte(ch)
+			if ch == '"' {
+				if i+1 < n && sql[i+1] == '"' {
+					sb.WriteByte('"')
+					i++
+				} else {
+					inDoubleQuote = false
+				}
+			}
+			continue
+		}
+
+		if ch == '\'' {
+			inQuote = true
+			sb.WriteByte(ch)
+			continue
+		}
+		if ch == '"' {
+			inDoubleQuote = true
+			sb.WriteByte(ch)
+			continue
+		}
+
+		if ch == '$' && i+1 < n && sql[i+1] >= '0' && sql[i+1] <= '9' {
+			j := i + 1
+			for j < n && sql[j] >= '0' && sql[j] <= '9' {
+				j++
+			}
+			if j+1 < n && sql[j] == ':' && sql[j+1] == ':' {
+				k := j + 2
+				for k < n && (isIdentByte(sql[k]) || sql[k] == ' ') {
+					k++
+				}
+				typeName := strings.TrimSpace(sql[j+2 : k])
+				sb.WriteString("cast(? as ")
+				sb.WriteString(mapPGType(typeName))
+				sb.WriteString(")")
+				i = k - 1
+				continue
+			} else {
+				sb.WriteByte('?')
+				i = j - 1
+				continue
+			}
+		}
+
+		sb.WriteByte(ch)
+	}
+	return sb.String()
 }
 
 func rewritePGCast(sql string) string {
@@ -123,8 +317,10 @@ func mapPGType(t string) string {
 		return "numeric"
 	case "bytea":
 		return "blob"
-	case "regclass", "regtype", "oid", "regproc", "regoper":
+	case "regclass", "regtype", "oid", "regproc", "regoper", "circle":
 		return "text"
+	case "oid8":
+		return "integer"
 	default:
 		return "text"
 	}
@@ -169,8 +365,17 @@ func extractCastExpr(sql string) string {
 		}
 		return sql[i:]
 	}
-	for i > 0 && (isIdentByte(sql[i-1]) || sql[i-1] == '.') {
-		i--
+	for i > 0 {
+		b := sql[i-1]
+		if isIdentByte(b) || b == '.' {
+			i--
+			continue
+		}
+		if (b == '-' || b == '+') && i > 1 && (sql[i-2] == 'e' || sql[i-2] == 'E') {
+			i--
+			continue
+		}
+		break
 	}
 	return sql[i:]
 }

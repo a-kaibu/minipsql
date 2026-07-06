@@ -2,6 +2,7 @@ package session_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/yashikota/minipsql/internal/backend"
@@ -143,12 +144,25 @@ func TestSessionStringFunctions(t *testing.T) {
 		"select pg_input_is_valid('abc', 'text')":      int64(1),
 		"select point(1, 2)":                           "(1,2)",
 		"select lseg(point(1, 2), point(3, 4))":        "[(1,2),(3,4)]",
+		"select cashlarger('$123.00'::money, '$124.00'::money)": "$124.00",
+		"select cashsmaller('$123.00'::money, '$124.00'::money)": "$123.00",
+		"select btoid8cmp(1::oid8, 2::oid8)":            int64(-1),
+		"select cash_words('$123.00'::money)":          "One hundred twenty three dollars and zero cents",
+		"select cash_words('$124.23'::money)":          "One hundred twenty four dollars and twenty three cents",
 		"select line('(1,2)', '(3,4)')":                "(1,2),(3,4)",
 		"select isopen('((1,2),(3,4))')":               int64(1),
 		"select isclosed('[(1,2),(3,4)]')":             int64(1),
 		"select pclose('((1,2),(3,4))')":               "[(1,2),(3,4)]",
 		"select popen('[(1,2),(3,4)]')":                "((1,2),(3,4))",
 		"select macaddr8_set7bit('00:08:2b:01:02:03')": "00:08:2b:01:02:03",
+		"select center('<(5,1),3>'::circle)":            "(5,1)",
+		"select center('((1,2),100)'::circle)":          "(1,2)",
+		"select radius('<(5,1),3>'::circle)":            float64(3),
+		"select diameter('<(5,1),3>'::circle)":          float64(6),
+		"select area('<(5,1),3>'::circle) > 28.2":       int64(1),
+		"select '<(3,5),0>'::circle <-> '<(1,2),3>'::circle < 0.61": int64(1),
+		"select pg_notify('notify_async1','sample message1')": nil,
+		"select pg_notification_queue_usage()":          int64(0),
 	}
 	for sql, want := range cases {
 		t.Run(sql, func(t *testing.T) {
@@ -378,4 +392,56 @@ func queryOK(t *testing.T, ctx context.Context, s *session.Session, sql string, 
 		t.Fatalf("Execute(%q) returned result=%v tag=%v, want result", sql, result, tag)
 	}
 	return result
+}
+
+func TestCircleRegress(t *testing.T) {
+	ctx := context.Background()
+	b, err := sqlite.New(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = b.Close(ctx)
+	}()
+
+	s := session.New(1, 1, "default", "mini", b, nil)
+	execOK(t, ctx, s, "CREATE TABLE CIRCLE_TBL (f1 circle)")
+
+	goods := []string{
+		"<(5,1),3>",
+		"((1,2),100)",
+		" 1 , 3 , 5 ",
+		" ( ( 1 , 2 ) , 3 ) ",
+		" ( 100 , 200 ) , 10 ",
+		" < ( 100 , 1 ) , 115 > ",
+		"<(3,5),0>",
+		"<(3,5),NaN>",
+	}
+	for _, val := range goods {
+		execOK(t, ctx, s, fmt.Sprintf("INSERT INTO CIRCLE_TBL VALUES ('%s')", val))
+	}
+
+	bads := []string{
+		"<(-100,0),-100>",
+		"<(100,200),10",
+		"<(100,200),10> x",
+		"1abc,3,5",
+		"(3,(1,2),3)",
+	}
+	for _, val := range bads {
+		_, _, err := s.Execute(ctx, fmt.Sprintf("INSERT INTO CIRCLE_TBL VALUES ('%s')", val), nil)
+		if err == nil {
+			t.Fatalf("expected insert of %q to fail, but it succeeded", val)
+		}
+	}
+
+	// Now SELECT center(f1) should succeed with 8 rows!
+	res, tag, err := s.Execute(ctx, "SELECT center(f1) FROM CIRCLE_TBL", nil)
+	if err != nil {
+		t.Fatalf("Execute center(f1) failed: %v", err)
+	}
+	if len(res.Rows) != 8 {
+		t.Fatalf("got %d rows, want 8: %v", len(res.Rows), res.Rows)
+	}
+	_ = tag
 }

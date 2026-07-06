@@ -5,7 +5,9 @@ import (
 	"database/sql/driver"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -43,6 +45,20 @@ func init() {
 	sqlite.MustRegisterDeterministicScalarFunction("rpad", 3, rpadFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("test_translation", 0, testTranslationFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("lseg", 2, lsegFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("version", 0, versionFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("regexp_replace", -1, regexpReplaceFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("cashlarger", 2, cashlargerFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("cashsmaller", 2, cashsmallerFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("cash_words", 1, cashWordsFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("btoid8cmp", 2, btoid8cmpFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("center", 1, centerFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("radius", 1, radiusFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("diameter", 1, diameterFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("area", 1, areaFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("dist_op", 2, distOpFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("is_valid_circle", 1, isValidCircleFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_notify", 2, pgNotifyFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_notification_queue_usage", 0, pgNotificationQueueUsageFunc)
 }
 
 func asciiFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
@@ -441,4 +457,434 @@ func valueString(v driver.Value) string {
 	default:
 		return fmt.Sprintf("%v", val)
 	}
+}
+
+func versionFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	return "PostgreSQL 14.0 compatible minipsql", nil
+}
+
+func regexpReplaceFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 3 && len(args) != 4 {
+		return nil, fmt.Errorf("regexp_replace requires 3 or 4 arguments")
+	}
+	if args[0] == nil || args[1] == nil || args[2] == nil {
+		return nil, nil
+	}
+	source := valueString(args[0])
+	pattern := valueString(args[1])
+	replacement := valueString(args[2])
+	flags := ""
+	if len(args) == 4 {
+		if args[3] == nil {
+			return nil, nil
+		}
+		flags = valueString(args[3])
+	}
+
+	cacheKey := flags + "\x00" + pattern
+	var rx *regexp.Regexp
+	if val, ok := regexCache.Load(cacheKey); ok {
+		rx = val.(*regexp.Regexp)
+	} else {
+		pat := pattern
+		actualFlags := ""
+		if strings.Contains(flags, "i") {
+			actualFlags += "i"
+		}
+		if actualFlags != "" {
+			pat = "(?" + actualFlags + ")" + pat
+		}
+		var err error
+		rx, err = regexp.Compile(pat)
+		if err != nil {
+			return nil, err
+		}
+		regexCache.Store(cacheKey, rx)
+	}
+
+	if strings.Contains(flags, "g") {
+		return rx.ReplaceAllString(source, replacement), nil
+	} else {
+		loc := rx.FindStringIndex(source)
+		if loc == nil {
+			return source, nil
+		}
+		match := source[loc[0]:loc[1]]
+		replaced := rx.ReplaceAllString(match, replacement)
+		return source[:loc[0]] + replaced + source[loc[1]:], nil
+	}
+}
+
+func parseMoney(v driver.Value) (float64, string, bool) {
+	if v == nil {
+		return 0, "", false
+	}
+	s := valueString(v)
+	clean := strings.ReplaceAll(s, "$", "")
+	clean = strings.ReplaceAll(clean, ",", "")
+	clean = strings.TrimSpace(clean)
+	f, err := strconv.ParseFloat(clean, 64)
+	if err != nil {
+		return 0, s, false
+	}
+	return f, s, true
+}
+
+func cashlargerFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 {
+		return nil, fmt.Errorf("cashlarger requires 2 arguments")
+	}
+	if args[0] == nil || args[1] == nil {
+		return nil, nil
+	}
+	f1, s1, ok1 := parseMoney(args[0])
+	f2, s2, ok2 := parseMoney(args[1])
+	if !ok1 || !ok2 {
+		if s1 > s2 {
+			return s1, nil
+		}
+		return s2, nil
+	}
+	if f1 > f2 {
+		return args[0], nil
+	}
+	return args[1], nil
+}
+
+func cashsmallerFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 {
+		return nil, fmt.Errorf("cashsmaller requires 2 arguments")
+	}
+	if args[0] == nil || args[1] == nil {
+		return nil, nil
+	}
+	f1, s1, ok1 := parseMoney(args[0])
+	f2, s2, ok2 := parseMoney(args[1])
+	if !ok1 || !ok2 {
+		if s1 < s2 {
+			return s1, nil
+		}
+		return s2, nil
+	}
+	if f1 < f2 {
+		return args[0], nil
+	}
+	return args[1], nil
+}
+
+func intToWords(n int64) string {
+	if n == 0 {
+		return ""
+	}
+
+	units := []string{"", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+		"eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"}
+	tens := []string{"", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"}
+
+	var parts []string
+
+	if n >= 1000000000 {
+		parts = append(parts, intToWords(n/1000000000)+" billion")
+		n %= 1000000000
+	}
+	if n >= 1000000 {
+		parts = append(parts, intToWords(n/1000000)+" million")
+		n %= 1000000
+	}
+	if n >= 1000 {
+		parts = append(parts, intToWords(n/1000)+" thousand")
+		n %= 1000
+	}
+	if n >= 100 {
+		parts = append(parts, units[n/100]+" hundred")
+		n %= 100
+	}
+	if n >= 20 {
+		part := tens[n/10]
+		if n%10 > 0 {
+			part += " " + units[n%10]
+		}
+		parts = append(parts, part)
+	} else if n > 0 {
+		parts = append(parts, units[n])
+	}
+
+	return strings.Join(parts, " ")
+}
+
+func cashWordsFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("cash_words requires 1 argument")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	f, _, ok := parseMoney(args[0])
+	if !ok {
+		return nil, fmt.Errorf("invalid money value: %v", args[0])
+	}
+
+	negative := f < 0
+	if negative {
+		f = -f
+	}
+
+	dollars := int64(f)
+	cents := int64(math.Round((f - float64(dollars)) * 100))
+
+	var dollarsStr string
+	if dollars == 0 {
+		dollarsStr = "Zero"
+	} else {
+		dollarsStr = intToWords(dollars)
+		if len(dollarsStr) > 0 {
+			dollarsStr = strings.ToUpper(dollarsStr[:1]) + dollarsStr[1:]
+		}
+	}
+
+	var centsStr string
+	if cents == 0 {
+		centsStr = "zero"
+	} else {
+		centsStr = intToWords(cents)
+	}
+
+	res := fmt.Sprintf("%s dollars and %s cents", dollarsStr, centsStr)
+	if negative {
+		res = "Minus " + res
+	}
+	return res, nil
+}
+
+func btoid8cmpFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 {
+		return nil, fmt.Errorf("btoid8cmp requires 2 arguments")
+	}
+	if args[0] == nil || args[1] == nil {
+		return nil, nil
+	}
+	v1 := valueInt(args[0])
+	v2 := valueInt(args[1])
+	if v1 < v2 {
+		return int64(-1), nil
+	} else if v1 > v2 {
+		return int64(1), nil
+	}
+	return int64(0), nil
+}
+
+func parseCircle(v driver.Value) (x, y, r float64, ok bool) {
+	if v == nil {
+		return 0, 0, 0, false
+	}
+	s := valueString(v)
+	s = strings.TrimSpace(s)
+
+	if strings.HasPrefix(s, "<") && strings.HasSuffix(s, ">") {
+		s = s[1 : len(s)-1]
+		s = strings.TrimSpace(s)
+	}
+
+	if strings.HasPrefix(s, "(") && strings.HasSuffix(s, ")") {
+		s = s[1 : len(s)-1]
+		s = strings.TrimSpace(s)
+	}
+
+	idx := strings.LastIndex(s, ",")
+	if idx == -1 {
+		return 0, 0, 0, false
+	}
+	rStr := strings.TrimSpace(s[idx+1:])
+	pointStr := strings.TrimSpace(s[:idx])
+
+	if strings.HasPrefix(pointStr, "(") && strings.HasSuffix(pointStr, ")") {
+		pointStr = pointStr[1 : len(pointStr)-1]
+		pointStr = strings.TrimSpace(pointStr)
+	}
+
+	parts := strings.Split(pointStr, ",")
+	if len(parts) != 2 {
+		return 0, 0, 0, false
+	}
+	xVal, err := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	yVal, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	rVal, err := strconv.ParseFloat(rStr, 64)
+	if err != nil {
+		if strings.ToLower(rStr) == "nan" {
+			return xVal, yVal, math.NaN(), true
+		}
+		return 0, 0, 0, false
+	}
+	if !math.IsNaN(rVal) && rVal < 0 {
+		return 0, 0, 0, false
+	}
+	return xVal, yVal, rVal, true
+}
+
+func parsePoint(s string) (x, y float64, ok bool) {
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, "(") && strings.HasSuffix(s, ")") {
+		s = s[1 : len(s)-1]
+	}
+	parts := strings.Split(s, ",")
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+	xVal, err := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
+	if err != nil {
+		return 0, 0, false
+	}
+	yVal, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+	if err != nil {
+		return 0, 0, false
+	}
+	return xVal, yVal, true
+}
+
+func centerFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("center requires 1 argument")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	x, y, _, ok := parseCircle(args[0])
+	if !ok {
+		return nil, fmt.Errorf("invalid circle: %v", args[0])
+	}
+	return fmt.Sprintf("(%g,%g)", x, y), nil
+}
+
+func radiusFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("radius requires 1 argument")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	_, _, r, ok := parseCircle(args[0])
+	if !ok {
+		return nil, fmt.Errorf("invalid circle: %v", args[0])
+	}
+	if math.IsNaN(r) {
+		return "NaN", nil
+	}
+	return r, nil
+}
+
+func diameterFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("diameter requires 1 argument")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	_, _, r, ok := parseCircle(args[0])
+	if !ok {
+		return nil, fmt.Errorf("invalid circle: %v", args[0])
+	}
+	if math.IsNaN(r) {
+		return "NaN", nil
+	}
+	return 2 * r, nil
+}
+
+func areaFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("area requires 1 argument")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	_, _, r, ok := parseCircle(args[0])
+	if !ok {
+		return nil, fmt.Errorf("invalid circle: %v", args[0])
+	}
+	if math.IsNaN(r) {
+		return "NaN", nil
+	}
+	return math.Pi * r * r, nil
+}
+
+func distOpFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 {
+		return nil, fmt.Errorf("dist_op requires 2 arguments")
+	}
+	if args[0] == nil || args[1] == nil {
+		return nil, nil
+	}
+	s1 := valueString(args[0])
+	s2 := valueString(args[1])
+
+	x1, y1, r1, ok1 := parseCircle(args[0])
+	x2, y2, r2, ok2 := parseCircle(args[1])
+	if ok1 && ok2 {
+		dx := x1 - x2
+		dy := y1 - y2
+		dist := math.Sqrt(dx*dx + dy*dy)
+		return dist - (r1 + r2), nil
+	}
+
+	px1, py1, pok1 := parsePoint(s1)
+	px2, py2, pok2 := parsePoint(s2)
+	if pok1 && pok2 {
+		dx := px1 - px2
+		dy := py1 - py2
+		return math.Sqrt(dx*dx + dy*dy), nil
+	}
+
+	if ok1 && pok2 {
+		dx := x1 - px2
+		dy := y1 - py2
+		return math.Sqrt(dx*dx+dy*dy) - r1, nil
+	}
+	if pok1 && ok2 {
+		dx := px1 - x2
+		dy := py1 - y2
+		return math.Sqrt(dx*dx+dy*dy) - r2, nil
+	}
+
+	return 0.0, nil
+}
+
+func isValidCircleFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("is_valid_circle requires 1 argument")
+	}
+	if args[0] == nil {
+		return int64(1), nil
+	}
+	val := valueString(args[0])
+	_, _, _, ok := parseCircle(args[0])
+	if !ok {
+		return nil, fmt.Errorf("invalid input syntax for type circle: %q", val)
+	}
+	return int64(1), nil
+}
+
+func pgNotifyFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 {
+		return nil, fmt.Errorf("pg_notify requires 2 arguments")
+	}
+	if args[0] == nil {
+		return nil, fmt.Errorf("channel name cannot be empty")
+	}
+	channel := valueString(args[0])
+	if channel == "" {
+		return nil, fmt.Errorf("channel name cannot be empty")
+	}
+	if len(channel) > 63 {
+		return nil, fmt.Errorf("channel name too long")
+	}
+	return nil, nil
+}
+
+func pgNotificationQueueUsageFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	return int64(0), nil
 }

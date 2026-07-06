@@ -29,7 +29,335 @@ func New(ctx context.Context) (*Backend, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := initDatabase(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to initialize postgres catalog tables: %w", err)
+	}
 	return &Backend{db: db}, nil
+}
+
+func initDatabase(ctx context.Context, db *sql.DB) error {
+	// Create catalog tables directly in main schema
+	ddls := []string{
+		`CREATE TABLE IF NOT EXISTS main.pg_namespace (
+			oid INTEGER PRIMARY KEY,
+			nspname TEXT,
+			nspowner INTEGER,
+			nspacl TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_type (
+			oid INTEGER PRIMARY KEY,
+			typname TEXT,
+			typnamespace INTEGER,
+			typowner INTEGER,
+			typlen INTEGER,
+			typbyval INTEGER,
+			typtype TEXT,
+			typcategory TEXT,
+			typispreferred INTEGER,
+			typisdefined INTEGER,
+			typdelim TEXT,
+			typrelid INTEGER,
+			typelem INTEGER,
+			typarray INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_index (
+			indexrelid INTEGER PRIMARY KEY,
+			indrelid INTEGER,
+			indnatts INTEGER,
+			indnkeyatts INTEGER,
+			indisunique INTEGER,
+			indisprimary INTEGER,
+			indisexclusion INTEGER,
+			indimmediate INTEGER,
+			indisclustered INTEGER,
+			indisvalid INTEGER,
+			indcheckxmin INTEGER,
+			indisready INTEGER,
+			indislive INTEGER,
+			indisreplident INTEGER,
+			indkey TEXT,
+			indcollation TEXT,
+			indclass TEXT,
+			indoption TEXT,
+			indexprs TEXT,
+			indpred TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_constraint (
+			oid INTEGER PRIMARY KEY,
+			conname TEXT,
+			connamespace INTEGER,
+			contype TEXT,
+			condeferrable INTEGER,
+			condeferred INTEGER,
+			convalidated INTEGER,
+			conrelid INTEGER,
+			contypid INTEGER,
+			conindid INTEGER,
+			conparentid INTEGER,
+			confrelid INTEGER,
+			confupdtype TEXT,
+			confdeltype TEXT,
+			confmatchtype TEXT,
+			conislocal INTEGER,
+			coninhcount INTEGER,
+			connoinherit INTEGER,
+			conkey TEXT,
+			confkey TEXT,
+			conpfeqop TEXT,
+			conppeqop TEXT,
+			conffeqop TEXT,
+			conexclop TEXT,
+			conbin TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_depend (
+			classid INTEGER,
+			objid INTEGER,
+			objsubid INTEGER,
+			refclassid INTEGER,
+			refobjid INTEGER,
+			refobjsubid INTEGER,
+			deptype TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_shdepend (
+			dbid INTEGER,
+			classid INTEGER,
+			objid INTEGER,
+			objsubid INTEGER,
+			refclassid INTEGER,
+			refobjid INTEGER,
+			deptype TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_init_privs (
+			objoid INTEGER,
+			classid INTEGER,
+			objsubid INTEGER,
+			privtype TEXT,
+			initprivs TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_shmem_allocations_numa (
+			name TEXT,
+			size INTEGER,
+			numa_node INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_proc (
+			oid INTEGER PRIMARY KEY,
+			proname TEXT,
+			pronamespace INTEGER,
+			proowner INTEGER,
+			prolang INTEGER,
+			procost REAL,
+			prorows REAL,
+			provariadic INTEGER,
+			prosupport INTEGER,
+			prokind TEXT,
+			prosecdef INTEGER,
+			proleakproof INTEGER,
+			proisstrict INTEGER,
+			proretset INTEGER,
+			provolatile TEXT,
+			proparallel TEXT,
+			pronargs INTEGER,
+			pronargdefaults INTEGER,
+			prorettype INTEGER,
+			proargtypes TEXT,
+			proallargtypes TEXT,
+			proargmodes TEXT,
+			proargnames TEXT,
+			proargdefaults TEXT,
+			protrftypes TEXT,
+			prosrc TEXT,
+			probin TEXT,
+			prosqlbody TEXT,
+			proconfig TEXT,
+			proacl TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_am (
+			oid INTEGER PRIMARY KEY,
+			amname TEXT,
+			amhandler INTEGER,
+			amtype TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_opclass (
+			oid INTEGER PRIMARY KEY,
+			opcmethod INTEGER,
+			opcname TEXT,
+			opcnamespace INTEGER,
+			opcowner INTEGER,
+			opcfamily INTEGER,
+			opcintype INTEGER,
+			opcdefault INTEGER,
+			opckeytype INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_operator (
+			oid INTEGER PRIMARY KEY,
+			oprname TEXT,
+			oprnamespace INTEGER,
+			oprowner INTEGER,
+			oprkind TEXT,
+			oprcanmerge INTEGER,
+			oprcanhash INTEGER,
+			oprleft INTEGER,
+			oprright INTEGER,
+			oprresult INTEGER,
+			oprcom INTEGER,
+			oprnegate INTEGER,
+			oprcode TEXT,
+			oprrest TEXT,
+			oprjoin TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_database (
+			oid INTEGER PRIMARY KEY,
+			datname TEXT,
+			datdba INTEGER,
+			encoding INTEGER,
+			datcollate TEXT,
+			datctype TEXT,
+			datistemplate INTEGER,
+			datallowconn INTEGER,
+			datconnlimit INTEGER,
+			datlastsysoid INTEGER,
+			datfrozenxid INTEGER,
+			datminmxid INTEGER,
+			dattablespace INTEGER,
+			datacl TEXT,
+			dathasloginevt INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_collation (
+			oid INTEGER PRIMARY KEY,
+			collname TEXT,
+			collnamespace INTEGER,
+			collowner INTEGER,
+			collprovider TEXT,
+			collisascii INTEGER,
+			collencoding INTEGER,
+			collcollate TEXT,
+			collctype TEXT,
+			colliculocale TEXT
+		)`,
+	}
+
+	for _, ddl := range ddls {
+		if _, err := db.ExecContext(ctx, ddl); err != nil {
+			return err
+		}
+	}
+
+	// Create dynamic views in main schema
+	views := []string{
+		`CREATE VIEW IF NOT EXISTS main.pg_class AS
+		SELECT 
+			10000 + rowid AS oid,
+			name AS relname,
+			2200 AS relnamespace,
+			0 AS reltype,
+			0 AS reloftype,
+			10 AS relowner,
+			0 AS relam,
+			0 AS relfilenode,
+			0 AS reltablespace,
+			0 AS relpages,
+			0.0 AS reltuples,
+			0 AS relallvisible,
+			0 AS reltoastrelid,
+			0 AS relhasindex,
+			0 AS relisshared,
+			'p' AS relpersistence,
+			'r' AS relkind,
+			0 AS relnatts,
+			0 AS relchecks,
+			0 AS relhasrules,
+			0 AS relhastriggers,
+			0 AS relhassubclass,
+			0 AS relrowsecurity,
+			0 AS relforcerowsecurity,
+			0 AS relispopulated,
+			'd' AS relreplident,
+			0 AS relispartition,
+			0 AS relrewrite,
+			0 AS relfrozenxid,
+			0 AS relminmxid
+		FROM sqlite_schema
+		WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`,
+
+		`CREATE VIEW IF NOT EXISTS main.pg_attribute AS
+		SELECT 
+			10000 + t.rowid AS attrelid,
+			p.name AS attname,
+			CASE 
+				WHEN lower(p.type) = 'integer' THEN 23
+				WHEN lower(p.type) = 'text' THEN 25
+				ELSE 25
+			END AS atttypid,
+			-1 AS attlen,
+			p.cid + 1 AS attnum,
+			0 AS attcacheoff,
+			-1 AS atttypmod,
+			0 AS attbyval,
+			'p' AS attstorage,
+			'i' AS attalign,
+			p."notnull" AS attnotnull,
+			0 AS atthasdef,
+			0 AS atthasmissing,
+			'' AS attidentity,
+			'' AS attgenerated,
+			0 AS attisdropped,
+			1 AS attislocal,
+			0 AS attinhcount,
+			0 AS attcollation
+		FROM sqlite_schema t
+		JOIN pragma_table_info(t.name) p
+		WHERE t.type = 'table' AND t.name NOT LIKE 'sqlite_%'`,
+
+		`CREATE VIEW IF NOT EXISTS main.pg_tables AS
+		SELECT 
+			'public' AS schemaname,
+			name AS tablename,
+			'mini' AS tableowner,
+			NULL AS tablespace,
+			0 AS hasindexes,
+			0 AS hasrules,
+			0 AS hastriggers,
+			0 AS rowsecurity
+		FROM sqlite_schema
+		WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`,
+	}
+
+	for _, view := range views {
+		if _, err := db.ExecContext(ctx, view); err != nil {
+			return err
+		}
+	}
+
+	// Populate initial metadata
+	populateSQL := `
+		INSERT OR IGNORE INTO main.pg_namespace (oid, nspname) VALUES (2200, 'public');
+		INSERT OR IGNORE INTO main.pg_namespace (oid, nspname) VALUES (11, 'pg_catalog');
+
+		INSERT OR IGNORE INTO main.pg_type (oid, typname, typnamespace) VALUES (16, 'bool', 11);
+		INSERT OR IGNORE INTO main.pg_type (oid, typname, typnamespace) VALUES (17, 'bytea', 11);
+		INSERT OR IGNORE INTO main.pg_type (oid, typname, typnamespace) VALUES (20, 'int8', 11);
+		INSERT OR IGNORE INTO main.pg_type (oid, typname, typnamespace) VALUES (21, 'int2', 11);
+		INSERT OR IGNORE INTO main.pg_type (oid, typname, typnamespace) VALUES (23, 'int4', 11);
+		INSERT OR IGNORE INTO main.pg_type (oid, typname, typnamespace) VALUES (25, 'text', 11);
+		INSERT OR IGNORE INTO main.pg_type (oid, typname, typnamespace) VALUES (700, 'float4', 11);
+		INSERT OR IGNORE INTO main.pg_type (oid, typname, typnamespace) VALUES (701, 'float8', 11);
+		INSERT OR IGNORE INTO main.pg_type (oid, typname, typnamespace) VALUES (1043, 'varchar', 11);
+		INSERT OR IGNORE INTO main.pg_type (oid, typname, typnamespace) VALUES (1082, 'date', 11);
+		INSERT OR IGNORE INTO main.pg_type (oid, typname, typnamespace) VALUES (1114, 'timestamp', 11);
+		INSERT OR IGNORE INTO main.pg_type (oid, typname, typnamespace) VALUES (1184, 'timestamptz', 11);
+		INSERT OR IGNORE INTO main.pg_type (oid, typname, typnamespace) VALUES (1700, 'numeric', 11);
+		INSERT OR IGNORE INTO main.pg_type (oid, typname, typnamespace) VALUES (114, 'json', 11);
+		INSERT OR IGNORE INTO main.pg_type (oid, typname, typnamespace) VALUES (3802, 'jsonb', 11);
+		INSERT OR IGNORE INTO main.pg_type (oid, typname, typnamespace) VALUES (2950, 'uuid', 11);
+
+		INSERT OR IGNORE INTO main.pg_init_privs (objoid, classid, objsubid, privtype, initprivs) VALUES (0, 0, 0, 'i', '{}');
+	`
+	if _, err := db.ExecContext(ctx, populateSQL); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // NewSession returns a per-connection Backend that shares the underlying

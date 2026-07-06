@@ -137,3 +137,45 @@ func TestRewriteDeleteAlias(t *testing.T) {
 		})
 	}
 }
+
+func TestRewriteScientificNotationCast(t *testing.T) {
+	cases := map[string]string{
+		"SELECT 1.175494e-38::float4": "SELECT CAST(1.175494e-38 AS real)",
+		"SELECT 1.23e+4::numeric":      "SELECT CAST(1.23e+4 AS numeric)",
+		"SELECT -1e-3::real":           "SELECT -CAST(1e-3 AS real)",
+	}
+	for sql, want := range cases {
+		t.Run(sql, func(t *testing.T) {
+			if got := Rewrite(sql); got != want {
+				t.Fatalf("Rewrite() = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestRewriteAnonymousIndex(t *testing.T) {
+	got := Rewrite("CREATE INDEX ON my_table USING btree (col)")
+	if !strings.Contains(got, "CREATE INDEX idx_anon_") || !strings.Contains(got, "ON my_table (col)") {
+		t.Fatalf("unexpected anonymous index rewrite: %q", got)
+	}
+	got2 := Rewrite("CREATE UNIQUE INDEX ON my_table (col)")
+	if !strings.Contains(got2, "CREATE UNIQUE INDEX idx_anon_") || !strings.Contains(got2, "ON my_table (col)") {
+		t.Fatalf("unexpected anonymous unique index rewrite: %q", got2)
+	}
+}
+
+func TestRewriteDistanceOperator(t *testing.T) {
+	cases := map[string]string{
+		"SELECT c1.f1 <-> c2.f1":             "SELECT dist_op(c1.f1, c2.f1)",
+		"SELECT f1 <-> '0,1'":                "SELECT dist_op(f1, '0,1')",
+		"SELECT (c1.f1 <-> c2.f1) AS dist":  "SELECT (dist_op(c1.f1, c2.f1)) AS dist",
+		"SELECT point(1,2) <-> point(3,4)":  "SELECT dist_op(point(1,2), point(3,4))",
+	}
+	for sql, want := range cases {
+		t.Run(sql, func(t *testing.T) {
+			if got := Rewrite(sql); got != want {
+				t.Fatalf("Rewrite() = %q, want %q", got, want)
+			}
+		})
+	}
+}

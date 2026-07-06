@@ -73,6 +73,42 @@ func TestSessionBuiltins(t *testing.T) {
 	}
 }
 
+func TestSessionRegressCompatibilityStubs(t *testing.T) {
+	ctx := context.Background()
+	b, err := sqlite.New(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = b.Close(ctx)
+	}()
+
+	s := session.New(1, 1, "default", "mini", b, nil)
+	for _, sql := range []string{
+		"DO $body$ begin perform 1; end $body$",
+		"DO 'begin perform 1; end'",
+		"create schema regress_schema",
+		"drop schema regress_schema",
+	} {
+		execOK(t, ctx, s, sql)
+	}
+
+	cases := map[string]any{
+		"select getdatabaseencoding()":                       "UTF8",
+		"select pg_numa_available()":                         int64(0),
+		"select count(*) > 0 from pg_init_privs":             true,
+		"select count(*) = 0 from pg_shmem_allocations_numa": true,
+	}
+	for sql, want := range cases {
+		t.Run(sql, func(t *testing.T) {
+			result := queryOK(t, ctx, s, sql)
+			if got := result.Rows[0][0].Value; got != want {
+				t.Fatalf("%s = %v (%T), want %v (%T)", sql, got, got, want, want)
+			}
+		})
+	}
+}
+
 func TestSessionTransactions(t *testing.T) {
 	ctx := context.Background()
 	b, err := sqlite.New(ctx)

@@ -12,7 +12,34 @@ import (
 var regexCache sync.Map
 
 func init() {
+	sqlite.MustRegisterDeterministicScalarFunction("convert_from", 2, convertFromFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("getdatabaseencoding", 0, getDatabaseEncodingFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_numa_available", 0, pgNumaAvailableFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("regexp_match", 3, regexpMatchFunc)
+}
+
+func convertFromFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 {
+		return nil, fmt.Errorf("convert_from requires 2 arguments")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	return valueString(args[0]), nil
+}
+
+func getDatabaseEncodingFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 0 {
+		return nil, fmt.Errorf("getdatabaseencoding requires 0 arguments")
+	}
+	return "UTF8", nil
+}
+
+func pgNumaAvailableFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 0 {
+		return nil, fmt.Errorf("pg_numa_available requires 0 arguments")
+	}
+	return int64(0), nil
 }
 
 func regexpMatchFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
@@ -23,20 +50,9 @@ func regexpMatchFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Val
 		return nil, nil
 	}
 
-	toString := func(v driver.Value) string {
-		switch val := v.(type) {
-		case string:
-			return val
-		case []byte:
-			return string(val)
-		default:
-			return fmt.Sprintf("%v", val)
-		}
-	}
-
-	pattern := toString(args[0])
-	text := toString(args[1])
-	flags := toString(args[2])
+	pattern := valueString(args[0])
+	text := valueString(args[1])
+	flags := valueString(args[2])
 
 	cacheKey := flags + "\x00" + pattern
 	var rx *regexp.Regexp
@@ -59,4 +75,15 @@ func regexpMatchFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Val
 		return int64(1), nil
 	}
 	return int64(0), nil
+}
+
+func valueString(v driver.Value) string {
+	switch val := v.(type) {
+	case string:
+		return val
+	case []byte:
+		return string(val)
+	default:
+		return fmt.Sprintf("%v", val)
+	}
 }

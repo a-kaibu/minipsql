@@ -8,18 +8,18 @@ import (
 )
 
 var (
-	paramCastRE = regexp.MustCompile(`\$([0-9]+)::([A-Za-z_][A-Za-z0-9_]*)`)
-	paramRE     = regexp.MustCompile(`\$([0-9]+)`)
-	serialRE    = regexp.MustCompile(`(?i)\bserial\b`)
-	boolRE      = regexp.MustCompile(`(?i)\bboolean\b|\bbool\b`)
-	nowRE       = regexp.MustCompile(`(?i)\bnow\(\)`)
-	castRE      = regexp.MustCompile(`::([A-Za-z_][A-Za-z0-9_ ]*(?:\([^)]*\))?(?:\[\])?)`)
-	ilikeRE     = regexp.MustCompile(`(?i)\bILIKE\b`)
-	returningRE = regexp.MustCompile(`(?i)\bRETURNING\b`)
-	onlyRE      = regexp.MustCompile(`(?i)\bFROM\s+ONLY\s+`)
-	eStringRE   = regexp.MustCompile(`(?i)\bE'`)
-	trueRE      = regexp.MustCompile(`(?i)\bTRUE\b`)
-	falseRE     = regexp.MustCompile(`(?i)\bFALSE\b`)
+	paramCastRE   = regexp.MustCompile(`\$([0-9]+)::([A-Za-z_][A-Za-z0-9_]*)`)
+	paramRE       = regexp.MustCompile(`\$([0-9]+)`)
+	serialRE      = regexp.MustCompile(`(?i)\bserial\b`)
+	boolRE        = regexp.MustCompile(`(?i)\bboolean\b|\bbool\b`)
+	nowRE         = regexp.MustCompile(`(?i)\bnow\(\)`)
+	castRE        = regexp.MustCompile(`::([A-Za-z_][A-Za-z0-9_ ]*(?:\([^)]*\))?(?:\[\])?)`)
+	ilikeRE       = regexp.MustCompile(`(?i)\bILIKE\b`)
+	returningRE   = regexp.MustCompile(`(?i)\bRETURNING\b`)
+	onlyRE        = regexp.MustCompile(`(?i)\bFROM\s+ONLY\s+`)
+	eStringRE     = regexp.MustCompile(`(?i)\bE'`)
+	trueRE        = regexp.MustCompile(`(?i)\bTRUE\b`)
+	falseRE       = regexp.MustCompile(`(?i)\bFALSE\b`)
 	ifNotExistsRE = regexp.MustCompile(`(?i)\bIF\s+NOT\s+EXISTS\b`)
 	ifExistsRE    = regexp.MustCompile(`(?i)\bIF\s+EXISTS\b`)
 )
@@ -36,6 +36,7 @@ func Rewrite(sql string) string {
 	out = rewriteSimilarTo(out)
 	out = rewriteNullsOrder(out)
 	out = rewriteGenerateSeries(out)
+	out = rewritePosition(out)
 	out = onlyRE.ReplaceAllString(out, "FROM ")
 	out = eStringRE.ReplaceAllString(out, "'")
 	return out
@@ -144,29 +145,206 @@ func SplitStatements(sql string) []string {
 	var stmts []string
 	var b strings.Builder
 	inSingle := false
-	escaped := false
-	for _, r := range sql {
-		if r == '\'' && !escaped {
-			inSingle = !inSingle
+	inLineComment := false
+	blockDepth := 0
+	dollarTag := ""
+	for i := 0; i < len(sql); i++ {
+		if inLineComment {
+			if sql[i] == '\n' {
+				inLineComment = false
+				b.WriteByte('\n')
+			}
+			continue
 		}
-		if r == ';' && !inSingle {
+
+		if blockDepth > 0 {
+			if i+1 < len(sql) && sql[i] == '/' && sql[i+1] == '*' {
+				blockDepth++
+				i++
+				continue
+			}
+			if i+1 < len(sql) && sql[i] == '*' && sql[i+1] == '/' {
+				blockDepth--
+				i++
+				if blockDepth == 0 {
+					b.WriteByte(' ')
+				}
+			}
+			continue
+		}
+
+		if dollarTag != "" {
+			if strings.HasPrefix(sql[i:], dollarTag) {
+				b.WriteString(dollarTag)
+				i += len(dollarTag) - 1
+				dollarTag = ""
+				continue
+			}
+			b.WriteByte(sql[i])
+			continue
+		}
+
+		if inSingle {
+			b.WriteByte(sql[i])
+			if sql[i] == '\'' {
+				if i+1 < len(sql) && sql[i+1] == '\'' {
+					b.WriteByte(sql[i+1])
+					i++
+					continue
+				}
+				inSingle = false
+			}
+			continue
+		}
+
+		if i+1 < len(sql) && sql[i] == '-' && sql[i+1] == '-' {
+			inLineComment = true
+			i++
+			continue
+		}
+		if i+1 < len(sql) && sql[i] == '/' && sql[i+1] == '*' {
+			blockDepth = 1
+			i++
+			continue
+		}
+		if sql[i] == '\'' {
+			inSingle = true
+			b.WriteByte(sql[i])
+			continue
+		}
+		if tag := dollarQuoteTagAt(sql, i); tag != "" {
+			dollarTag = tag
+			b.WriteString(tag)
+			i += len(tag) - 1
+			continue
+		}
+
+		if sql[i] == ';' {
 			if s := strings.TrimSpace(b.String()); s != "" {
 				stmts = append(stmts, s)
 			}
 			b.Reset()
-			escaped = false
 			continue
 		}
-		b.WriteRune(r)
-		escaped = r == '\\' && !escaped
-		if r != '\\' {
-			escaped = false
-		}
+		b.WriteByte(sql[i])
 	}
 	if s := strings.TrimSpace(b.String()); s != "" {
 		stmts = append(stmts, s)
 	}
 	return stmts
+}
+
+func dollarQuoteTagAt(sql string, start int) string {
+	if start >= len(sql) || sql[start] != '$' {
+		return ""
+	}
+	end := start + 1
+	for end < len(sql) {
+		c := sql[end]
+		if c == '$' {
+			return sql[start : end+1]
+		}
+		if !(isIdentByte(c)) {
+			return ""
+		}
+		end++
+	}
+	return ""
+}
+
+func rewritePosition(sql string) string {
+	result := sql
+	for {
+		idx := indexOutsideQuotes(strings.ToUpper(result), "POSITION")
+		if idx < 0 {
+			return result
+		}
+		open := idx + len("POSITION")
+		for open < len(result) && unicode.IsSpace(rune(result[open])) {
+			open++
+		}
+		if open >= len(result) || result[open] != '(' {
+			return result
+		}
+		close := findMatchingParen(result, open)
+		if close < 0 {
+			return result
+		}
+		body := result[open+1 : close]
+		inStart, inEnd := topLevelInBounds(body)
+		if inStart < 0 {
+			idx = close + 1
+			return result[:idx] + rewritePosition(result[idx:])
+		}
+		needle := strings.TrimSpace(body[:inStart])
+		haystack := strings.TrimSpace(body[inEnd:])
+		replacement := "instr(" + haystack + ", " + needle + ")"
+		result = result[:idx] + replacement + result[close+1:]
+	}
+}
+
+func findMatchingParen(sql string, open int) int {
+	depth := 1
+	inSingle := false
+	for i := open + 1; i < len(sql); i++ {
+		if inSingle {
+			if sql[i] == '\'' {
+				if i+1 < len(sql) && sql[i+1] == '\'' {
+					i++
+					continue
+				}
+				inSingle = false
+			}
+			continue
+		}
+		switch sql[i] {
+		case '\'':
+			inSingle = true
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func topLevelInBounds(s string) (int, int) {
+	depth := 0
+	inSingle := false
+	for i := 0; i < len(s); i++ {
+		if inSingle {
+			if s[i] == '\'' {
+				if i+1 < len(s) && s[i+1] == '\'' {
+					i++
+					continue
+				}
+				inSingle = false
+			}
+			continue
+		}
+		switch s[i] {
+		case '\'':
+			inSingle = true
+		case '(':
+			depth++
+		case ')':
+			depth--
+		default:
+			if depth == 0 && (s[i] == 'I' || s[i] == 'i') && i+1 < len(s) && (s[i+1] == 'N' || s[i+1] == 'n') {
+				beforeOK := i == 0 || unicode.IsSpace(rune(s[i-1]))
+				after := i + len("in")
+				afterOK := after >= len(s) || unicode.IsSpace(rune(s[after]))
+				if beforeOK && afterOK {
+					return i, after
+				}
+			}
+		}
+	}
+	return -1, -1
 }
 
 func IsQuery(sql string) bool {

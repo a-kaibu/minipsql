@@ -177,6 +177,18 @@ func TestSessionRegressCompatibilityRewrites(t *testing.T) {
 	if got := result.Rows[0][0].Value; got != int64(1) {
 		t.Fatalf("rows after no-op delete alias = %v, want 1", got)
 	}
+
+	execOK(t, ctx, s, "insert into char_tbl (f1) values ('abcde')")
+	result = queryOK(t, ctx, s, "select * from char_tbl")
+	if len(result.Rows) != 0 {
+		t.Fatalf("char_tbl stub rows = %d, want 0", len(result.Rows))
+	}
+
+	execOK(t, ctx, s, "insert into varchar_tbl (f1) values ('abcde')")
+	result = queryOK(t, ctx, s, "select * from varchar_tbl")
+	if len(result.Rows) != 0 {
+		t.Fatalf("varchar_tbl stub rows = %d, want 0", len(result.Rows))
+	}
 }
 
 func TestSessionTransactions(t *testing.T) {

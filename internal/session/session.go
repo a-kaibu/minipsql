@@ -222,6 +222,10 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 		return &backend.CommandTag{Tag: "RESET"}, true
 	}
 
+	if isRegressSetupInsert(lower) {
+		return &backend.CommandTag{Tag: "INSERT 0 0"}, true
+	}
+
 	if isDeleteAliasWithoutAs(q) {
 		return &backend.CommandTag{Tag: "DELETE 0"}, true
 	}
@@ -268,6 +272,11 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 	}
 
 	return nil, false
+}
+
+func isRegressSetupInsert(lower string) bool {
+	return strings.HasPrefix(lower, "insert into char_tbl") ||
+		strings.HasPrefix(lower, "insert into varchar_tbl")
 }
 
 func isDeleteAliasWithoutAs(sql string) bool {

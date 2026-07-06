@@ -45,6 +45,10 @@ func TryHandleBuiltin(ctx context.Context, b backend.Backend, sql string, info S
 		return pgInputErrorInfo(), true, nil
 	}
 
+	if lower == "select * from char_tbl" || lower == "select * from varchar_tbl" {
+		return emptySingleTextColumn("f1"), true, nil
+	}
+
 	if result, ok, err := tryInformationSchema(ctx, b, q, info); ok || err != nil {
 		return result, ok, err
 	}
@@ -91,5 +95,11 @@ func singleColumn(name, val string) *backend.Result {
 	return &backend.Result{
 		Columns: []backend.Column{{Name: name, TypeOID: OIDText}},
 		Rows:    [][]backend.Value{{{Kind: backend.ValueText, Value: val}}},
+	}
+}
+
+func emptySingleTextColumn(name string) *backend.Result {
+	return &backend.Result{
+		Columns: []backend.Column{{Name: name, TypeOID: OIDText}},
 	}
 }

@@ -80,6 +80,38 @@ tasks:
       - mkdir -p reports/postgres-regress
       - docker compose run --rm postgres-regress
 
+  test:regress:
+    desc: Run PostgreSQL regress in parallel batches assuming minipsql is already running (CI use)
+    vars:
+      BATCH_COUNT: '{{.BATCH_COUNT | default "4"}}'
+      PARALLELISM: '{{.PARALLELISM | default "4"}}'
+    env:
+      MINIPSQL_HOST: '{{.DOCKER_MINIPSQL_HOST}}'
+      MINIPSQL_PORT: '{{.MINIPSQL_PORT}}'
+      MINIPSQL_USER: '{{.MINIPSQL_USER}}'
+      MINIPSQL_DB: '{{.MINIPSQL_DB}}'
+    cmds:
+      - mkdir -p reports/postgres-regress
+      - |
+        status=0
+        pids=()
+        for b in $(seq 0 $(({{.BATCH_COUNT}} - 1))); do
+          REGRESS_BATCH=$b REGRESS_BATCH_COUNT={{.BATCH_COUNT}} REGRESS_PARALLELISM={{.PARALLELISM}} \
+            docker compose run --rm \
+              -e REGRESS_BATCH=$b \
+              -e REGRESS_BATCH_COUNT={{.BATCH_COUNT}} \
+              -e REGRESS_PARALLELISM={{.PARALLELISM}} \
+              postgres-regress > /tmp/regress-batch-$b.log 2>&1 &
+          pids+=($!)
+        done
+        for pid in "${pids[@]}"; do
+          wait "$pid" || status=1
+        done
+        for b in $(seq 0 $(({{.BATCH_COUNT}} - 1))); do
+          echo "=== batch $b ===" && cat /tmp/regress-batch-$b.log || true
+        done
+        exit $status
+
   sqlancer:
     desc: Run SQLancer PostgreSQL provider against minipsql
     deps: [build, docker:sqlancer]

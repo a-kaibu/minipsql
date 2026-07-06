@@ -9,6 +9,9 @@ services:
       MINIPSQL_PORT: "${MINIPSQL_PORT:-15432}"
       MINIPSQL_USER: "${MINIPSQL_USER:-mini}"
       MINIPSQL_DB: "${MINIPSQL_DB:-default}"
+      REGRESS_BATCH: "${REGRESS_BATCH:-}"
+      REGRESS_BATCH_COUNT: "${REGRESS_BATCH_COUNT:-}"
+      REGRESS_PARALLELISM: "${REGRESS_PARALLELISM:-8}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

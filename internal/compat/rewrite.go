@@ -39,6 +39,9 @@ var (
 	circleColRE        = regexp.MustCompile(`(?i)\b\w+\s+circle\b`)
 	asNullRE           = regexp.MustCompile(`(?i)\bAS\s+null\b`)
 	tableColumnAliasRE = regexp.MustCompile(`(?i)\bFROM\s+(int2_tbl|int4_tbl|int8_tbl)\b\s+(?:AS\s+)?([A-Za-z0-9_]+)\s*\(\s*([A-Za-z0-9_, ]+)\s*\)`)
+	// Matches: FROM/JOIN  table [AS] alias (col1, col2, ...)
+	// The column list must contain only simple identifiers (no expressions) to avoid matching function calls.
+	genericTableColAliasRE = regexp.MustCompile(`(?i)(?:\bFROM\b|\bJOIN\b)\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*)\s*\)`)
 	tableKeywordRE     = regexp.MustCompile(`(?i)(^|[^a-zA-Z0-9_.])(?:([a-zA-Z0-9_]+)\s+)?\bTABLE\s+([A-Za-z0-9_]+)\b`)
 	arrayConstructorRE  = regexp.MustCompile(`(?is)\bARRAY\s*\[(.*?)\]`)
 	arrayIndexRE        = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\[(\d+)\]`)
@@ -251,6 +254,7 @@ func Rewrite(sql string) string {
 		return res
 	})
 	out = rewriteTableColumnAlias(out)
+	out = rewriteGenericTableColAlias(out)
 	out = arrayConstructorRE.ReplaceAllString(out, "minipsql_array($1)")
 	out = usingLessRE.ReplaceAllString(out, "")
 	out = usingGreaterRE.ReplaceAllString(out, "DESC")
@@ -2689,6 +2693,47 @@ func rewriteTableColumnAlias(sql string) string {
 		}
 		// Strip column alias list — just use table alias without column renaming
 		return fmt.Sprintf("FROM %s %s", tableName, aliasName)
+	})
+}
+
+// tableColAliasSQLKeywords is the set of SQL keywords that cannot be table aliases.
+var tableColAliasSQLKeywords = map[string]bool{
+	"WHERE": true, "ON": true, "SET": true, "HAVING": true, "ORDER": true,
+	"GROUP": true, "LIMIT": true, "OFFSET": true, "UNION": true, "EXCEPT": true,
+	"INTERSECT": true, "RETURNING": true, "INTO": true, "LEFT": true, "RIGHT": true,
+	"INNER": true, "OUTER": true, "CROSS": true, "FULL": true, "NATURAL": true,
+	"LATERAL": true, "NOT": true, "AND": true, "OR": true, "IS": true, "IN": true,
+	"LIKE": true, "BETWEEN": true, "CASE": true, "WHEN": true, "THEN": true,
+	"ELSE": true, "END": true, "SELECT": true, "FROM": true, "JOIN": true,
+	"AS": true, "WITH": true, "BY": true, "FETCH": true, "ROWS": true, "ROW": true,
+}
+
+// rewriteGenericTableColAlias strips column alias lists from table references like
+// "FROM table alias (col1, col2, ...)" → "FROM table alias"
+// PostgreSQL allows renaming columns via this syntax but SQLite does not.
+func rewriteGenericTableColAlias(sql string) string {
+	if !strings.Contains(sql, "(") {
+		return sql
+	}
+	return genericTableColAliasRE.ReplaceAllStringFunc(sql, func(m string) string {
+		sub := genericTableColAliasRE.FindStringSubmatch(m)
+		tableName := sub[1]
+		aliasName := sub[2]
+		// Skip if aliasName is a SQL keyword (false positive: "FROM t WHERE (a,b) NOT IN ...")
+		if tableColAliasSQLKeywords[strings.ToUpper(aliasName)] {
+			return m
+		}
+		// Preserve the leading FROM/JOIN keyword with its original spacing
+		upperM := strings.ToUpper(m)
+		var sep string
+		if idx := strings.Index(upperM, "FROM"); idx >= 0 && (idx == 0 || m[idx-1] == ' ' || m[idx-1] == '\n' || m[idx-1] == '\t') {
+			sep = m[:idx] + "FROM "
+		} else if idx := strings.Index(upperM, "JOIN"); idx >= 0 {
+			sep = m[:idx] + "JOIN "
+		} else {
+			sep = "FROM "
+		}
+		return sep + tableName + " " + aliasName
 	})
 }
 

@@ -612,6 +612,10 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 	case strings.HasPrefix(lower, "drop owned by ") || strings.HasPrefix(lower, "drop owned by;"):
 		return &backend.CommandTag{Tag: "DROP OWNED"}, true
 
+	// MERGE is not supported by SQLite; no-op the entire statement
+	case strings.HasPrefix(lower, "merge ") || strings.HasPrefix(lower, "merge\n") || strings.HasPrefix(lower, "merge\t"):
+		return &backend.CommandTag{Tag: "MERGE 0"}, true
+
 	// Replication features — not supported by SQLite backend, silently no-op
 	case strings.HasPrefix(lower, "create publication ") || lower == "create publication":
 		return &backend.CommandTag{Tag: "CREATE PUBLICATION"}, true
@@ -678,6 +682,8 @@ func tryAlterTableNoop(lower string) (*backend.CommandTag, bool) {
 		"replica identity",
 		"attach partition",
 		"detach partition",
+		"split partition",
+		"merge partitions",
 		"add primary key",
 		"add unique",
 		"add check",

@@ -43,6 +43,18 @@ var (
 	asteriskTableRE     = regexp.MustCompile(`(?i)\b([a-zA-Z0-9_]+)\*`)
 	parenthesizedStartSelectRE = regexp.MustCompile(`(?i)^\s*\(\s*(SELECT\b[^)]+?)\)`)
 	parenthesizedSetSelectRE   = regexp.MustCompile(`(?i)\b(UNION\s+ALL|UNION|EXCEPT|INTERSECT)\s*\(\s*(SELECT\b[^)]+?)\)`)
+	extractRE          = regexp.MustCompile(`(?i)\bEXTRACT\s*\(\s*([A-Za-z_]+)\s+FROM\s+`)
+	schemaPrefixRE     = regexp.MustCompile(`(?i)\b(?:public|pg_temp|pg_catalog)\s*\.\s*([A-Za-z0-9_"]+)`)
+	createViewWithOptsRE = regexp.MustCompile(`(?i)(CREATE\s+(?:OR\s+REPLACE\s+)?(?:TEMP(?:ORARY)?\s+)?VIEW\s+\S+)\s+WITH\s*\([^)]*\)`)
+	createTableWithOptsRE = regexp.MustCompile(`(?i)(CREATE\s+(?:UNLOGGED\s+|TEMP(?:ORARY)?\s+)?TABLE\s+[^\s(]+)\s+WITH\s*\([^)]*\)`)
+	createTableWithNoDataRE = regexp.MustCompile(`(?i)\bWITH\s+NO\s+DATA\b`)
+	createTableColListRE = regexp.MustCompile(`(?i)^\s*(CREATE\s+(?:UNLOGGED\s+|TEMP(?:ORARY)?\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[A-Za-z0-9_".]+)\s*\(([^)]+)\)\s*(AS\s+)`)
+	withOrdinalityRE   = regexp.MustCompile(`(?i)\bWITH\s+ORDINALITY\b`)
+	bareOffsetRE       = regexp.MustCompile(`(?i)\bOFFSET\s+(\d+)(?:\s+ROWS?)?\s*$`)
+	dropMultiTableRE   = regexp.MustCompile(`(?i)^\s*(DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?)([A-Za-z0-9_".,\s]+?)(\s+(?:CASCADE|RESTRICT))?\s*;?\s*$`)
+	indexOpClassRE     = regexp.MustCompile(`(?i)\b([A-Za-z0-9_]+)\s+([A-Za-z0-9_]+_ops\b)(?:\s+ASC|\s+DESC)?`)
+	nullsFirstLastRE   = regexp.MustCompile(`(?i)\bNULLS\s+(?:FIRST|LAST)\b`)
+	collateClauseRE    = regexp.MustCompile(`(?i)\bCOLLATE\s+(?:"[^"]*"|[A-Za-z0-9_".-]+)`)
 )
 
 var idxCounter atomic.Int64
@@ -57,6 +69,17 @@ func Rewrite(sql string) string {
 	out = rewriteFetchFirst(out)
 	out = rewriteLateral(out)
 	out = rewriteTablesample(out)
+	out = rewriteExtract(out)
+	out = rewriteSchemaPrefix(out)
+	out = rewriteViewOptions(out)
+	out = rewriteTableWithOptions(out)
+	out = rewriteCreateTableWithNoData(out)
+	out = rewriteCreateTableColList(out)
+	out = rewriteWithOrdinality(out)
+	out = rewriteBareOffset(out)
+	out = rewriteDropMultiTable(out)
+	out = rewriteIndexOpClasses(out)
+	out = rewriteNullsFirstLast(out)
 	out = rewriteUnicodeLiterals(out)
 	out = rewriteValuesAlias(out)
 	out = tableKeywordRE.ReplaceAllStringFunc(out, func(m string) string {
@@ -1397,7 +1420,15 @@ func rewriteSubstring(sql string) string {
 		}
 		
 		if fromIdx == -1 {
-			sql = sql[:idx] + "substr(" + body + ")" + sql[clIdx+1:]
+			// SUBSTRING(str FOR len) — no FROM, only FOR
+			if forIdx != -1 {
+				str := strings.TrimSpace(body[:forIdx])
+				length := strings.TrimSpace(body[forIdx+len("for"):])
+				rewritten := "substr(" + str + ", 1, " + length + ")"
+				sql = sql[:idx] + rewritten + sql[clIdx+1:]
+			} else {
+				sql = sql[:idx] + "substr(" + body + ")" + sql[clIdx+1:]
+			}
 			lower = strings.ToLower(sql)
 			continue
 		}
@@ -1938,9 +1969,33 @@ func rewriteKeywords(sql string) string {
 				continue
 			}
 		}
+		// Rewrite PostgreSQL session/user keywords to function calls
+		for _, kw := range []struct{ word, fn string }{
+			{"current_user", "current_user()"},
+			{"session_user", "session_user()"},
+			{"current_role", "current_role()"},
+			{"current_schema", "current_schema()"},
+			{"current_database", "current_database()"},
+			{"current_catalog", "current_catalog()"},
+		} {
+			if i+len(kw.word) <= n && strings.ToLower(sql[i:i+len(kw.word)]) == kw.word {
+				// ensure word boundary
+				leftOk := i == 0 || !isIdentByte(sql[i-1])
+				rightEnd := i + len(kw.word)
+				rightOk := rightEnd == n || !isIdentByte(sql[rightEnd])
+				// don't rewrite if already followed by '('
+				notFunc := rightEnd >= n || sql[rightEnd] != '('
+				if leftOk && rightOk && notFunc {
+					b.WriteString(kw.fn)
+					i += len(kw.word)
+					goto nextChar
+				}
+			}
+		}
 		
 		b.WriteByte(sql[i])
 		i++
+	nextChar:
 	}
 	return b.String()
 }
@@ -2223,6 +2278,128 @@ func rewriteTableColumnAlias(sql string) string {
 		}
 		return ret
 	})
+}
+
+// rewriteSchemaPrefix strips public., pg_temp., pg_catalog. schema prefixes
+// that SQLite does not understand.
+func rewriteSchemaPrefix(sql string) string {
+	return schemaPrefixRE.ReplaceAllString(sql, "$1")
+}
+
+// rewriteViewOptions strips WITH (option=value) from CREATE VIEW statements.
+func rewriteViewOptions(sql string) string {
+	return createViewWithOptsRE.ReplaceAllString(sql, "$1")
+}
+
+// rewriteTableWithOptions strips WITH (option=value) from CREATE TABLE ... AS SELECT.
+func rewriteTableWithOptions(sql string) string {
+	return createTableWithOptsRE.ReplaceAllString(sql, "$1")
+}
+
+// rewriteCreateTableWithNoData rewrites CREATE TABLE ... AS SELECT ... WITH NO DATA
+// to CREATE TABLE ... AS SELECT ... LIMIT 0.
+func rewriteCreateTableWithNoData(sql string) string {
+	if !createTableWithNoDataRE.MatchString(sql) {
+		return sql
+	}
+	return createTableWithNoDataRE.ReplaceAllString(sql, "LIMIT 0")
+}
+
+// rewriteCreateTableColList strips the column name list from
+// CREATE TABLE name (col1, col2) AS SELECT ... since SQLite does not support it.
+func rewriteCreateTableColList(sql string) string {
+	return createTableColListRE.ReplaceAllStringFunc(sql, func(match string) string {
+		sub := createTableColListRE.FindStringSubmatch(match)
+		if len(sub) < 4 {
+			return match
+		}
+		// sub[1] = "CREATE TABLE ...", sub[2] = col list (may be column names only), sub[3] = "AS "
+		// Only strip if it looks like a column name list (no types)
+		colList := strings.TrimSpace(sub[2])
+		// Heuristic: if the list contains type keywords, it's not just names
+		if regexp.MustCompile(`(?i)\b(int|text|varchar|char|bool|float|numeric|date|time)\b`).MatchString(colList) {
+			return match
+		}
+		return sub[1] + " " + sub[3]
+	})
+}
+
+// rewriteWithOrdinality strips WITH ORDINALITY (not supported by SQLite).
+func rewriteWithOrdinality(sql string) string {
+	return withOrdinalityRE.ReplaceAllString(sql, "")
+}
+
+// rewriteBareOffset rewrites "OFFSET n" without a LIMIT clause to "LIMIT -1 OFFSET n".
+// SQLite requires LIMIT when OFFSET is used.
+func rewriteBareOffset(sql string) string {
+	lower := strings.ToLower(sql)
+	if !strings.Contains(lower, "offset") {
+		return sql
+	}
+	if strings.Contains(lower, "limit") {
+		return sql
+	}
+	if strings.Contains(lower, "fetch") {
+		return sql
+	}
+	return bareOffsetRE.ReplaceAllString(sql, "LIMIT -1 OFFSET $1")
+}
+
+// rewriteIndexOpClasses strips PostgreSQL operator class names from CREATE INDEX.
+// e.g. "col int4_ops" → "col"
+func rewriteIndexOpClasses(sql string) string {
+	lower := strings.ToLower(sql)
+	if !strings.Contains(lower, "create") || !strings.Contains(lower, "index") {
+		return sql
+	}
+	return indexOpClassRE.ReplaceAllString(sql, "$1")
+}
+
+// rewriteNullsFirstLast strips NULLS FIRST / NULLS LAST from ORDER BY clauses
+// where SQLite does not support them.
+func rewriteNullsFirstLast(sql string) string {
+	return nullsFirstLastRE.ReplaceAllString(sql, "")
+}
+
+// rewriteDropMultiTable rewrites DROP TABLE a, b, c to multiple DROP TABLE statements.
+// SQLite does not support dropping multiple tables in a single statement.
+func rewriteDropMultiTable(sql string) string {
+	sub := dropMultiTableRE.FindStringSubmatch(sql)
+	if sub == nil {
+		return sql
+	}
+	prefix := sub[1]   // "DROP TABLE " or "DROP TABLE IF EXISTS "
+	tableList := sub[2]
+	// suffix := sub[3] // cascade/restrict - we ignore for now
+
+	tables := strings.Split(tableList, ",")
+	if len(tables) <= 1 {
+		return sql
+	}
+	stmts := make([]string, 0, len(tables))
+	for _, t := range tables {
+		t = strings.TrimSpace(t)
+		if t != "" {
+			stmts = append(stmts, prefix+t)
+		}
+	}
+	return strings.Join(stmts, "; ")
+}
+
+// rewriteExtract rewrites EXTRACT(field FROM expr) to date_part('field', expr).
+// This is needed because SQLite does not support EXTRACT syntax.
+func rewriteExtract(sql string) string {
+	result := extractRE.ReplaceAllStringFunc(sql, func(match string) string {
+		// match is "EXTRACT(field FROM " — we need to find the field name
+		subm := extractRE.FindStringSubmatch(match)
+		if len(subm) < 2 {
+			return match
+		}
+		field := strings.ToLower(subm[1])
+		return fmt.Sprintf("date_part('%s', ", field)
+	})
+	// The closing paren of EXTRACT is kept as-is since we just replaced the opening
+	return result
 }
 
 

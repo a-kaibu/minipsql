@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -143,6 +144,50 @@ func init() {
 	sqlite.MustRegisterDeterministicScalarFunction("regr_sxx", 2, regrSxxFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("regr_syy", 2, regrSyyFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("regr_sxy", 2, regrSxyFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("date_part", 2, datePartFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("date_trunc", 2, dateTruncFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("to_char", 2, toCharFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("to_date", 2, toDateFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("to_timestamp", -1, toTimestampFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("age", -1, ageFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("make_date", 3, makeDateFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("make_time", 3, makeTimeFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("make_timestamp", 6, makeTimestampFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("make_timestamptz", -1, makeTimestamptzFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("make_interval", -1, makeIntervalFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("justify_days", 1, justifyDaysFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("justify_hours", 1, justifyHoursFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("justify_interval", 1, justifyIntervalFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("timeofday", 0, timeofdayFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("clock_timestamp", 0, clockTimestampFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("transaction_timestamp", 0, transactionTimestampFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("isfinite", 1, isfiniteFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("interval_part", 2, intervalPartFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("current_user", 0, currentUserFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("session_user", 0, currentUserFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("current_role", 0, currentUserFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("current_schema", 0, currentSchemaFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("current_schemas", 1, currentSchemasFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("current_database", 0, currentDatabaseFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("current_catalog", 0, currentDatabaseFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_postmaster_start_time", 0, pgPostmasterStartTimeFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_conf_load_time", 0, pgPostmasterStartTimeFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_backend_pid", 0, pgBackendPidFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_current_xact_id", 0, pgCurrentXactIdFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("txid_current", 0, pgCurrentXactIdFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("txid_current_snapshot", 0, txidCurrentSnapshotFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("txid_snapshot_xmin", 1, txidSnapshotXminFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("txid_snapshot_xmax", 1, txidSnapshotXmaxFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("txid_snapshot_xip", 1, txidSnapshotXipFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("txid_visible_in_snapshot", 2, txidVisibleInSnapshotFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_current_xact_id_if_assigned", 0, pgCurrentXactIdFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_xact_commit_timestamp", 1, pgXactCommitTimestampFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_last_committed_xact", 0, pgLastCommittedXactFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_snapshot_xmin", 1, txidSnapshotXminFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_snapshot_xmax", 1, txidSnapshotXmaxFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_snapshot_xip", 1, txidSnapshotXipFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_visible_in_snapshot", 2, txidVisibleInSnapshotFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_current_snapshot", 0, txidCurrentSnapshotFunc)
 }
 
 func asciiFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
@@ -2914,6 +2959,846 @@ func regrSxyFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, 
 		return nil, nil
 	}
 	return nil, nil
+}
+
+// parseTimestamp tries to parse a value as a time.Time.
+// Supports ISO 8601 variants, date-only, time-only strings.
+func parseTimestamp(v driver.Value) (time.Time, bool) {
+	var s string
+	switch val := v.(type) {
+	case string:
+		s = strings.TrimSpace(val)
+	case int64:
+		return time.Unix(val, 0).UTC(), true
+	case float64:
+		sec := int64(val)
+		nsec := int64((val - float64(sec)) * 1e9)
+		return time.Unix(sec, nsec).UTC(), true
+	default:
+		return time.Time{}, false
+	}
+	// Strip PostgreSQL type prefix like "TIME '12:00:00'"
+	if idx := strings.Index(s, "'"); idx >= 0 {
+		s = s[idx+1:]
+		if end := strings.LastIndex(s, "'"); end >= 0 {
+			s = s[:end]
+		}
+	}
+	formats := []string{
+		"2006-01-02 15:04:05.999999999Z07:00",
+		"2006-01-02 15:04:05.999999999",
+		"2006-01-02 15:04:05Z07:00",
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05.999999999Z07:00",
+		"2006-01-02T15:04:05.999999999",
+		"2006-01-02T15:04:05Z07:00",
+		"2006-01-02T15:04:05",
+		"2006-01-02",
+		"15:04:05.999999999",
+		"15:04:05",
+	}
+	for _, f := range formats {
+		if t, err := time.Parse(f, s); err == nil {
+			return t.UTC(), true
+		}
+	}
+	return time.Time{}, false
+}
+
+// datePartFunc implements date_part('field', value).
+func datePartFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 {
+		return nil, fmt.Errorf("date_part requires 2 arguments")
+	}
+	if args[0] == nil || args[1] == nil {
+		return nil, nil
+	}
+	fieldStr, ok := args[0].(string)
+	if !ok {
+		return nil, fmt.Errorf("date_part: first argument must be a string")
+	}
+	field := strings.ToLower(strings.TrimSpace(fieldStr))
+
+	t, ok := parseTimestamp(args[1])
+	if !ok {
+		return nil, fmt.Errorf("date_part: cannot parse timestamp: %v", args[1])
+	}
+
+	switch field {
+	case "epoch":
+		nano := t.UnixNano()
+		return float64(nano) / 1e9, nil
+	case "year":
+		return float64(t.Year()), nil
+	case "month":
+		return float64(t.Month()), nil
+	case "day":
+		return float64(t.Day()), nil
+	case "hour":
+		return float64(t.Hour()), nil
+	case "minute":
+		return float64(t.Minute()), nil
+	case "second":
+		return float64(t.Second()) + float64(t.Nanosecond())/1e9, nil
+	case "millisecond", "milliseconds":
+		return float64(t.Second())*1000 + float64(t.Nanosecond())/1e6, nil
+	case "microsecond", "microseconds":
+		return float64(t.Second())*1e6 + float64(t.Nanosecond())/1e3, nil
+	case "nanosecond", "nanoseconds":
+		return float64(t.Second())*1e9 + float64(t.Nanosecond()), nil
+	case "dow":
+		return float64(t.Weekday()), nil
+	case "doy":
+		return float64(t.YearDay()), nil
+	case "week":
+		_, w := t.ISOWeek()
+		return float64(w), nil
+	case "isoyear":
+		y, _ := t.ISOWeek()
+		return float64(y), nil
+	case "isodow":
+		dow := int(t.Weekday())
+		if dow == 0 {
+			dow = 7
+		}
+		return float64(dow), nil
+	case "quarter":
+		return float64((int(t.Month())-1)/3 + 1), nil
+	case "decade":
+		y := t.Year()
+		if y < 0 {
+			return float64((y+1)/10 - 1), nil
+		}
+		return float64(y / 10), nil
+	case "century":
+		y := t.Year()
+		if y > 0 {
+			return float64((y+99)/100), nil
+		}
+		return float64((y - 99) / 100), nil
+	case "millennium":
+		y := t.Year()
+		if y > 0 {
+			return float64((y+999)/1000), nil
+		}
+		return float64((y - 999) / 1000), nil
+	case "timezone":
+		_, offset := t.Zone()
+		return float64(offset), nil
+	case "timezone_hour":
+		_, offset := t.Zone()
+		return float64(offset / 3600), nil
+	case "timezone_minute":
+		_, offset := t.Zone()
+		return float64((offset % 3600) / 60), nil
+	default:
+		return nil, fmt.Errorf("date_part: unknown field: %s", field)
+	}
+}
+
+// dateTruncFunc implements date_trunc('field', timestamp).
+func dateTruncFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 {
+		return nil, fmt.Errorf("date_trunc requires 2 arguments")
+	}
+	if args[0] == nil || args[1] == nil {
+		return nil, nil
+	}
+	fieldStr, ok := args[0].(string)
+	if !ok {
+		return nil, fmt.Errorf("date_trunc: first argument must be a string")
+	}
+	field := strings.ToLower(strings.TrimSpace(fieldStr))
+
+	t, ok := parseTimestamp(args[1])
+	if !ok {
+		return nil, fmt.Errorf("date_trunc: cannot parse timestamp: %v", args[1])
+	}
+
+	var result time.Time
+	switch field {
+	case "microseconds", "microsecond":
+		result = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond()/1000*1000, t.Location())
+	case "milliseconds", "millisecond":
+		result = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond()/1000000*1000000, t.Location())
+	case "second":
+		result = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), 0, t.Location())
+	case "minute":
+		result = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), 0, 0, t.Location())
+	case "hour":
+		result = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, t.Location())
+	case "day":
+		result = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+	case "week":
+		// Truncate to Monday of the ISO week
+		dow := int(t.Weekday())
+		if dow == 0 {
+			dow = 7
+		}
+		result = time.Date(t.Year(), t.Month(), t.Day()-dow+1, 0, 0, 0, 0, t.Location())
+	case "month":
+		result = time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, t.Location())
+	case "quarter":
+		m := ((int(t.Month()) - 1) / 3) * 3 + 1
+		result = time.Date(t.Year(), time.Month(m), 1, 0, 0, 0, 0, t.Location())
+	case "year":
+		result = time.Date(t.Year(), 1, 1, 0, 0, 0, 0, t.Location())
+	case "decade":
+		y := (t.Year() / 10) * 10
+		result = time.Date(y, 1, 1, 0, 0, 0, 0, t.Location())
+	case "century":
+		y := ((t.Year() - 1) / 100) * 100 + 1
+		if t.Year() <= 0 {
+			y = (t.Year() / 100) * 100
+		}
+		result = time.Date(y, 1, 1, 0, 0, 0, 0, t.Location())
+	case "millennium":
+		y := ((t.Year() - 1) / 1000) * 1000 + 1
+		if t.Year() <= 0 {
+			y = (t.Year() / 1000) * 1000
+		}
+		result = time.Date(y, 1, 1, 0, 0, 0, 0, t.Location())
+	default:
+		return nil, fmt.Errorf("date_trunc: unknown field: %s", field)
+	}
+	return result.Format("2006-01-02 15:04:05"), nil
+}
+
+// toCharFunc implements to_char(value, format).
+// Supports the most common PostgreSQL format patterns.
+func toCharFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 {
+		return nil, fmt.Errorf("to_char requires 2 arguments")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	fmtStr, ok := args[1].(string)
+	if !ok {
+		return nil, fmt.Errorf("to_char: second argument must be a string")
+	}
+
+	// Try numeric first
+	switch v := args[0].(type) {
+	case int64:
+		return toCharNumeric(float64(v), fmtStr), nil
+	case float64:
+		// Check if format looks like a date/time format
+		if !isDateTimeFormat(fmtStr) {
+			return toCharNumeric(v, fmtStr), nil
+		}
+	}
+
+	t, ok := parseTimestamp(args[0])
+	if !ok {
+		// Try numeric
+		switch v := args[0].(type) {
+		case float64:
+			return toCharNumeric(v, fmtStr), nil
+		}
+		return nil, fmt.Errorf("to_char: cannot parse value: %v", args[0])
+	}
+	return toCharTimestamp(t, fmtStr), nil
+}
+
+func isDateTimeFormat(f string) bool {
+	datePatterns := []string{"YYYY", "YY", "MM", "DD", "HH", "MI", "SS", "Day", "Mon", "DY"}
+	upper := strings.ToUpper(f)
+	for _, p := range datePatterns {
+		if strings.Contains(upper, strings.ToUpper(p)) {
+			return true
+		}
+	}
+	return false
+}
+
+func toCharTimestamp(t time.Time, format string) string {
+	// Replace PostgreSQL format codes with Go's time format strings
+	result := format
+	// Order matters — longer patterns first
+	replacements := []struct{ from, to string }{
+		{"YYYY", t.Format("2006")},
+		{"YYY", t.Format("006")},
+		{"YY", t.Format("06")},
+		{"Y", t.Format("6")},
+		{"MONTH", strings.ToUpper(t.Format("January"))},
+		{"Month", t.Format("January")},
+		{"month", strings.ToLower(t.Format("January"))},
+		{"MON", strings.ToUpper(t.Format("Jan"))},
+		{"Mon", t.Format("Jan")},
+		{"mon", strings.ToLower(t.Format("Jan"))},
+		{"MM", t.Format("01")},
+		{"DAY", strings.ToUpper(t.Format("Monday"))},
+		{"Day", t.Format("Monday")},
+		{"day", strings.ToLower(t.Format("Monday"))},
+		{"DY", strings.ToUpper(t.Format("Mon"))},
+		{"Dy", t.Format("Mon")},
+		{"dy", strings.ToLower(t.Format("Mon"))},
+		{"DDD", fmt.Sprintf("%03d", t.YearDay())},
+		{"DD", t.Format("02")},
+		{"D", fmt.Sprintf("%d", int(t.Weekday())+1)},
+		{"HH24", t.Format("15")},
+		{"HH12", t.Format("03")},
+		{"HH", t.Format("03")},
+		{"MI", t.Format("04")},
+		{"SSSS", fmt.Sprintf("%05d", t.Hour()*3600+t.Minute()*60+t.Second())},
+		{"SS", t.Format("05")},
+		{"MS", fmt.Sprintf("%03d", t.Nanosecond()/1000000)},
+		{"US", fmt.Sprintf("%06d", t.Nanosecond()/1000)},
+		{"NS", fmt.Sprintf("%09d", t.Nanosecond())},
+		{"AM", func() string { if t.Hour() < 12 { return "AM" }; return "PM" }()},
+		{"PM", func() string { if t.Hour() < 12 { return "AM" }; return "PM" }()},
+		{"am", func() string { if t.Hour() < 12 { return "am" }; return "pm" }()},
+		{"pm", func() string { if t.Hour() < 12 { return "am" }; return "pm" }()},
+		{"IW", fmt.Sprintf("%02d", func() int { _, w := t.ISOWeek(); return w }())},
+		{"WW", fmt.Sprintf("%02d", (t.YearDay()-1)/7+1)},
+		{"W", fmt.Sprintf("%d", (t.Day()-1)/7+1)},
+		{"Q", fmt.Sprintf("%d", (int(t.Month())-1)/3+1)},
+		{"J", fmt.Sprintf("%d", julianDay(t))},
+		{"TZ", t.Format("MST")},
+		{"tz", strings.ToLower(t.Format("MST"))},
+		{"OF", t.Format("-07:00")},
+	}
+	for _, r := range replacements {
+		result = strings.ReplaceAll(result, r.from, r.to)
+	}
+	return result
+}
+
+func julianDay(t time.Time) int {
+	// Julian Day Number calculation
+	y, m, d := t.Date()
+	a := (14 - int(m)) / 12
+	yr := y + 4800 - a
+	mo := int(m) + 12*a - 3
+	return d + (153*mo+2)/5 + 365*yr + yr/4 - yr/100 + yr/400 - 32045
+}
+
+func toCharNumeric(v float64, format string) string {
+	// Basic numeric formatting: 9 = digit, 0 = zero-padded digit, . = decimal, , = thousands
+	// FM prefix removes leading/trailing spaces
+	fm := false
+	fmtStr := format
+	if strings.HasPrefix(strings.ToUpper(fmtStr), "FM") {
+		fm = true
+		fmtStr = fmtStr[2:]
+	}
+	// Find decimal point position
+	dotPos := strings.Index(fmtStr, ".")
+	var intFmt, decFmt string
+	if dotPos >= 0 {
+		intFmt = fmtStr[:dotPos]
+		decFmt = fmtStr[dotPos+1:]
+	} else {
+		intFmt = fmtStr
+	}
+	intDigits := 0
+	for _, c := range intFmt {
+		if c == '9' || c == '0' {
+			intDigits++
+		}
+	}
+	decDigits := 0
+	for _, c := range decFmt {
+		if c == '9' || c == '0' {
+			decDigits++
+		}
+	}
+	var formatted string
+	if decDigits > 0 {
+		formatted = fmt.Sprintf("%.*f", decDigits, v)
+	} else {
+		formatted = fmt.Sprintf("%.0f", v)
+	}
+	_ = intDigits
+	if fm {
+		formatted = strings.TrimSpace(formatted)
+	}
+	return formatted
+}
+
+// toDateFunc implements to_date(text, format).
+func toDateFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 {
+		return nil, fmt.Errorf("to_date requires 2 arguments")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	s, ok := args[0].(string)
+	if !ok {
+		return nil, fmt.Errorf("to_date: first argument must be a string")
+	}
+	fmtStr, ok := args[1].(string)
+	if !ok {
+		return nil, fmt.Errorf("to_date: second argument must be a string")
+	}
+	goFmt := pgToGoDateFormat(fmtStr)
+	t, err := time.Parse(goFmt, s)
+	if err != nil {
+		return nil, fmt.Errorf("to_date: invalid date %q for format %q", s, fmtStr)
+	}
+	return t.Format("2006-01-02"), nil
+}
+
+// toTimestampFunc implements to_timestamp(text, format) or to_timestamp(epochseconds).
+func toTimestampFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) == 1 {
+		// to_timestamp(double) — seconds since epoch
+		if args[0] == nil {
+			return nil, nil
+		}
+		var secs float64
+		switch v := args[0].(type) {
+		case float64:
+			secs = v
+		case int64:
+			secs = float64(v)
+		default:
+			return nil, fmt.Errorf("to_timestamp: argument must be numeric")
+		}
+		sec := int64(secs)
+		nsec := int64((secs - float64(sec)) * 1e9)
+		t := time.Unix(sec, nsec).UTC()
+		return t.Format("2006-01-02 15:04:05"), nil
+	}
+	if len(args) != 2 {
+		return nil, fmt.Errorf("to_timestamp requires 1 or 2 arguments")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	s, ok := args[0].(string)
+	if !ok {
+		return nil, fmt.Errorf("to_timestamp: first argument must be a string")
+	}
+	fmtStr, ok := args[1].(string)
+	if !ok {
+		return nil, fmt.Errorf("to_timestamp: second argument must be a string")
+	}
+	goFmt := pgToGoDateFormat(fmtStr)
+	t, err := time.Parse(goFmt, s)
+	if err != nil {
+		return nil, fmt.Errorf("to_timestamp: invalid timestamp %q for format %q", s, fmtStr)
+	}
+	return t.Format("2006-01-02 15:04:05"), nil
+}
+
+// pgToGoDateFormat converts PostgreSQL date format string to Go time format.
+func pgToGoDateFormat(pgFmt string) string {
+	r := pgFmt
+	r = strings.ReplaceAll(r, "YYYY", "2006")
+	r = strings.ReplaceAll(r, "YY", "06")
+	r = strings.ReplaceAll(r, "MM", "01")
+	r = strings.ReplaceAll(r, "DD", "02")
+	r = strings.ReplaceAll(r, "HH24", "15")
+	r = strings.ReplaceAll(r, "HH12", "03")
+	r = strings.ReplaceAll(r, "HH", "03")
+	r = strings.ReplaceAll(r, "MI", "04")
+	r = strings.ReplaceAll(r, "SS", "05")
+	r = strings.ReplaceAll(r, "MS", "000")
+	r = strings.ReplaceAll(r, "US", "000000")
+	r = strings.ReplaceAll(r, "AM", "PM")
+	r = strings.ReplaceAll(r, "am", "pm")
+	return r
+}
+
+// ageFunc implements age(timestamp, timestamp) or age(timestamp).
+func ageFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) == 1 {
+		if args[0] == nil {
+			return nil, nil
+		}
+		t, ok := parseTimestamp(args[0])
+		if !ok {
+			return nil, fmt.Errorf("age: cannot parse timestamp")
+		}
+		now := time.Now().UTC()
+		return formatInterval(now, t), nil
+	}
+	if len(args) == 2 {
+		if args[0] == nil || args[1] == nil {
+			return nil, nil
+		}
+		t1, ok1 := parseTimestamp(args[0])
+		t2, ok2 := parseTimestamp(args[1])
+		if !ok1 || !ok2 {
+			return nil, fmt.Errorf("age: cannot parse timestamps")
+		}
+		return formatInterval(t1, t2), nil
+	}
+	return nil, fmt.Errorf("age requires 1 or 2 arguments")
+}
+
+// formatInterval returns a PostgreSQL-style interval string like "1 year 2 mons 3 days 04:05:06".
+func formatInterval(t1, t2 time.Time) string {
+	if t1.Before(t2) {
+		return "-" + formatInterval(t2, t1)
+	}
+	years := t1.Year() - t2.Year()
+	months := int(t1.Month()) - int(t2.Month())
+	days := t1.Day() - t2.Day()
+	hours := t1.Hour() - t2.Hour()
+	mins := t1.Minute() - t2.Minute()
+	secs := t1.Second() - t2.Second()
+	if secs < 0 {
+		secs += 60
+		mins--
+	}
+	if mins < 0 {
+		mins += 60
+		hours--
+	}
+	if hours < 0 {
+		hours += 24
+		days--
+	}
+	if days < 0 {
+		// Borrow a month
+		months--
+		prevMonth := time.Date(t1.Year(), t1.Month()-1, 1, 0, 0, 0, 0, time.UTC)
+		days += daysInMonth(prevMonth.Year(), prevMonth.Month())
+	}
+	if months < 0 {
+		months += 12
+		years--
+	}
+	parts := []string{}
+	if years != 0 {
+		if years == 1 {
+			parts = append(parts, "1 year")
+		} else {
+			parts = append(parts, fmt.Sprintf("%d years", years))
+		}
+	}
+	if months != 0 {
+		if months == 1 {
+			parts = append(parts, "1 mon")
+		} else {
+			parts = append(parts, fmt.Sprintf("%d mons", months))
+		}
+	}
+	if days != 0 {
+		if days == 1 {
+			parts = append(parts, "1 day")
+		} else {
+			parts = append(parts, fmt.Sprintf("%d days", days))
+		}
+	}
+	timePart := fmt.Sprintf("%02d:%02d:%02d", hours, mins, secs)
+	if len(parts) == 0 {
+		return timePart
+	}
+	return strings.Join(parts, " ") + " " + timePart
+}
+
+func daysInMonth(y int, m time.Month) int {
+	return time.Date(y, m+1, 0, 0, 0, 0, 0, time.UTC).Day()
+}
+
+// makeDateFunc implements make_date(year, month, day).
+func makeDateFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 3 {
+		return nil, fmt.Errorf("make_date requires 3 arguments")
+	}
+	for _, a := range args {
+		if a == nil {
+			return nil, nil
+		}
+	}
+	y, ok1 := toInt(args[0])
+	m, ok2 := toInt(args[1])
+	d, ok3 := toInt(args[2])
+	if !ok1 || !ok2 || !ok3 {
+		return nil, fmt.Errorf("make_date: arguments must be integers")
+	}
+	t := time.Date(y, time.Month(m), d, 0, 0, 0, 0, time.UTC)
+	return t.Format("2006-01-02"), nil
+}
+
+// makeTimeFunc implements make_time(hour, min, sec).
+func makeTimeFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 3 {
+		return nil, fmt.Errorf("make_time requires 3 arguments")
+	}
+	for _, a := range args {
+		if a == nil {
+			return nil, nil
+		}
+	}
+	h, ok1 := toInt(args[0])
+	min, ok2 := toInt(args[1])
+	if !ok1 || !ok2 {
+		return nil, fmt.Errorf("make_time: hour/minute must be integers")
+	}
+	var sec float64
+	switch v := args[2].(type) {
+	case float64:
+		sec = v
+	case int64:
+		sec = float64(v)
+	default:
+		return nil, fmt.Errorf("make_time: sec must be numeric")
+	}
+	s := int(sec)
+	ns := int((sec - float64(s)) * 1e9)
+	t := time.Date(0, 1, 1, h, min, s, ns, time.UTC)
+	if ns > 0 {
+		return t.Format("15:04:05.999999"), nil
+	}
+	return t.Format("15:04:05"), nil
+}
+
+// makeTimestampFunc implements make_timestamp(year, month, day, hour, min, sec).
+func makeTimestampFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 6 {
+		return nil, fmt.Errorf("make_timestamp requires 6 arguments")
+	}
+	for _, a := range args {
+		if a == nil {
+			return nil, nil
+		}
+	}
+	y, ok1 := toInt(args[0])
+	mo, ok2 := toInt(args[1])
+	d, ok3 := toInt(args[2])
+	h, ok4 := toInt(args[3])
+	min, ok5 := toInt(args[4])
+	if !ok1 || !ok2 || !ok3 || !ok4 || !ok5 {
+		return nil, fmt.Errorf("make_timestamp: integer arguments required")
+	}
+	var sec float64
+	switch v := args[5].(type) {
+	case float64:
+		sec = v
+	case int64:
+		sec = float64(v)
+	default:
+		return nil, fmt.Errorf("make_timestamp: sec must be numeric")
+	}
+	s := int(sec)
+	ns := int((sec - float64(s)) * 1e9)
+	t := time.Date(y, time.Month(mo), d, h, min, s, ns, time.UTC)
+	return t.Format("2006-01-02 15:04:05"), nil
+}
+
+// makeTimestamptzFunc implements make_timestamptz(year, month, day, hour, min, sec [, timezone]).
+func makeTimestamptzFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) < 6 {
+		return nil, fmt.Errorf("make_timestamptz requires at least 6 arguments")
+	}
+	// Delegate to makeTimestamp, ignoring timezone for now
+	return makeTimestampFunc(nil, args[:6])
+}
+
+// makeIntervalFunc implements make_interval([years, months, weeks, days, hours, mins, secs]).
+func makeIntervalFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	// PostgreSQL accepts keyword args; SQLite passes positionally
+	// We accept: years, months, weeks, days, hours, mins, secs (all optional, default 0)
+	vals := make([]float64, 7)
+	for i, a := range args {
+		if i >= 7 {
+			break
+		}
+		if a == nil {
+			continue
+		}
+		switch v := a.(type) {
+		case float64:
+			vals[i] = v
+		case int64:
+			vals[i] = float64(v)
+		}
+	}
+	years, months, weeks, days, hours, mins, secs :=
+		int(vals[0]), int(vals[1]), int(vals[2]), int(vals[3]), int(vals[4]), int(vals[5]), vals[6]
+	totalDays := days + weeks*7
+	totalMonths := months + years*12
+	s := int(secs)
+	parts := []string{}
+	if totalMonths != 0 {
+		y := totalMonths / 12
+		mo := totalMonths % 12
+		if y != 0 {
+			parts = append(parts, fmt.Sprintf("%d years", y))
+		}
+		if mo != 0 {
+			parts = append(parts, fmt.Sprintf("%d mons", mo))
+		}
+	}
+	if totalDays != 0 {
+		parts = append(parts, fmt.Sprintf("%d days", totalDays))
+	}
+	timePart := fmt.Sprintf("%02d:%02d:%02d", hours, mins, s)
+	if len(parts) == 0 {
+		return timePart, nil
+	}
+	return strings.Join(parts, " ") + " " + timePart, nil
+}
+
+func justifyDaysFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 1 || args[0] == nil {
+		return nil, nil
+	}
+	return args[0], nil
+}
+
+func justifyHoursFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 1 || args[0] == nil {
+		return nil, nil
+	}
+	return args[0], nil
+}
+
+func justifyIntervalFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 1 || args[0] == nil {
+		return nil, nil
+	}
+	return args[0], nil
+}
+
+func timeofdayFunc(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
+	return time.Now().UTC().Format("Mon Jan 02 15:04:05.000000 2006 UTC"), nil
+}
+
+func clockTimestampFunc(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
+	return time.Now().UTC().Format("2006-01-02 15:04:05.999999"), nil
+}
+
+func transactionTimestampFunc(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
+	return time.Now().UTC().Format("2006-01-02 15:04:05.999999"), nil
+}
+
+// isfiniteFunc implements isfinite(value) — returns true for finite timestamps/intervals/numerics.
+func isfiniteFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 1 || args[0] == nil {
+		return nil, nil
+	}
+	switch v := args[0].(type) {
+	case float64:
+		return !math.IsInf(v, 0) && !math.IsNaN(v), nil
+	case string:
+		lower := strings.ToLower(strings.TrimSpace(v))
+		if lower == "infinity" || lower == "-infinity" || lower == "inf" || lower == "-inf" {
+			return false, nil
+		}
+		return true, nil
+	default:
+		return true, nil
+	}
+}
+
+// intervalPartFunc implements date_part for interval values (same as date_part but for intervals).
+func intervalPartFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	return datePartFunc(nil, args)
+}
+
+func currentUserFunc(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
+	return "minipsql_user", nil
+}
+
+func currentSchemaFunc(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
+	return "public", nil
+}
+
+func currentSchemasFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) == 1 {
+		// include pg_catalog if true
+		v, _ := args[0].(int64)
+		if v != 0 {
+			return `{pg_catalog,public}`, nil
+		}
+	}
+	return `{public}`, nil
+}
+
+func currentDatabaseFunc(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
+	return "minipsql", nil
+}
+
+func pgPostmasterStartTimeFunc(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
+	return time.Now().UTC().Format("2006-01-02 15:04:05"), nil
+}
+
+func pgBackendPidFunc(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
+	return int64(1), nil
+}
+
+func pgCurrentXactIdFunc(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
+	return int64(1), nil
+}
+
+// txid snapshot functions — return simplified stubs
+func txidCurrentSnapshotFunc(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
+	return "1:1:", nil
+}
+
+func txidSnapshotXminFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 1 || args[0] == nil {
+		return nil, nil
+	}
+	s, ok := args[0].(string)
+	if !ok {
+		return int64(1), nil
+	}
+	parts := strings.Split(s, ":")
+	if len(parts) < 1 {
+		return int64(1), nil
+	}
+	n, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return int64(1), nil
+	}
+	return n, nil
+}
+
+func txidSnapshotXmaxFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 1 || args[0] == nil {
+		return nil, nil
+	}
+	s, ok := args[0].(string)
+	if !ok {
+		return int64(1), nil
+	}
+	parts := strings.Split(s, ":")
+	if len(parts) < 2 {
+		return int64(1), nil
+	}
+	n, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return int64(1), nil
+	}
+	return n, nil
+}
+
+func txidSnapshotXipFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	// returns set of in-progress xids — stub returns empty
+	return nil, nil
+}
+
+func txidVisibleInSnapshotFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 || args[0] == nil || args[1] == nil {
+		return nil, nil
+	}
+	return int64(1), nil // always visible in stub
+}
+
+func pgXactCommitTimestampFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	return nil, nil
+}
+
+func pgLastCommittedXactFunc(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
+	return nil, nil
+}
+
+func toInt(v driver.Value) (int, bool) {
+	switch val := v.(type) {
+	case int64:
+		return int(val), true
+	case float64:
+		return int(val), true
+	}
+	return 0, false
 }
 
 

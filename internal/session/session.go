@@ -377,6 +377,18 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 		return &backend.CommandTag{Tag: "DROP MATERIALIZED VIEW"}, true
 	case strings.HasPrefix(lower, "alter index "):
 		return &backend.CommandTag{Tag: "ALTER INDEX"}, true
+	case strings.HasPrefix(lower, "alter view "):
+		return &backend.CommandTag{Tag: "ALTER VIEW"}, true
+	case strings.HasPrefix(lower, "comment on "):
+		return &backend.CommandTag{Tag: "COMMENT"}, true
+	case strings.HasPrefix(lower, "reindex "):
+		return &backend.CommandTag{Tag: "REINDEX"}, true
+	case strings.HasPrefix(lower, "cluster"):
+		return &backend.CommandTag{Tag: "CLUSTER"}, true
+	case strings.HasPrefix(lower, "vacuum"):
+		return &backend.CommandTag{Tag: "VACUUM"}, true
+	case strings.HasPrefix(lower, "analyze") || strings.HasPrefix(lower, "analyse"):
+		return &backend.CommandTag{Tag: "ANALYZE"}, true
 	case strings.HasPrefix(lower, "security label"):
 		return &backend.CommandTag{Tag: "SECURITY LABEL"}, true
 	case strings.HasPrefix(lower, "import foreign schema"):

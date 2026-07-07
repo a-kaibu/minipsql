@@ -234,6 +234,29 @@ func init() {
 	sqlite.MustRegisterDeterministicScalarFunction("has_language_privilege", -1, hasSchemaPrivilegeFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("has_tablespace_privilege", -1, hasSchemaPrivilegeFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("pg_has_role", -1, hasSchemaPrivilegeFunc)
+	// Schema visibility functions — always return true in SQLite (no schemas)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_table_is_visible", 1, pgAlwaysTrueFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_type_is_visible", 1, pgAlwaysTrueFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_function_is_visible", 1, pgAlwaysTrueFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_operator_is_visible", 1, pgAlwaysTrueFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_opclass_is_visible", 1, pgAlwaysTrueFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_opfamily_is_visible", 1, pgAlwaysTrueFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_collation_is_visible", 1, pgAlwaysTrueFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_conversion_is_visible", 1, pgAlwaysTrueFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_statistics_obj_is_visible", 1, pgAlwaysTrueFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_ts_config_is_visible", 1, pgAlwaysTrueFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_ts_dict_is_visible", 1, pgAlwaysTrueFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_ts_parser_is_visible", 1, pgAlwaysTrueFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_ts_template_is_visible", 1, pgAlwaysTrueFunc)
+	// Formatting helpers
+	sqlite.MustRegisterDeterministicScalarFunction("pg_encoding_to_char", 1, pgEncodingToCharFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_char_to_encoding", 1, pgCharToEncodingFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_database_encoding_max_length", 0, pgDatabaseEncodingMaxLengthFunc)
+	// pg_catalog info functions
+	sqlite.MustRegisterDeterministicScalarFunction("format_type", 2, formatTypeFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("obj_description", -1, objDescriptionFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("col_description", 2, objDescriptionFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("shobj_description", 2, objDescriptionFunc)
 }
 
 func asciiFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
@@ -4285,6 +4308,53 @@ func hasColumnPrivilegeFunc(_ *sqlite.FunctionContext, args []driver.Value) (dri
 
 func hasSchemaPrivilegeFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
 	return int64(1), nil
+}
+
+func pgAlwaysTrueFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	return int64(1), nil
+}
+
+func pgEncodingToCharFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) < 1 || args[0] == nil {
+		return nil, nil
+	}
+	// Return UTF8 for any encoding
+	return "UTF8", nil
+}
+
+func pgCharToEncodingFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) < 1 || args[0] == nil {
+		return nil, nil
+	}
+	name := strings.ToUpper(valueString(args[0]))
+	// Map common encoding names to OIDs (simplified)
+	switch name {
+	case "UTF8", "UNICODE":
+		return int64(6), nil
+	case "LATIN1", "ISO88591":
+		return int64(8), nil
+	case "SQL_ASCII":
+		return int64(0), nil
+	default:
+		return int64(6), nil
+	}
+}
+
+func pgDatabaseEncodingMaxLengthFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	return int64(4), nil // UTF-8 max bytes per char
+}
+
+func formatTypeFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) < 1 || args[0] == nil {
+		return nil, nil
+	}
+	// Return a generic type name; we don't have a real OID catalog
+	return "text", nil
+}
+
+func objDescriptionFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	// Always return NULL (no comments stored)
+	return nil, nil
 }
 
 

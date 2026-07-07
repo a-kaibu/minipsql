@@ -24,6 +24,8 @@ var (
 	createIndexUsingRE = regexp.MustCompile(`(?i)(CREATE\s+(?:UNIQUE\s+)?INDEX\b.+?\bON\s+\S+)\s+USING\s+\S+\s*(\()`)
 	ilikeRE            = regexp.MustCompile(`(?i)\bILIKE\b`)
 	returningRE        = regexp.MustCompile(`(?i)\bRETURNING\b`)
+	// Rewrites "RETURNING table.*" → "RETURNING *" because SQLite rejects table-qualified wildcards
+	returningTableStarRE = regexp.MustCompile(`(?i)\bRETURNING\s+(?:[A-Za-z0-9_"]+\.\*(?:\s*,\s*[A-Za-z0-9_"]+\.\*)*)`)
 	onlyRE             = regexp.MustCompile(`(?i)\b(FROM|ON|UPDATE|DELETE\s+FROM|INSERT\s+INTO|ALTER\s+TABLE)\s+ONLY\s+`)
 	eStringRE          = regexp.MustCompile(`(?i)\bE'`)
 	trueRE             = regexp.MustCompile(`(?i)\bTRUE\b`)
@@ -32,7 +34,8 @@ var (
 	ifExistsRE         = regexp.MustCompile(`(?i)\bIF\s+EXISTS\b`)
 	deleteFromRE       = regexp.MustCompile(`(?i)\bDELETE\s+FROM\s+([A-Za-z0-9_\".]+)\s+([A-Za-z0-9_\"]+)\s+`)
 	pgCatalogPrefixRE  = regexp.MustCompile(`(?i)\bpg_catalog\.([a-zA-Z0-9_]+)\b`)
-	anonymousIndexRE   = regexp.MustCompile(`(?i)\bCREATE\s+(UNIQUE\s+)?INDEX\s+ON\s+([A-Za-z0-9_\".]+)\b`)
+	// Matches CREATE [UNIQUE] INDEX [IF NOT EXISTS] ON table — no index name
+	anonymousIndexRE   = regexp.MustCompile(`(?i)\bCREATE\s+(UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?ON\s+([A-Za-z0-9_\".]+)\b`)
 	circleColRE        = regexp.MustCompile(`(?i)\b\w+\s+circle\b`)
 	asNullRE           = regexp.MustCompile(`(?i)\bAS\s+null\b`)
 	tableColumnAliasRE = regexp.MustCompile(`(?i)\bFROM\s+(int2_tbl|int4_tbl|int8_tbl)\b\s+(?:AS\s+)?([A-Za-z0-9_]+)\s*\(\s*([A-Za-z0-9_, ]+)\s*\)`)
@@ -94,7 +97,7 @@ var (
 	emptyTableRE       = regexp.MustCompile(`(?i)(CREATE\s+(?:TEMP(?:ORARY)?\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[A-Za-z0-9_".]+)\s*\(\s*\)`)
 	insertDefaultRE    = regexp.MustCompile(`(?i)\bDEFAULT\b`)
 	insertSelectRE     = regexp.MustCompile(`(?i)^\s*(INSERT\s+INTO\s+[A-Za-z0-9_".]+)\s*\(\s*(SELECT\b.+)\)\s*$`)
-	indexWithOptsRE    = regexp.MustCompile(`(?i)(CREATE\s+(?:UNIQUE\s+)?INDEX\b.+?)\s+WITH\s*\([^)]*\)`)
+	indexWithOptsRE    = regexp.MustCompile(`(?is)(CREATE\s+(?:UNIQUE\s+)?INDEX\b.+?)\s+WITH\s*\([^)]*\)`)
 	createIndexRE      = regexp.MustCompile(`(?i)(CREATE\s+(?:UNIQUE\s+)?INDEX\s+)(IF\s+NOT\s+EXISTS\s+|)([A-Za-z0-9_"]+)`)
 	createAsExecuteRE  = regexp.MustCompile(`(?i)^\s*CREATE\s+(?:TEMP(?:ORARY)?\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z0-9_".]+)\s+AS\s+EXECUTE\b`)
 	anyArrayRE         = regexp.MustCompile(`(?i)=\s*ANY\s*\(\s*ARRAY\s*\[([^\]]*)\](?:::[A-Za-z0-9_\[\]]+)?\s*\)`)
@@ -159,10 +162,16 @@ func Rewrite(sql string) string {
 	out = enforcedRE.ReplaceAllString(out, "")
 	out = tableoidRE.ReplaceAllString(out, "0")
 	out = ctidRE.ReplaceAllString(out, "'(0,1)'")
-	out = xminRE.ReplaceAllString(out, "0")
-	out = xmaxRE.ReplaceAllString(out, "0")
-	out = cminRE.ReplaceAllString(out, "0")
-	out = cmaxRE.ReplaceAllString(out, "0")
+	// Only rewrite system columns (xmin/xmax/cmin/cmax) in non-DDL statements.
+	// In DDL (CREATE/ALTER TABLE), these can be used as user column names.
+	lowerOut := strings.ToLower(out)
+	isDDL := strings.HasPrefix(lowerOut, "create ") || strings.HasPrefix(lowerOut, "alter ") || strings.HasPrefix(lowerOut, "drop ")
+	if !isDDL {
+		out = xminRE.ReplaceAllString(out, "0")
+		out = xmaxRE.ReplaceAllString(out, "0")
+		out = cminRE.ReplaceAllString(out, "0")
+		out = cmaxRE.ReplaceAllString(out, "0")
+	}
 	out = onCommitRE.ReplaceAllString(out, "")
 	// Rewrite "CREATE TABLE t () INHERITS (parent)" → "CREATE TABLE t (LIKE parent)"
 	// so expandTableLike in session.go can copy the parent's columns via schema introspection.
@@ -268,6 +277,7 @@ func Rewrite(sql string) string {
 	})
 	out = rewritePGNumericOps(out)
 	out = rewriteAnonymousIndex(out)
+	out = rewriteReturningTableStar(out)
 	out = createIndexUsingRE.ReplaceAllString(out, "$1 $2")
 	out = ilikeRE.ReplaceAllString(out, "LIKE")
 	out = rewriteRegexOps(out)
@@ -549,6 +559,15 @@ func rewriteTruncate(sql string) string {
 		return sql
 	}
 	return strings.Join(deletes, "; ")
+}
+
+// rewriteReturningTableStar rewrites "RETURNING t.*" → "RETURNING *" to avoid SQLite's
+// "RETURNING may not use TABLE.* wildcards" error.
+func rewriteReturningTableStar(sql string) string {
+	if !strings.Contains(strings.ToLower(sql), "returning") {
+		return sql
+	}
+	return returningTableStarRE.ReplaceAllString(sql, "RETURNING *")
 }
 
 func rewriteAnonymousIndex(sql string) string {

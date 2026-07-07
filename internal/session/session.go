@@ -573,8 +573,18 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 		return &backend.CommandTag{Tag: "DROP EVENT TRIGGER"}, true
 	case strings.HasPrefix(lower, "create conversion "):
 		return &backend.CommandTag{Tag: "CREATE CONVERSION"}, true
+	case strings.HasPrefix(lower, "alter conversion "):
+		return &backend.CommandTag{Tag: "ALTER CONVERSION"}, true
 	case strings.HasPrefix(lower, "create language ") || lower == "create language":
 		return &backend.CommandTag{Tag: "CREATE LANGUAGE"}, true
+	case strings.HasPrefix(lower, "alter language "):
+		return &backend.CommandTag{Tag: "ALTER LANGUAGE"}, true
+	case strings.HasPrefix(lower, "create property graph "):
+		return &backend.CommandTag{Tag: "CREATE PROPERTY GRAPH"}, true
+	case strings.HasPrefix(lower, "alter property graph "):
+		return &backend.CommandTag{Tag: "ALTER PROPERTY GRAPH"}, true
+	case strings.HasPrefix(lower, "drop property graph ") || lower == "drop property graph":
+		return &backend.CommandTag{Tag: "DROP PROPERTY GRAPH"}, true
 	case strings.HasPrefix(lower, "drop rule ") || lower == "drop rule":
 		return &backend.CommandTag{Tag: "DROP RULE"}, true
 	case strings.HasPrefix(lower, "drop cast ") || lower == "drop cast":

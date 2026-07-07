@@ -267,6 +267,17 @@ func initDatabase(ctx context.Context, db *sql.DB) error {
 			rolpassword TEXT,
 			rolvaliduntil TEXT
 		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_language (
+			oid INTEGER PRIMARY KEY,
+			lanname TEXT,
+			lanowner INTEGER,
+			lanispl INTEGER DEFAULT 0,
+			lanpltrusted INTEGER DEFAULT 0,
+			lanplcallfoid INTEGER DEFAULT 0,
+			laninline INTEGER DEFAULT 0,
+			lanvalidator INTEGER DEFAULT 0,
+			lanacl TEXT
+		)`,
 		`CREATE TABLE IF NOT EXISTS main.pg_prepared_statements (
 			name TEXT,
 			statement TEXT,

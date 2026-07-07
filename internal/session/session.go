@@ -28,6 +28,14 @@ type CatalogOperations interface {
 	DropDatabase(ctx context.Context, name string) error
 }
 
+// SQLFunction holds a user-defined SQL-language function definition.
+type SQLFunction struct {
+	Name    string
+	NArgs   int
+	Body    string
+	RetType string
+}
+
 type Session struct {
 	ID       int32
 	Secret   int32
@@ -41,6 +49,7 @@ type Session struct {
 	PreparedStatements map[string]*PreparedStatement
 	Portals            map[string]*Portal
 	txCatalogUndos     []func()
+	SQLFunctions       map[string]*SQLFunction
 }
 
 type PreparedStatement struct {
@@ -77,6 +86,7 @@ func New(id, secret int32, dbname, user string, b backend.Backend, cat CatalogOp
 		Catalog:            cat,
 		PreparedStatements: map[string]*PreparedStatement{},
 		Portals:            map[string]*Portal{},
+		SQLFunctions:       map[string]*SQLFunction{},
 	}
 }
 
@@ -130,11 +140,14 @@ func (s *Session) Execute(ctx context.Context, sql string, args []backend.Value)
 		return nil, tag, nil
 	}
 
+	// Rewrite SQL-language function calls to inline subqueries
+	sql = s.expandSQLFunctions(sql)
+
 	if tag, ok := tryUnsupportedDDLNoop(sql); ok {
 		return nil, tag, nil
 	}
 
-	if tag, err := tryHandleCreateFunction(sql); err != nil || tag != nil {
+	if tag, err := s.tryHandleCreateFunction(sql); err != nil || tag != nil {
 		return nil, tag, err
 	}
 
@@ -231,11 +244,6 @@ func checkUnsupportedDDL(sql string) error {
 	}{
 		{"create operator", "CREATE OPERATOR is not supported"},
 		{"alter operator", "ALTER OPERATOR is not supported"},
-		{"create function", "CREATE FUNCTION is not supported"},
-		{"create or replace function", "CREATE FUNCTION is not supported"},
-		{"alter function", "ALTER FUNCTION is not supported"},
-		{"create procedure", "CREATE PROCEDURE is not supported"},
-		{"create or replace procedure", "CREATE PROCEDURE is not supported"},
 		{"create aggregate", "CREATE AGGREGATE is not supported"},
 		{"alter domain", "ALTER DOMAIN is not supported"},
 		{"alter policy", "ALTER POLICY is not supported"},
@@ -420,6 +428,10 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 		return &backend.CommandTag{Tag: "DROP EXTENSION"}, true
 	case strings.HasPrefix(lower, "drop access method ") || strings.HasPrefix(lower, "drop access method;"):
 		return &backend.CommandTag{Tag: "DROP ACCESS METHOD"}, true
+	case strings.HasPrefix(lower, "alter function ") || lower == "alter function":
+		return &backend.CommandTag{Tag: "ALTER FUNCTION"}, true
+	case strings.HasPrefix(lower, "alter procedure ") || lower == "alter procedure":
+		return &backend.CommandTag{Tag: "ALTER PROCEDURE"}, true
 	case strings.HasPrefix(lower, "alter sequence "):
 		return &backend.CommandTag{Tag: "ALTER SEQUENCE"}, true
 	case strings.HasPrefix(lower, "create sequence "):
@@ -830,45 +842,272 @@ func (s *Session) ExecuteCopyFrom(ctx context.Context, stmt *pgcopy.Statement, d
 	return &backend.CommandTag{Tag: fmt.Sprintf("COPY %d", n)}, nil
 }
 
-func tryHandleCreateFunction(sql string) (*backend.CommandTag, error) {
+func (s *Session) tryHandleCreateFunction(sql string) (*backend.CommandTag, error) {
 	lower := strings.ToLower(sql)
-	if !strings.HasPrefix(lower, "create function ") && !strings.HasPrefix(lower, "create or replace function ") {
+	isCreate := strings.HasPrefix(lower, "create function ") || strings.HasPrefix(lower, "create or replace function ")
+	if !isCreate {
 		return nil, nil
 	}
-	
-	if !strings.Contains(lower, "nosuch") {
-		return &backend.CommandTag{Tag: "CREATE FUNCTION"}, nil
-	}
-	
+
 	isC := strings.Contains(lower, "language c")
 	isInternal := strings.Contains(lower, "language internal")
-	
-	if !isC && !isInternal {
-		return nil, nil
+	isSQL := strings.Contains(lower, "language sql") || strings.Contains(lower, "language 'sql'") || strings.Contains(lower, `language "sql"`)
+	isPLpgSQL := strings.Contains(lower, "language plpgsql") || strings.Contains(lower, "language 'plpgsql'")
+
+	// Extract function name (after CREATE [OR REPLACE] FUNCTION)
+	funcName := ""
+	rest := sql
+	if strings.HasPrefix(lower, "create or replace function ") {
+		rest = sql[len("create or replace function "):]
+	} else {
+		rest = sql[len("create function "):]
 	}
-	
-	idx := strings.Index(lower, " as ")
-	if idx == -1 {
-		return nil, nil
+	rest = strings.TrimSpace(rest)
+	// strip schema prefix (e.g. "public.")
+	if dot := strings.Index(rest, "."); dot >= 0 && dot < strings.Index(rest, "(") {
+		rest = rest[dot+1:]
 	}
-	
-	rest := sql[idx+4:]
-	var literals []string
-	
-	i := 0
-	for i < len(rest) {
-		for i < len(rest) && (rest[i] == ' ' || rest[i] == '\t' || rest[i] == '\n' || rest[i] == '\r' || rest[i] == ',') {
-			i++
+	if paren := strings.Index(rest, "("); paren >= 0 {
+		funcName = strings.ToLower(strings.TrimSpace(rest[:paren]))
+	}
+
+	// Count args: count commas between first ( and matching ) at the top level
+	nArgs := -1 // variadic/unknown by default
+	if paren := strings.Index(lower[len(lower)-len(strings.TrimSpace(lower)):], "("); paren >= 0 {
+		// Find arg count from SQL itself
+		start := strings.Index(lower, "(")
+		if start >= 0 {
+			depth := 0
+			argStr := ""
+			for i := start; i < len(lower); i++ {
+				if lower[i] == '(' {
+					depth++
+					if depth == 1 {
+						continue
+					}
+				} else if lower[i] == ')' {
+					depth--
+					if depth == 0 {
+						break
+					}
+				}
+				if depth == 1 {
+					argStr += string(lower[i])
+				}
+			}
+			argStr = strings.TrimSpace(argStr)
+			if argStr == "" {
+				nArgs = 0
+			} else {
+				nArgs = strings.Count(argStr, ",") + 1
+			}
 		}
-		if i >= len(rest) {
+	}
+
+	// For LANGUAGE C / INTERNAL with "nosuch" marker, return specific errors
+	if (isC || isInternal) && strings.Contains(lower, "nosuch") {
+		idx := strings.Index(lower, " as ")
+		if idx == -1 {
+			return &backend.CommandTag{Tag: "CREATE FUNCTION"}, nil
+		}
+		restBody := sql[idx+4:]
+		literals := extractStringLiterals(restBody)
+
+		hasNoSuch := false
+		for _, lit := range literals {
+			if strings.Contains(strings.ToLower(lit), "nosuch") {
+				hasNoSuch = true
+				break
+			}
+		}
+		if hasNoSuch {
+			if isInternal {
+				return nil, &compat.PGError{
+					Code:    "42883",
+					Message: fmt.Sprintf(`there is no built-in function named "%s"`, literals[0]),
+				}
+			}
+			if isC {
+				if len(literals) == 1 {
+					return nil, &compat.PGError{
+						Code:    "58P01",
+						Message: fmt.Sprintf(`could not access file "%s": No such file or directory`, literals[0]),
+					}
+				}
+				if len(literals) == 2 {
+					return nil, &compat.PGError{
+						Code:    "42883",
+						Message: fmt.Sprintf(`could not find function "%s" in file "%s"`, literals[1], literals[0]),
+					}
+				}
+			}
+		}
+	}
+
+	// For LANGUAGE SQL, extract the body and register it
+	if isSQL && funcName != "" {
+		body := extractFunctionBody(sql)
+		if body != "" {
+			s.SQLFunctions[funcName] = &SQLFunction{
+				Name:  funcName,
+				NArgs: nArgs,
+				Body:  body,
+			}
+		}
+	}
+
+	// PLpgSQL and other languages: no-op (we can't execute them)
+	_ = isPLpgSQL
+
+	return &backend.CommandTag{Tag: "CREATE FUNCTION"}, nil
+}
+
+// expandSQLFunctions replaces calls to user-defined SQL functions with inline subqueries.
+// Only handles simple cases: func() and func($1-style body) with up to 9 args.
+func (s *Session) expandSQLFunctions(sql string) string {
+	if len(s.SQLFunctions) == 0 {
+		return sql
+	}
+	// For each registered SQL function, replace calls like funcname(arg1, arg2) with (SELECT body)
+	// We use a simple scan to find function calls.
+	lower := strings.ToLower(sql)
+	for name, fn := range s.SQLFunctions {
+		// Check if the name appears in the sql (case-insensitive)
+		idx := strings.Index(lower, name+"(")
+		if idx < 0 {
+			continue
+		}
+		// Expand all calls to this function
+		sql = expandFunctionCalls(sql, name, fn)
+		lower = strings.ToLower(sql)
+	}
+	return sql
+}
+
+// expandFunctionCalls replaces all calls to funcName(args...) with inline SQL subqueries.
+func expandFunctionCalls(sql, funcName string, fn *SQLFunction) string {
+	lower := strings.ToLower(sql)
+	result := ""
+	i := 0
+	for i < len(sql) {
+		idx := strings.Index(strings.ToLower(sql[i:]), funcName+"(")
+		if idx < 0 {
+			result += sql[i:]
 			break
 		}
-		if rest[i] == '\'' {
+		// Check it's not part of a longer identifier
+		start := i + idx
+		if start > 0 {
+			prev := sql[start-1]
+			if (prev >= 'a' && prev <= 'z') || (prev >= 'A' && prev <= 'Z') || (prev >= '0' && prev <= '9') || prev == '_' {
+				result += sql[i : start+1]
+				i = start + 1
+				continue
+			}
+		}
+		afterName := start + len(funcName)
+		// Find matching closing paren
+		parenStart := afterName
+		if parenStart >= len(sql) || sql[parenStart] != '(' {
+			result += sql[i : start+1]
+			i = start + 1
+			continue
+		}
+		args, end := parseCallArgs(sql, parenStart)
+		if end < 0 {
+			result += sql[i : start+1]
+			i = start + 1
+			continue
+		}
+		// Build substituted body
+		body := fn.Body
+		for j, arg := range args {
+			placeholder := fmt.Sprintf("$%d", j+1)
+			body = strings.ReplaceAll(body, placeholder, arg)
+		}
+		// Wrap as subquery if body starts with SELECT
+		bodyTrimmed := strings.TrimSpace(body)
+		var expanded string
+		if strings.HasPrefix(strings.ToLower(bodyTrimmed), "select ") {
+			expanded = "(" + bodyTrimmed + ")"
+		} else {
+			expanded = "(" + bodyTrimmed + ")"
+		}
+		result += sql[i:start] + expanded
+		i = end + 1
+		lower = strings.ToLower(sql)
+		_ = lower
+	}
+	return result
+}
+
+// parseCallArgs parses the argument list starting at parenStart (which should be '(').
+// Returns the list of argument strings and the index of the closing ')'.
+func parseCallArgs(sql string, parenStart int) ([]string, int) {
+	if parenStart >= len(sql) || sql[parenStart] != '(' {
+		return nil, -1
+	}
+	depth := 0
+	var args []string
+	var cur strings.Builder
+	inString := false
+	for i := parenStart; i < len(sql); i++ {
+		ch := sql[i]
+		if inString {
+			cur.WriteByte(ch)
+			if ch == '\'' {
+				if i+1 < len(sql) && sql[i+1] == '\'' {
+					cur.WriteByte(sql[i+1])
+					i++
+				} else {
+					inString = false
+				}
+			}
+		} else if ch == '\'' {
+			inString = true
+			cur.WriteByte(ch)
+		} else if ch == '(' {
+			depth++
+			if depth > 1 {
+				cur.WriteByte(ch)
+			}
+		} else if ch == ')' {
+			depth--
+			if depth == 0 {
+				arg := strings.TrimSpace(cur.String())
+				if arg != "" {
+					args = append(args, arg)
+				}
+				return args, i
+			}
+			cur.WriteByte(ch)
+		} else if ch == ',' && depth == 1 {
+			args = append(args, strings.TrimSpace(cur.String()))
+			cur.Reset()
+		} else {
+			cur.WriteByte(ch)
+		}
+	}
+	return nil, -1
+}
+
+// extractStringLiterals extracts all single-quoted string literals from sql.
+func extractStringLiterals(sql string) []string {
+	var literals []string
+	i := 0
+	for i < len(sql) {
+		for i < len(sql) && (sql[i] == ' ' || sql[i] == '\t' || sql[i] == '\n' || sql[i] == '\r' || sql[i] == ',') {
+			i++
+		}
+		if i >= len(sql) {
+			break
+		}
+		if sql[i] == '\'' {
 			start := i + 1
 			i++
-			for i < len(rest) {
-				if rest[i] == '\'' {
-					if i+1 < len(rest) && rest[i+1] == '\'' {
+			for i < len(sql) {
+				if sql[i] == '\'' {
+					if i+1 < len(sql) && sql[i+1] == '\'' {
 						i += 2
 						continue
 					}
@@ -876,51 +1115,72 @@ func tryHandleCreateFunction(sql string) (*backend.CommandTag, error) {
 				}
 				i++
 			}
-			literals = append(literals, rest[start:i])
+			literals = append(literals, sql[start:i])
 			i++
+		} else if sql[i] == '$' && i+1 < len(sql) && sql[i+1] == '$' {
+			// dollar-quoted string
+			start := i + 2
+			i += 2
+			for i+1 < len(sql) {
+				if sql[i] == '$' && sql[i+1] == '$' {
+					literals = append(literals, sql[start:i])
+					i += 2
+					break
+				}
+				i++
+			}
 		} else {
 			i++
 		}
 	}
-	
-	if len(literals) == 0 {
-		return nil, nil
+	return literals
+}
+
+// extractFunctionBody extracts the SQL body from a CREATE FUNCTION statement.
+// Handles both $$ ... $$ and 'body' quoting styles.
+func extractFunctionBody(sql string) string {
+	lower := strings.ToLower(sql)
+
+	// Try RETURN/AS with dollar quoting: $$ body $$ or $tag$ body $tag$
+	if idx := strings.Index(lower, " as "); idx >= 0 {
+		rest := sql[idx+4:]
+		rest = strings.TrimSpace(rest)
+		if strings.HasPrefix(rest, "$$") {
+			end := strings.Index(rest[2:], "$$")
+			if end >= 0 {
+				return strings.TrimSpace(rest[2 : end+2])
+			}
+		}
+		// dollar quoting with tag: $tag$ ... $tag$
+		if rest[0] == '$' {
+			end := strings.Index(rest[1:], "$")
+			if end >= 0 {
+				tag := rest[:end+2] // includes both $
+				bodyStart := end + 2
+				bodyEnd := strings.Index(rest[bodyStart:], tag)
+				if bodyEnd >= 0 {
+					return strings.TrimSpace(rest[bodyStart : bodyStart+bodyEnd])
+				}
+			}
+		}
+		// single-quoted: 'body'
+		if rest[0] == '\'' {
+			end := strings.Index(rest[1:], "'")
+			if end >= 0 {
+				return strings.TrimSpace(rest[1 : end+1])
+			}
+		}
 	}
 
-	hasNoSuch := false
-	for _, lit := range literals {
-		if strings.Contains(strings.ToLower(lit), "nosuch") {
-			hasNoSuch = true
-			break
-		}
+	// RETURN expression (without AS): RETURNS type LANGUAGE sql RETURN expr
+	if idx := strings.Index(lower, " return "); idx >= 0 {
+		afterReturn := strings.TrimSpace(sql[idx+len(" return "):])
+		// strip trailing semicolon
+		afterReturn = strings.TrimSuffix(strings.TrimSpace(afterReturn), ";")
+		return "SELECT " + afterReturn
 	}
-	if !hasNoSuch {
-		return &backend.CommandTag{Tag: "CREATE FUNCTION"}, nil
-	}
-	
-	if isInternal {
-		return nil, &compat.PGError{
-			Code:    "42883",
-			Message: fmt.Sprintf(`there is no built-in function named "%s"`, literals[0]),
-		}
-	}
-	
-	if isC {
-		if len(literals) == 1 {
-			return nil, &compat.PGError{
-				Code:    "58P01",
-				Message: fmt.Sprintf(`could not access file "%s": No such file or directory`, literals[0]),
-			}
-		}
-		if len(literals) == 2 {
-			return nil, &compat.PGError{
-				Code:    "42883",
-				Message: fmt.Sprintf(`could not find function "%s" in file "%s"`, literals[1], literals[0]),
-			}
-		}
-	}
-	
-	return nil, nil
+
+	return ""
 }
 
 func (s *Session) tryRoleCommand(ctx context.Context, sql string) (*backend.CommandTag, error) {

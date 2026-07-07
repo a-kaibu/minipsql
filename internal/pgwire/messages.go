@@ -79,6 +79,8 @@ func writeError(w io.Writer, pgerr compat.PGError) {
 	var b bytes.Buffer
 	b.WriteByte('S')
 	writeCString(&b, "ERROR")
+	b.WriteByte('V')
+	writeCString(&b, "ERROR")
 	b.WriteByte('C')
 	writeCString(&b, pgerr.Code)
 	b.WriteByte('M')

@@ -168,7 +168,9 @@ func (s *Session) Execute(ctx context.Context, sql string, args []backend.Value)
 		return result, nil, err
 	}
 
-	rewritten := compat.Rewrite(sql)
+	// Rewrite serial columns before compat.Rewrite (which would strip 'serial' keyword)
+	sqlBeforeRewrite := s.rewriteSerialColumns(ctx, sql)
+	rewritten := compat.Rewrite(sqlBeforeRewrite)
 
 	// Expand CREATE TABLE t (LIKE parent) → CREATE TABLE t AS SELECT * FROM parent WHERE 1=0
 	// SQLite accepts the (LIKE ...) syntax but doesn't actually copy columns, so we rewrite it here
@@ -589,8 +591,13 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 	}
 
 	// ALTER TABLE with unsupported subcommands → no-op
-	if strings.HasPrefix(lower, "alter table ") {
-		if tag, ok := tryAlterTableNoop(lower); ok {
+	// Normalize "alter table if exists ..." to "alter table ..." for matching
+	alterTableLower := lower
+	if strings.HasPrefix(lower, "alter table if exists ") {
+		alterTableLower = "alter table " + lower[len("alter table if exists "):]
+	}
+	if strings.HasPrefix(alterTableLower, "alter table ") {
+		if tag, ok := tryAlterTableNoop(alterTableLower); ok {
 			return tag, true
 		}
 	}
@@ -1633,4 +1640,70 @@ func (s *Session) expandTableLike(ctx context.Context, sql string) string {
 		}
 		return m[1] + " AS SELECT * FROM " + m[2] + " WHERE 1=0"
 	})
+}
+
+// serialColumnRE matches column definitions with serial/bigserial/smallserial type.
+// Group 1: column name, Group 2: serial type keyword
+var serialColumnRE = regexp.MustCompile(`(?i)(?:^|,)\s*("?[A-Za-z_][A-Za-z0-9_]*"?)\s+(smallserial|bigserial|serial)\b`)
+
+// createTableNameRE extracts the table name from a CREATE TABLE statement.
+var createTableNameRE = regexp.MustCompile(`(?i)CREATE\s+(?:TEMP(?:ORARY)?\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?("?[A-Za-z_][A-Za-z0-9_.]*"?)`)
+
+// rewriteSerialColumns detects serial columns in CREATE TABLE, creates sequences for them,
+// and rewrites them to use integer DEFAULT (nextval('seq_name')).
+// Returns a multi-statement SQL string with sequence creation prepended.
+func (s *Session) rewriteSerialColumns(ctx context.Context, sql string) string {
+	lower := strings.ToLower(strings.TrimSpace(sql))
+	if !strings.HasPrefix(lower, "create") {
+		return sql
+	}
+	if !strings.Contains(lower, "serial") {
+		return sql
+	}
+	// Extract table name
+	nameMatch := createTableNameRE.FindStringSubmatch(sql)
+	if nameMatch == nil {
+		return sql
+	}
+	tableName := strings.ToLower(strings.Trim(nameMatch[1], `"`))
+	// Extract the column definition part (inside outer parens)
+	start := strings.Index(sql, "(")
+	if start < 0 {
+		return sql
+	}
+	// Find matching close paren
+	depth := 0
+	end := -1
+	for i := start; i < len(sql); i++ {
+		if sql[i] == '(' {
+			depth++
+		} else if sql[i] == ')' {
+			depth--
+			if depth == 0 {
+				end = i
+				break
+			}
+		}
+	}
+	if end < 0 {
+		return sql
+	}
+	colDefs := sql[start+1 : end]
+	// Find all serial columns
+	matches := serialColumnRE.FindAllStringSubmatch(","+colDefs, -1)
+	if len(matches) == 0 {
+		return sql
+	}
+	var seqStmts []string
+	rewritten := sql
+	for _, m := range matches {
+		colName := strings.ToLower(strings.Trim(m[1], `"`))
+		seqName := tableName + "_" + colName + "_seq"
+		sqlitebackend.SequenceCreate(seqName, 1, 1, 1, 9223372036854775807, false)
+		_ = seqStmts // sequence is created in-memory, no SQL needed
+		// Replace "colname serial" → "colname integer DEFAULT (nextval('seqname'))"
+		colPattern := regexp.MustCompile(`(?i)(\b` + regexp.QuoteMeta(m[1]) + `\b)\s+(?:small|big)?serial\b`)
+		rewritten = colPattern.ReplaceAllString(rewritten, `$1 integer DEFAULT (nextval('`+seqName+`'))`)
+	}
+	return rewritten
 }

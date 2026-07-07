@@ -56,6 +56,16 @@ func Error(err error) PGError {
 		return PGError{Code: "42P07", Message: msg, Hint: hint}
 	case strings.Contains(lower, "ambiguous column"):
 		return PGError{Code: "42702", Message: msg, Hint: hint}
+	case strings.Contains(lower, "cannot modify") && strings.Contains(lower, "because it is a view"):
+		// SQLite "cannot modify X because it is a view" → PG "cannot insert into view"
+		name := ""
+		if i := strings.Index(lower, "cannot modify "); i >= 0 {
+			rest := msg[i+len("cannot modify "):]
+			if end := strings.Index(rest, " because"); end >= 0 {
+				name = rest[:end]
+			}
+		}
+		return PGError{Code: "55000", Message: `cannot insert into view "` + name + `"`}
 	case strings.Contains(lower, "too many") && strings.Contains(lower, "column"):
 		return PGError{Code: "42601", Message: msg, Hint: hint}
 	case strings.Contains(lower, "columns available but") || strings.Contains(lower, "values for"):

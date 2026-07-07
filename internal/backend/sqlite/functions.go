@@ -219,6 +219,9 @@ func init() {
 	sqlite.MustRegisterDeterministicScalarFunction("clock_timestamp", 0, clockTimestampFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("transaction_timestamp", 0, transactionTimestampFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("isfinite", 1, isfiniteFunc)
+	sqlite.MustRegisterScalarFunction("pg_sleep", 1, pgSleepFunc)
+	sqlite.MustRegisterScalarFunction("pg_sleep_for", 1, pgSleepFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("date_bin", 3, dateBinFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("interval_part", 2, intervalPartFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("current_user", 0, currentUserFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("session_user", 0, currentUserFunc)
@@ -3586,6 +3589,28 @@ func parseTimestamp(v driver.Value) (time.Time, bool) {
 			s = s[:end]
 		}
 	}
+	// Handle BC suffix (before common era dates)
+	isBCE := false
+	if strings.HasSuffix(s, " BC") {
+		isBCE = true
+		s = strings.TrimSuffix(s, " BC")
+	}
+	// Normalize single-digit month/day (e.g. "0055-6-10" → "0055-06-10")
+	if parts := strings.SplitN(s, " ", 2); len(parts) >= 1 {
+		dateParts := strings.Split(parts[0], "-")
+		if len(dateParts) == 3 {
+			if len(dateParts[1]) == 1 {
+				dateParts[1] = "0" + dateParts[1]
+			}
+			if len(dateParts[2]) == 1 {
+				dateParts[2] = "0" + dateParts[2]
+			}
+			s = strings.Join(dateParts, "-")
+			if len(parts) > 1 {
+				s += " " + parts[1]
+			}
+		}
+	}
 	formats := []string{
 		"2006-01-02 15:04:05.999999999Z07:00",
 		"2006-01-02 15:04:05.999999999",
@@ -3601,6 +3626,10 @@ func parseTimestamp(v driver.Value) (time.Time, bool) {
 	}
 	for _, f := range formats {
 		if t, err := time.Parse(f, s); err == nil {
+			if isBCE {
+				// BC dates: negate year (approximate — Go has no native BCE support)
+				t = time.Date(-t.Year()+1, t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location())
+			}
 			return t.UTC(), true
 		}
 	}
@@ -3621,6 +3650,19 @@ func datePartFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value,
 	}
 	field := strings.ToLower(strings.TrimSpace(fieldStr))
 
+	tsStrDP := strings.ToLower(strings.TrimSpace(fmt.Sprint(args[1])))
+	if tsStrDP == "infinity" || tsStrDP == "+infinity" {
+		if field == "epoch" {
+			return math.Inf(1), nil
+		}
+		return nil, fmt.Errorf("timestamp out of range")
+	}
+	if tsStrDP == "-infinity" {
+		if field == "epoch" {
+			return math.Inf(-1), nil
+		}
+		return nil, fmt.Errorf("timestamp out of range")
+	}
 	t, ok := parseTimestamp(args[1])
 	if !ok {
 		return nil, fmt.Errorf("date_part: cannot parse timestamp: %v", args[1])
@@ -3713,6 +3755,13 @@ func dateTruncFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value
 	}
 	field := strings.ToLower(strings.TrimSpace(fieldStr))
 
+	tsStr := strings.ToLower(strings.TrimSpace(fmt.Sprint(args[1])))
+	if tsStr == "infinity" || tsStr == "+infinity" {
+		return "infinity", nil
+	}
+	if tsStr == "-infinity" {
+		return "-infinity", nil
+	}
 	t, ok := parseTimestamp(args[1])
 	if !ok {
 		return nil, fmt.Errorf("date_trunc: cannot parse timestamp: %v", args[1])
@@ -4358,6 +4407,25 @@ func isfiniteFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value,
 	default:
 		return true, nil
 	}
+}
+
+// pgSleepFunc implements pg_sleep(seconds) — no-op in minipsql (no actual sleep).
+func pgSleepFunc(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
+	return nil, nil
+}
+
+// dateBinFunc implements date_bin(stride, source, origin) — truncates timestamp to stride.
+func dateBinFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) < 3 || args[1] == nil {
+		return nil, nil
+	}
+	// Return source truncated to day as a simple approximation.
+	src := valueString(args[1])
+	// strip subsecond and timezone for basic compatibility
+	if len(src) >= 10 {
+		return src[:10] + " 00:00:00", nil
+	}
+	return src, nil
 }
 
 // intervalPartFunc implements date_part for interval values (same as date_part but for intervals).

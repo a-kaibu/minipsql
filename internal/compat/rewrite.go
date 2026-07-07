@@ -24,7 +24,7 @@ var (
 	createIndexUsingRE = regexp.MustCompile(`(?i)(CREATE\s+(?:UNIQUE\s+)?INDEX\b.+?\bON\s+\S+)\s+USING\s+\S+\s*(\()`)
 	ilikeRE            = regexp.MustCompile(`(?i)\bILIKE\b`)
 	returningRE        = regexp.MustCompile(`(?i)\bRETURNING\b`)
-	onlyRE             = regexp.MustCompile(`(?i)\b(FROM|ON)\s+ONLY\s+`)
+	onlyRE             = regexp.MustCompile(`(?i)\b(FROM|ON|UPDATE|DELETE\s+FROM|INSERT\s+INTO)\s+ONLY\s+`)
 	eStringRE          = regexp.MustCompile(`(?i)\bE'`)
 	trueRE             = regexp.MustCompile(`(?i)\bTRUE\b`)
 	falseRE            = regexp.MustCompile(`(?i)\bFALSE\b`)
@@ -100,8 +100,8 @@ var (
 	bitLiteralRE       = regexp.MustCompile(`(?i)\bB'([01]*)'`)
 	variadicRE         = regexp.MustCompile(`(?i)\bVARIADIC\s+`)
 	// timestamp/time WITH/WITHOUT TIME ZONE — strip the WITH/WITHOUT TIME ZONE suffix
-	withoutTimeZoneRE  = regexp.MustCompile(`(?i)\b(timestamp|time)\s+without\s+time\s+zone\b`)
-	withTimeZoneRE     = regexp.MustCompile(`(?i)\b(timestamp|time)\s+with\s+time\s+zone\b`)
+	withoutTimeZoneRE  = regexp.MustCompile(`(?i)\b(timestamp|time)(?:\s*\(\s*\d+\s*\))?\s+without\s+time\s+zone\b`)
+	withTimeZoneRE     = regexp.MustCompile(`(?i)\b(timestamp|time)(?:\s*\(\s*\d+\s*\))?\s+with\s+time\s+zone\b`)
 	// localtime / localtimestamp — PG-specific aliases for current_time/current_timestamp
 	localtimestampPrecRE = regexp.MustCompile(`(?i)\blocaltimestamp\s*\(\s*\d+\s*\)`)
 	localtimePrecRE      = regexp.MustCompile(`(?i)\blocaltime\s*\(\s*\d+\s*\)`)
@@ -268,6 +268,15 @@ func Rewrite(sql string) string {
 		upper := strings.ToUpper(m)
 		if strings.HasPrefix(upper, "FROM") {
 			return "FROM "
+		}
+		if strings.HasPrefix(upper, "UPDATE") {
+			return "UPDATE "
+		}
+		if strings.HasPrefix(upper, "DELETE") {
+			return "DELETE FROM "
+		}
+		if strings.HasPrefix(upper, "INSERT") {
+			return "INSERT INTO "
 		}
 		return "ON "
 	})

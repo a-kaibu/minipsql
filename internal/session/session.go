@@ -194,6 +194,8 @@ func (s *Session) Execute(ctx context.Context, sql string, args []backend.Value)
 			if stmt == "" {
 				continue
 			}
+			// Re-apply per-statement rewrites that couldn't run on the combined string.
+			stmt = compat.RewritePerStatement(stmt)
 			// Apply no-op checks for each split statement too
 			if tag, ok := s.tryNoopCommand(stmt); ok {
 				lastTag = tag
@@ -219,6 +221,7 @@ func (s *Session) Execute(ctx context.Context, sql string, args []backend.Value)
 		return nil, lastTag, nil
 	}
 
+	rewritten = compat.RewritePerStatement(rewritten)
 	if compat.IsQuery(rewritten) || compat.HasReturning(rewritten) {
 		result, err := s.Backend.Query(ctx, rewritten, args)
 		return result, nil, err

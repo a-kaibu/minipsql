@@ -125,11 +125,16 @@ var (
 
 var idxCounter atomic.Int64
 
+// RewritePerStatement applies rewrites that must run on individual statements
+// (not on multi-statement strings). Called by session after splitting.
+func RewritePerStatement(sql string) string {
+	sql = rewriteAlterAddColumnDefaultExpr(sql)
+	return sql
+}
 
 func Rewrite(sql string) string {
 	out := rewriteAlterTableMultiAction(sql)
 	out = rewriteCreateTableColListAsValues(out)
-	out = rewriteAlterAddColumnDefaultExpr(out)
 	out = rewriteDistinctOn(out)
 	out = rewriteTruncate(out)
 	// Strip RECURSIVE keyword from CREATE [OR REPLACE] RECURSIVE VIEW
@@ -3137,6 +3142,169 @@ func rewriteCreateTableColListAsValues(sql string) string {
 	return strings.Join(stmts, "; ")
 }
 
+// rewriteCreateTableDefaultExpr strips non-constant DEFAULT expressions from
+// CREATE TABLE column definitions. SQLite only allows constant literals in DEFAULT.
+// e.g. DEFAULT LENGTH(foo(6)) → (removed)
+var createTableDefaultFuncRE = regexp.MustCompile(
+	`(?i)\bDEFAULT\s+(?:[A-Za-z_][A-Za-z0-9_]*\s*\()`)
+
+func rewriteCreateTableDefaultExpr(sql string) string {
+	upper := strings.ToUpper(strings.TrimSpace(sql))
+	if !strings.HasPrefix(upper, "CREATE") || !strings.Contains(upper, "TABLE") {
+		return sql
+	}
+	if !strings.Contains(upper, "DEFAULT") {
+		return sql
+	}
+	// Find the opening paren of the column list
+	parenStart := strings.Index(sql, "(")
+	if parenStart < 0 {
+		return sql
+	}
+	tablePrefix := sql[:parenStart+1]
+	// Find the matching closing paren
+	depth := 1
+	i := parenStart + 1
+	for i < len(sql) && depth > 0 {
+		switch sql[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case '\'':
+			i++
+			for i < len(sql) && sql[i] != '\'' {
+				if sql[i] == '\\' {
+					i++
+				}
+				i++
+			}
+		}
+		i++
+	}
+	colDefs := sql[parenStart+1 : i-1]
+	suffix := sql[i-1:]
+
+	// Strip non-constant DEFAULT in column definitions.
+	// We need to be careful not to strip DEFAULT inside string literals.
+	stripped := stripNonConstantDefaults(colDefs)
+	return tablePrefix + stripped + suffix
+}
+
+// stripNonConstantDefaults removes DEFAULT <non-constant> from column definitions.
+func stripNonConstantDefaults(colDefs string) string {
+	// Iterate through colDefs looking for DEFAULT keyword outside of quotes
+	var result strings.Builder
+	i := 0
+	for i < len(colDefs) {
+		// Check for string literal
+		if colDefs[i] == '\'' {
+			result.WriteByte(colDefs[i])
+			i++
+			for i < len(colDefs) {
+				result.WriteByte(colDefs[i])
+				if colDefs[i] == '\'' {
+					i++
+					break
+				}
+				i++
+			}
+			continue
+		}
+		// Check for DEFAULT keyword
+		upper := strings.ToUpper(colDefs[i:])
+		if strings.HasPrefix(upper, "DEFAULT") && (i == 0 || colDefs[i-1] == ' ' || colDefs[i-1] == '\t' || colDefs[i-1] == '\n') {
+			// Read the DEFAULT value
+			defStart := i + len("DEFAULT")
+			j := defStart
+			for j < len(colDefs) && (colDefs[j] == ' ' || colDefs[j] == '\t' || colDefs[j] == '\n') {
+				j++
+			}
+			// Read the default value expression
+			defValStart := j
+			// Check if it's a function call or complex expr (has '(')
+			// vs simple literal
+			val, end := readDefaultValue(colDefs, j)
+			if isSimpleLiteralDefault(val) || isSupportedDefaultExpr(val) {
+				// Keep it
+				result.WriteString(colDefs[i:end])
+				i = end
+			} else {
+				// Strip DEFAULT ... entirely
+				_ = defValStart
+				i = end
+			}
+			continue
+		}
+		result.WriteByte(colDefs[i])
+		i++
+	}
+	return result.String()
+}
+
+// readDefaultValue reads the default value starting at position j in s,
+// returns the value string and the end position.
+func readDefaultValue(s string, j int) (string, int) {
+	start := j
+	depth := 0
+	inStr := false
+	for j < len(s) {
+		ch := s[j]
+		if inStr {
+			if ch == '\'' {
+				inStr = false
+			}
+			j++
+			continue
+		}
+		if ch == '\'' {
+			inStr = true
+			j++
+			continue
+		}
+		if ch == '(' {
+			depth++
+			j++
+			continue
+		}
+		if ch == ')' {
+			if depth == 0 {
+				break
+			}
+			depth--
+			j++
+			continue
+		}
+		if depth == 0 && ch == ',' {
+			break
+		}
+		j++
+	}
+	return strings.TrimSpace(s[start:j]), j
+}
+
+// isSupportedDefaultExpr returns true if the default expression uses known
+// SQLite/minipsql functions that are registered and safe in DEFAULT contexts.
+func isSupportedDefaultExpr(val string) bool {
+	val = strings.TrimSpace(val)
+	upper := strings.ToUpper(val)
+	// nextval, currval, gen_random_uuid are registered minipsql functions
+	for _, fn := range []string{"NEXTVAL(", "CURRVAL(", "GEN_RANDOM_UUID(", "RANDOM(", "ABS("} {
+		if strings.HasPrefix(upper, fn) {
+			return true
+		}
+	}
+	// (nextval(...)) — wrapped in parens
+	if strings.HasPrefix(val, "(") {
+		inner := strings.TrimSpace(val[1:])
+		end := strings.LastIndex(inner, ")")
+		if end >= 0 {
+			return isSupportedDefaultExpr(inner[:end])
+		}
+	}
+	return false
+}
+
 // rewriteAlterAddColumnDefaultExpr strips non-constant DEFAULT expressions from
 // ALTER TABLE ... ADD COLUMN col TYPE DEFAULT expr, since SQLite cannot add a column
 // with a non-constant default to a table that already has rows.
@@ -3154,6 +3322,10 @@ func rewriteAlterAddColumnDefaultExpr(sql string) string {
 	}
 	// Only handle single ADD COLUMN (multi-action was already split above)
 	if !strings.Contains(upper, "ADD ") {
+		return sql
+	}
+	// Skip if this is a multi-statement (semicolon present) — handled per-statement by Execute
+	if strings.Contains(sql, ";") {
 		return sql
 	}
 

@@ -141,7 +141,11 @@ func (s *Session) Execute(ctx context.Context, sql string, args []backend.Value)
 	}
 
 	// Rewrite SQL-language function calls to inline subqueries
-	sql = s.expandSQLFunctions(sql)
+	// (skip for CREATE INDEX to avoid "subqueries prohibited in index expressions")
+	lowerTrim := strings.ToLower(strings.TrimSpace(sql))
+	if !strings.HasPrefix(lowerTrim, "create index") && !strings.HasPrefix(lowerTrim, "create unique index") {
+		sql = s.expandSQLFunctions(sql)
+	}
 
 	if tag, ok := tryUnsupportedDDLNoop(sql); ok {
 		return nil, tag, nil

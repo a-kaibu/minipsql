@@ -128,6 +128,8 @@ var idxCounter atomic.Int64
 
 func Rewrite(sql string) string {
 	out := rewriteAlterTableMultiAction(sql)
+	out = rewriteCreateTableColListAsValues(out)
+	out = rewriteAlterAddColumnDefaultExpr(out)
 	out = rewriteDistinctOn(out)
 	out = rewriteTruncate(out)
 	// Strip RECURSIVE keyword from CREATE [OR REPLACE] RECURSIVE VIEW
@@ -3089,6 +3091,118 @@ func rewriteCreateTableColList(sql string) string {
 		}
 		return sub[1] + " " + sub[3]
 	})
+}
+
+// rewriteCreateTableColListAsValues handles:
+//   CREATE TABLE name (col1, col2, ...) AS VALUES (...)
+// SQLite supports CREATE TABLE AS VALUES but gives auto-names (column1, column2, ...).
+// We rewrite to: CREATE TABLE name AS VALUES ...; ALTER TABLE name RENAME COLUMN column1 TO col1; ...
+var createTableColListAsValuesRE = regexp.MustCompile(
+	`(?is)^\s*(CREATE\s+(?:UNLOGGED\s+|TEMP(?:ORARY)?\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z0-9_"]+))\s*\(([^)]+)\)\s*AS\s+(VALUES\s*\([\s\S]*)$`)
+
+func rewriteCreateTableColListAsValues(sql string) string {
+	sub := createTableColListAsValuesRE.FindStringSubmatch(sql)
+	if len(sub) < 5 {
+		return sql
+	}
+	tablePrefix := sub[1] // "CREATE TABLE name"
+	tableName := sub[2]   // "name"
+	colListStr := sub[3]  // "col1, col2, ..."
+	valuesBody := sub[4]  // "VALUES (...)"
+
+	// Only handle if all columns are plain names (no types)
+	if regexp.MustCompile(`(?i)\b(int|text|varchar|char|bool|float|numeric|date|time)\b`).MatchString(colListStr) {
+		return sql
+	}
+
+	cols := strings.Split(colListStr, ",")
+	var colNames []string
+	for _, c := range cols {
+		name := strings.TrimSpace(c)
+		name = strings.Trim(name, `"`)
+		if name != "" {
+			colNames = append(colNames, name)
+		}
+	}
+
+	if len(colNames) == 0 {
+		return sql
+	}
+
+	stmts := []string{tablePrefix + " AS " + valuesBody}
+	for i, name := range colNames {
+		oldName := fmt.Sprintf("column%d", i+1)
+		stmts = append(stmts, fmt.Sprintf("ALTER TABLE %s RENAME COLUMN %s TO %s", tableName, oldName, name))
+	}
+	return strings.Join(stmts, "; ")
+}
+
+// rewriteAlterAddColumnDefaultExpr strips non-constant DEFAULT expressions from
+// ALTER TABLE ... ADD COLUMN col TYPE DEFAULT expr, since SQLite cannot add a column
+// with a non-constant default to a table that already has rows.
+// Simple literals (integers, quoted strings, NULL, TRUE, FALSE) are kept.
+var alterAddColDefaultRE = regexp.MustCompile(
+	`(?i)(\bADD\s+(?:COLUMN\s+)?"?[A-Za-z0-9_]+"?\s+[A-Za-z0-9_(, ]+?)\s+DEFAULT\s+(.+)$`)
+
+func rewriteAlterAddColumnDefaultExpr(sql string) string {
+	upper := strings.ToUpper(strings.TrimSpace(sql))
+	if !strings.HasPrefix(upper, "ALTER TABLE") {
+		return sql
+	}
+	if !strings.Contains(upper, "DEFAULT") {
+		return sql
+	}
+	// Only handle single ADD COLUMN (multi-action was already split above)
+	if !strings.Contains(upper, "ADD ") {
+		return sql
+	}
+
+	// Find "DEFAULT" after ADD [COLUMN]
+	// We need to strip DEFAULT if the expression is not a simple literal.
+	// Walk through to find "ADD [COLUMN]" then find "DEFAULT"
+	lower := strings.ToLower(sql)
+	addIdx := strings.Index(lower, " add ")
+	if addIdx < 0 {
+		return sql
+	}
+	// Find DEFAULT after ADD
+	defIdx := strings.Index(lower[addIdx:], " default ")
+	if defIdx < 0 {
+		return sql
+	}
+	defIdx += addIdx // absolute position of " default "
+	defValStart := defIdx + len(" default ")
+	defVal := strings.TrimSpace(sql[defValStart:])
+
+	// Check if defVal is a simple constant
+	if isSimpleLiteralDefault(defVal) {
+		return sql
+	}
+	// Strip the DEFAULT clause
+	return strings.TrimRight(sql[:defIdx], " \t")
+}
+
+// isSimpleLiteralDefault returns true if the default value is a simple constant
+// that SQLite can handle in ADD COLUMN DEFAULT.
+func isSimpleLiteralDefault(val string) bool {
+	val = strings.TrimSpace(val)
+	// Strip trailing semicolons
+	val = strings.TrimRight(val, "; \t")
+	upper := strings.ToUpper(val)
+	if upper == "NULL" || upper == "TRUE" || upper == "FALSE" {
+		return true
+	}
+	// Number literal (possibly negative)
+	numRE := regexp.MustCompile(`^-?\d+(\.\d+)?$`)
+	if numRE.MatchString(val) {
+		return true
+	}
+	// Simple quoted string
+	if (strings.HasPrefix(val, "'") && strings.HasSuffix(val, "'")) ||
+		(strings.HasPrefix(val, "\"") && strings.HasSuffix(val, "\"")) {
+		return true
+	}
+	return false
 }
 
 // rewriteWithOrdinality strips WITH ORDINALITY (not supported by SQLite).

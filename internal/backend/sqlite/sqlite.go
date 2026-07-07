@@ -893,6 +893,7 @@ func initDatabase(ctx context.Context, db *sql.DB) error {
 			p."notnull" AS attnotnull,
 			0 AS atthasdef,
 			0 AS atthasmissing,
+			NULL AS attmissingval,
 			'' AS attidentity,
 			'' AS attgenerated,
 			0 AS attisdropped,

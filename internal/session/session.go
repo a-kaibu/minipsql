@@ -748,6 +748,7 @@ func tryAlterTableNoop(lower string) (*backend.CommandTag, bool) {
 			strings.HasPrefix(colRest, "set statistics") ||
 			strings.HasPrefix(colRest, "set storage") ||
 			strings.HasPrefix(colRest, "set compression") ||
+			strings.HasPrefix(colRest, "set data type") ||
 			strings.HasPrefix(colRest, "type ") ||
 			strings.HasPrefix(colRest, "using ") ||
 			strings.HasPrefix(colRest, "set (") ||

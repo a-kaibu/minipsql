@@ -2515,11 +2515,19 @@ func rewriteValuesAlias(sql string) string {
 			rewritten += "AS "
 		}
 		rewritten += aliasName
+
+		// If the VALUES list was wrapped in outer parens, replace them too
+		replaceStart := idx
 		if hasOuterParen {
-			rewritten += ")"
+			// Look backwards for the matching '(' before 'values'
+			j := idx - 1
+			for j >= 0 && (sql[j] == ' ' || sql[j] == '\t') { j-- }
+			if j >= 0 && sql[j] == '(' {
+				replaceStart = j
+			}
 		}
-		
-		sql = sql[:idx] + rewritten + sql[i:]
+
+		sql = sql[:replaceStart] + rewritten + sql[i:]
 		lower = strings.ToLower(sql)
 	}
 	return sql

@@ -449,6 +449,14 @@ func tryAlterTableNoop(lower string) (*backend.CommandTag, bool) {
 		"replica identity",
 		"attach partition",
 		"detach partition",
+		"add primary key",
+		"add unique",
+		"add check",
+		"add foreign key",
+		"add constraint",
+		"drop constraint",
+		"validate constraint",
+		"add exclude",
 	}
 	// Find the part after "alter table <name>"
 	rest := lower[len("alter table "):]

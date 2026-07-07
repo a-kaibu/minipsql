@@ -51,6 +51,11 @@ var (
 	createTableColListRE = regexp.MustCompile(`(?i)^\s*(CREATE\s+(?:UNLOGGED\s+|TEMP(?:ORARY)?\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[A-Za-z0-9_".]+)\s*\(([^)]+)\)\s*(AS\s+)`)
 	withOrdinalityRE   = regexp.MustCompile(`(?i)\bWITH\s+ORDINALITY\b`)
 	bareOffsetRE       = regexp.MustCompile(`(?i)\bOFFSET\s+(\d+)(?:\s+ROWS?)?(?:\s*[;)\s]|$)`)
+	offsetBeforeLimitRE = regexp.MustCompile(`(?i)\bOFFSET\s+(\S+)\s+LIMIT\s+(\S+)`)
+	partitionByClauseRE = regexp.MustCompile(`(?i)\s+PARTITION\s+BY\s+(?:RANGE|LIST|HASH)\s*\([^)]*\)`)
+	partitionOfRE       = regexp.MustCompile(`(?i)^\s*CREATE\s+TABLE\s+\S+\s+PARTITION\s+OF\s+`)
+	attachPartitionRE   = regexp.MustCompile(`(?i)\bATTACH\s+PARTITION\b`)
+	detachPartitionRE   = regexp.MustCompile(`(?i)\bDETACH\s+PARTITION\b`)
 	dropMultiTableRE   = regexp.MustCompile(`(?i)^\s*(DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?)([A-Za-z0-9_".,\s]+?)(\s+(?:CASCADE|RESTRICT))?\s*;?\s*$`)
 	indexOpClassRE     = regexp.MustCompile(`(?i)\b([A-Za-z0-9_]+)\s+([A-Za-z0-9_]+_ops\b)(?:\s+ASC|\s+DESC)?`)
 	nullsFirstLastRE   = regexp.MustCompile(`(?i)\bNULLS\s+(?:FIRST|LAST)\b`)
@@ -84,6 +89,8 @@ func Rewrite(sql string) string {
 	out = rewriteCreateTableWithNoData(out)
 	out = rewriteCreateTableColList(out)
 	out = rewriteWithOrdinality(out)
+	out = rewritePartitionBy(out)
+	out = rewriteOffsetBeforeLimit(out)
 	out = rewriteBareOffset(out)
 	out = rewriteDropMultiTable(out)
 	out = rewriteIndexOpClasses(out)
@@ -2342,6 +2349,36 @@ func rewriteCreateTableColList(sql string) string {
 // rewriteWithOrdinality strips WITH ORDINALITY (not supported by SQLite).
 func rewriteWithOrdinality(sql string) string {
 	return withOrdinalityRE.ReplaceAllString(sql, "")
+}
+
+// rewritePartitionBy strips PARTITION BY clauses from CREATE TABLE (SQLite has no partitioning).
+// CREATE TABLE ... PARTITION OF ... (partition child tables) become regular CREATE TABLE.
+func rewritePartitionBy(sql string) string {
+	lower := strings.ToLower(sql)
+	if !strings.Contains(lower, "partition") {
+		return sql
+	}
+	// Strip "PARTITION BY RANGE/LIST/HASH (...)" from CREATE TABLE
+	out := partitionByClauseRE.ReplaceAllString(sql, "")
+	// Rewrite "CREATE TABLE t PARTITION OF parent FOR VALUES ..." to "CREATE TABLE IF NOT EXISTS t (LIKE parent)"
+	// Since we can't do inheritance, just create an empty table with the same approach
+	if partitionOfRE.MatchString(out) {
+		// Extract just the table name and convert to CREATE TABLE IF NOT EXISTS name ()
+		m := regexp.MustCompile(`(?i)^\s*CREATE\s+TABLE\s+((?:IF\s+NOT\s+EXISTS\s+)?[A-Za-z0-9_"]+)\s+PARTITION\s+OF\s+.*$`).FindStringSubmatch(out)
+		if m != nil {
+			return "CREATE TABLE IF NOT EXISTS " + m[1] + " (_dummy integer)"
+		}
+	}
+	return out
+}
+
+// rewriteOffsetBeforeLimit swaps "OFFSET m LIMIT n" to "LIMIT n OFFSET m" for SQLite compatibility.
+func rewriteOffsetBeforeLimit(sql string) string {
+	lower := strings.ToLower(sql)
+	if !strings.Contains(lower, "offset") || !strings.Contains(lower, "limit") {
+		return sql
+	}
+	return offsetBeforeLimitRE.ReplaceAllString(sql, "LIMIT $2 OFFSET $1")
 }
 
 // rewriteBareOffset rewrites "OFFSET n" without a preceding LIMIT clause to "LIMIT -1 OFFSET n".

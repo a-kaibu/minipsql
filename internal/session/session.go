@@ -192,36 +192,6 @@ func checkUnsupportedDDL(sql string) error {
 		{"alter policy", "ALTER POLICY is not supported"},
 	}
 
-	// DROP commands for unsupported object types always succeed as no-op
-	// (these objects can never be created, so DROP is always a no-op)
-	dropNoops := []struct {
-		prefix string
-		tag    string
-	}{
-		{"drop operator", "DROP OPERATOR"},
-		{"drop function", "DROP FUNCTION"},
-		{"drop procedure", "DROP PROCEDURE"},
-		{"drop aggregate", "DROP AGGREGATE"},
-		{"drop type", "DROP TYPE"},
-		{"drop extension", "DROP EXTENSION"},
-		{"drop rule", "DROP RULE"},
-		{"drop trigger", "DROP TRIGGER"},
-		{"drop foreign", "DROP FOREIGN"},
-		{"drop domain", "DROP DOMAIN"},
-		{"drop conversion", "DROP CONVERSION"},
-		{"drop statistics", "DROP STATISTICS"},
-		{"drop language", "DROP LANGUAGE"},
-		{"drop cast", "DROP CAST"},
-		{"drop collation", "DROP COLLATION"},
-		{"drop policy", "DROP POLICY"},
-	}
-
-	for _, d := range dropNoops {
-		if strings.HasPrefix(lower, d.prefix) {
-			return nil
-		}
-	}
-
 	for _, u := range unsupported {
 		if strings.HasPrefix(lower, u.prefix) {
 			return &compat.PGError{Code: "0A000", Message: u.msg}
@@ -355,6 +325,40 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 		return &backend.CommandTag{Tag: "CHECKPOINT"}, true
 	case strings.HasPrefix(lower, "reassign owned"):
 		return &backend.CommandTag{Tag: "REASSIGN OWNED"}, true
+	case strings.HasPrefix(lower, "drop function ") || strings.HasPrefix(lower, "drop function;"):
+		return &backend.CommandTag{Tag: "DROP FUNCTION"}, true
+	case strings.HasPrefix(lower, "drop procedure ") || strings.HasPrefix(lower, "drop procedure;"):
+		return &backend.CommandTag{Tag: "DROP PROCEDURE"}, true
+	case strings.HasPrefix(lower, "drop aggregate ") || strings.HasPrefix(lower, "drop aggregate;"):
+		return &backend.CommandTag{Tag: "DROP AGGREGATE"}, true
+	case strings.HasPrefix(lower, "drop type ") || strings.HasPrefix(lower, "drop type;"):
+		return &backend.CommandTag{Tag: "DROP TYPE"}, true
+	case strings.HasPrefix(lower, "drop domain ") || strings.HasPrefix(lower, "drop domain;"):
+		return &backend.CommandTag{Tag: "DROP DOMAIN"}, true
+	case strings.HasPrefix(lower, "drop operator ") || strings.HasPrefix(lower, "drop operator;"):
+		return &backend.CommandTag{Tag: "DROP OPERATOR"}, true
+	case strings.HasPrefix(lower, "drop rule ") || strings.HasPrefix(lower, "drop rule;"):
+		return &backend.CommandTag{Tag: "DROP RULE"}, true
+	case strings.HasPrefix(lower, "drop trigger ") || strings.HasPrefix(lower, "drop trigger;"):
+		return &backend.CommandTag{Tag: "DROP TRIGGER"}, true
+	case strings.HasPrefix(lower, "drop foreign ") || strings.HasPrefix(lower, "drop foreign;"):
+		return &backend.CommandTag{Tag: "DROP FOREIGN"}, true
+	case strings.HasPrefix(lower, "drop conversion ") || strings.HasPrefix(lower, "drop conversion;"):
+		return &backend.CommandTag{Tag: "DROP CONVERSION"}, true
+	case strings.HasPrefix(lower, "drop statistics ") || strings.HasPrefix(lower, "drop statistics;"):
+		return &backend.CommandTag{Tag: "DROP STATISTICS"}, true
+	case strings.HasPrefix(lower, "drop language ") || strings.HasPrefix(lower, "drop language;"):
+		return &backend.CommandTag{Tag: "DROP LANGUAGE"}, true
+	case strings.HasPrefix(lower, "drop cast ") || strings.HasPrefix(lower, "drop cast;"):
+		return &backend.CommandTag{Tag: "DROP CAST"}, true
+	case strings.HasPrefix(lower, "drop collation ") || strings.HasPrefix(lower, "drop collation;"):
+		return &backend.CommandTag{Tag: "DROP COLLATION"}, true
+	case strings.HasPrefix(lower, "drop policy ") || strings.HasPrefix(lower, "drop policy;"):
+		return &backend.CommandTag{Tag: "DROP POLICY"}, true
+	case strings.HasPrefix(lower, "drop extension ") || strings.HasPrefix(lower, "drop extension;"):
+		return &backend.CommandTag{Tag: "DROP EXTENSION"}, true
+	case strings.HasPrefix(lower, "drop access method ") || strings.HasPrefix(lower, "drop access method;"):
+		return &backend.CommandTag{Tag: "DROP ACCESS METHOD"}, true
 	case strings.HasPrefix(lower, "alter sequence "):
 		return &backend.CommandTag{Tag: "ALTER SEQUENCE"}, true
 	case strings.HasPrefix(lower, "create sequence "):

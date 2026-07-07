@@ -24,7 +24,7 @@ var (
 	createIndexUsingRE = regexp.MustCompile(`(?i)(CREATE\s+(?:UNIQUE\s+)?INDEX\b.+?\bON\s+\S+)\s+USING\s+\S+\s*(\()`)
 	ilikeRE            = regexp.MustCompile(`(?i)\bILIKE\b`)
 	returningRE        = regexp.MustCompile(`(?i)\bRETURNING\b`)
-	onlyRE             = regexp.MustCompile(`(?i)\bFROM\s+ONLY\s+`)
+	onlyRE             = regexp.MustCompile(`(?i)\b(FROM|ON)\s+ONLY\s+`)
 	eStringRE          = regexp.MustCompile(`(?i)\bE'`)
 	trueRE             = regexp.MustCompile(`(?i)\bTRUE\b`)
 	falseRE            = regexp.MustCompile(`(?i)\bFALSE\b`)
@@ -213,6 +213,7 @@ func Rewrite(sql string) string {
 	out = rewriteDollarQuotes(out)
 	out = rewriteRegexFunctions(out)
 	out = rewriteSubstring(out)
+	out = rewriteUnnest(out)
 	out = rewriteToBinOctHex(out)
 	out = rewriteParametersAndCasts(out)
 	out = serialRE.ReplaceAllString(out, "integer")
@@ -262,7 +263,13 @@ func Rewrite(sql string) string {
 		return parts[0] + " text CHECK (is_valid_circle(" + parts[0] + "))"
 	})
 	out = pgCatalogPrefixRE.ReplaceAllString(out, "$1")
-	out = onlyRE.ReplaceAllString(out, "FROM ")
+	out = onlyRE.ReplaceAllStringFunc(out, func(m string) string {
+		upper := strings.ToUpper(m)
+		if strings.HasPrefix(upper, "FROM") {
+			return "FROM "
+		}
+		return "ON "
+	})
 	out = eStringRE.ReplaceAllString(out, "'")
 	out = asNullRE.ReplaceAllString(out, "AS \"null\"")
 	out = rewritePartitionSRFs(out)
@@ -2586,6 +2593,139 @@ func rewriteArrayIndex(sql string) string {
 		idx, _ := strconv.Atoi(sub[2])
 		return fmt.Sprintf("json_extract(%s, '$[%d]')", name, idx-1)
 	})
+}
+
+// rewriteUnnest converts FROM unnest(arr) [AS alias[(col)]] to FROM json_each(arr) AS alias.
+// PostgreSQL's unnest(array) SRF is emulated with SQLite's json_each table-valued function.
+// Only converts unnest() that appears in a FROM/JOIN clause context.
+func rewriteUnnest(sql string) string {
+	lower := strings.ToLower(sql)
+	for {
+		idx := strings.Index(lower, "unnest")
+		if idx == -1 {
+			break
+		}
+		// Check word boundary before and after
+		if idx > 0 && isIdentByte(sql[idx-1]) {
+			lower = lower[:idx] + "UNNEST" + lower[idx+6:]
+			continue
+		}
+		if idx+6 < len(sql) && isIdentByte(sql[idx+6]) {
+			lower = lower[:idx] + "UNNEST" + lower[idx+6:]
+			continue
+		}
+		// Check that this unnest is preceded by FROM, JOIN, or COMMA in FROM context
+		// by scanning backwards for a FROM/JOIN/CROSS JOIN/LEFT JOIN keyword
+		before := strings.TrimRight(sql[:idx], " \t\n")
+		beforeLower := strings.ToLower(before)
+		isFromContext := strings.HasSuffix(beforeLower, "from") ||
+			strings.HasSuffix(beforeLower, "join") ||
+			strings.HasSuffix(beforeLower, ",")
+		if !isFromContext {
+			lower = lower[:idx] + "UNNEST" + lower[idx+6:]
+			continue
+		}
+		j := idx + 6
+		for j < len(sql) && (sql[j] == ' ' || sql[j] == '\t') {
+			j++
+		}
+		if j >= len(sql) || sql[j] != '(' {
+			lower = lower[:idx] + "UNNEST" + lower[idx+6:]
+			continue
+		}
+		// Find matching close paren
+		end := findMatchingParen(sql, j)
+		if end < 0 {
+			break
+		}
+		inner := sql[j+1 : end]
+		// Scan for optional WITH ORDINALITY, AS alias[(col)] after the closing paren
+		after := end + 1
+		for after < len(sql) && (sql[after] == ' ' || sql[after] == '\t') {
+			after++
+		}
+		withOrdinality := false
+		alias := ""
+		colNames := []string{}
+		aliasEnd := after
+		// Check for WITH ORDINALITY
+		if after+16 <= len(sql) && strings.EqualFold(sql[after:after+16], "with ordinality") {
+			withOrdinality = true
+			aliasEnd = after + 16
+			for aliasEnd < len(sql) && (sql[aliasEnd] == ' ' || sql[aliasEnd] == '\t') {
+				aliasEnd++
+			}
+			after = aliasEnd
+		}
+		// Parse AS alias or bare alias
+		if after < len(sql) && strings.EqualFold(sql[after:min(after+3, len(sql))], "as ") {
+			aliasEnd = after + 3
+			for aliasEnd < len(sql) && (sql[aliasEnd] == ' ' || sql[aliasEnd] == '\t') {
+				aliasEnd++
+			}
+			aliasStart := aliasEnd
+			for aliasEnd < len(sql) && isAlphaNumeric(sql[aliasEnd]) {
+				aliasEnd++
+			}
+			if aliasEnd > aliasStart {
+				alias = sql[aliasStart:aliasEnd]
+			}
+			// Parse optional column alias list
+			if aliasEnd < len(sql) && sql[aliasEnd] == '(' {
+				parenEnd := findMatchingParen(sql, aliasEnd)
+				if parenEnd >= 0 {
+					colList := sql[aliasEnd+1 : parenEnd]
+					for _, c := range strings.Split(colList, ",") {
+						colNames = append(colNames, strings.TrimSpace(c))
+					}
+					aliasEnd = parenEnd + 1
+				}
+			}
+		} else if after < len(sql) && isAlphaNumeric(sql[after]) {
+			aliasStart := after
+			for aliasEnd < len(sql) && isAlphaNumeric(sql[aliasEnd]) {
+				aliasEnd++
+			}
+			if aliasEnd > aliasStart {
+				alias = sql[aliasStart:aliasEnd]
+			}
+			if aliasEnd < len(sql) && sql[aliasEnd] == '(' {
+				parenEnd := findMatchingParen(sql, aliasEnd)
+				if parenEnd >= 0 {
+					colList := sql[aliasEnd+1 : parenEnd]
+					for _, c := range strings.Split(colList, ",") {
+						colNames = append(colNames, strings.TrimSpace(c))
+					}
+					aliasEnd = parenEnd + 1
+				}
+			}
+		}
+		if alias == "" {
+			alias = "unnest_t"
+		}
+		// Build replacement:
+		// If column names provided, wrap in subquery to rename json_each columns
+		var replacement string
+		if len(colNames) > 0 {
+			valCol := colNames[0]
+			if withOrdinality && len(colNames) >= 2 {
+				ordCol := colNames[1]
+				replacement = fmt.Sprintf("(SELECT value AS %s, key+1 AS %s FROM json_each(%s)) AS %s",
+					valCol, ordCol, inner, alias)
+			} else {
+				replacement = fmt.Sprintf("(SELECT value AS %s FROM json_each(%s)) AS %s",
+					valCol, inner, alias)
+			}
+		} else if withOrdinality {
+			replacement = fmt.Sprintf("(SELECT value, key+1 AS ordinality FROM json_each(%s)) AS %s",
+				inner, alias)
+		} else {
+			replacement = fmt.Sprintf("json_each(%s) AS %s", inner, alias)
+		}
+		sql = sql[:idx] + replacement + sql[aliasEnd:]
+		lower = strings.ToLower(sql)
+	}
+	return sql
 }
 
 // rewriteArrayConcatStrip removes "|| ARRAY(SELECT ...)" from expressions like

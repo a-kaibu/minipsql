@@ -38,7 +38,8 @@ var (
 	tableColumnAliasRE = regexp.MustCompile(`(?i)\bFROM\s+(int2_tbl|int4_tbl|int8_tbl)\b\s+(?:AS\s+)?([A-Za-z0-9_]+)\s*\(\s*([A-Za-z0-9_, ]+)\s*\)`)
 	tableKeywordRE     = regexp.MustCompile(`(?i)(^|[^a-zA-Z0-9_.])(?:([a-zA-Z0-9_]+)\s+)?\bTABLE\s+([A-Za-z0-9_]+)\b`)
 	arrayConstructorRE  = regexp.MustCompile(`(?is)\bARRAY\s*\[(.*?)\]`)
-	arrayIndexRE        = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\[(\d+)\]`)
+	arrayIndexRE        = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\[(\d+)\]`)
+	arrayVarIndexRE     = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\[([A-Za-z_][A-Za-z0-9_.]*)\]`)
 	usingLessRE         = regexp.MustCompile(`(?i)\busing\s+<`)
 	usingGreaterRE      = regexp.MustCompile(`(?i)\busing\s+>`)
 	// Match tablename* (PG inheritance asterisk) only when followed by whitespace, comma, ), or end of string.
@@ -2582,17 +2583,27 @@ func rewriteTableWithOptions(sql string) string {
 }
 
 // rewriteArrayIndex converts PostgreSQL 1-based array index access to json_extract.
-//   identifier[N]  →  json_extract(identifier, '$[N-1]')
+//   identifier[N]         →  json_extract(identifier, '$[N-1]')
+//   identifier[expr]      →  json_extract(identifier, '$[' || max(0, (expr) - 1) || ']')
 func rewriteArrayIndex(sql string) string {
 	if !strings.Contains(sql, "[") {
 		return sql
 	}
-	return arrayIndexRE.ReplaceAllStringFunc(sql, func(m string) string {
+	// First handle numeric indices (most common, cheapest)
+	out := arrayIndexRE.ReplaceAllStringFunc(sql, func(m string) string {
 		sub := arrayIndexRE.FindStringSubmatch(m)
 		name := sub[1]
 		idx, _ := strconv.Atoi(sub[2])
 		return fmt.Sprintf("json_extract(%s, '$[%d]')", name, idx-1)
 	})
+	// Then handle variable/expression indices: col[expr] → json_extract(col, '$['||(expr-1)||']')
+	out = arrayVarIndexRE.ReplaceAllStringFunc(out, func(m string) string {
+		sub := arrayVarIndexRE.FindStringSubmatch(m)
+		name := sub[1]
+		expr := sub[2]
+		return fmt.Sprintf("json_extract(%s, '$['||max(0,(%s)-1)||']')", name, expr)
+	})
+	return out
 }
 
 // rewriteUnnest converts FROM unnest(arr) [AS alias[(col)]] to FROM json_each(arr) AS alias.
@@ -2641,13 +2652,14 @@ func rewriteUnnest(sql string) string {
 		inner := sql[j+1 : end]
 		// Scan for optional WITH ORDINALITY, AS alias[(col)] after the closing paren
 		after := end + 1
+		rawAfter := after // position before skipping whitespace — used as aliasEnd when no alias found
 		for after < len(sql) && (sql[after] == ' ' || sql[after] == '\t') {
 			after++
 		}
 		withOrdinality := false
 		alias := ""
 		colNames := []string{}
-		aliasEnd := after
+		aliasEnd := rawAfter
 		// Check for WITH ORDINALITY
 		if after+16 <= len(sql) && strings.EqualFold(sql[after:after+16], "with ordinality") {
 			withOrdinality = true
@@ -2681,7 +2693,21 @@ func rewriteUnnest(sql string) string {
 					aliasEnd = parenEnd + 1
 				}
 			}
-		} else if after < len(sql) && isAlphaNumeric(sql[after]) {
+		} else if after < len(sql) && isAlphaNumeric(sql[after]) &&
+			!startsWithKeyword(sql[after:], "ORDER") &&
+			!startsWithKeyword(sql[after:], "WHERE") &&
+			!startsWithKeyword(sql[after:], "GROUP") &&
+			!startsWithKeyword(sql[after:], "LIMIT") &&
+			!startsWithKeyword(sql[after:], "HAVING") &&
+			!startsWithKeyword(sql[after:], "UNION") &&
+			!startsWithKeyword(sql[after:], "ON") &&
+			!startsWithKeyword(sql[after:], "LEFT") &&
+			!startsWithKeyword(sql[after:], "RIGHT") &&
+			!startsWithKeyword(sql[after:], "INNER") &&
+			!startsWithKeyword(sql[after:], "CROSS") &&
+			!startsWithKeyword(sql[after:], "JOIN") &&
+			!startsWithKeyword(sql[after:], "EXCEPT") &&
+			!startsWithKeyword(sql[after:], "INTERSECT") {
 			aliasStart := after
 			for aliasEnd < len(sql) && isAlphaNumeric(sql[aliasEnd]) {
 				aliasEnd++

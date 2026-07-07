@@ -2,6 +2,7 @@ package compat
 
 import (
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -101,7 +102,7 @@ func TestRewriteGenerateSeriesBareAliases(t *testing.T) {
 	if !strings.Contains(got, "AS i") || !strings.Contains(got, "AS j") {
 		t.Fatalf("Rewrite() missing aliases: %q", got)
 	}
-	if !strings.Contains(got, "_gs_cte(i)") || !strings.Contains(got, "_gs_cte(j)") {
+	if !regexp.MustCompile(`_gs_cte_\d+\(i\)`).MatchString(got) || !regexp.MustCompile(`_gs_cte_\d+\(j\)`).MatchString(got) {
 		t.Fatalf("Rewrite() missing bare-alias column names: %q", got)
 	}
 }

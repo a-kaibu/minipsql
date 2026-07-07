@@ -576,9 +576,11 @@ func rewriteGenerateSeries(sql string) string {
 			cmpOp = ">="
 		}
 
+		cteID := idxCounter.Add(1)
+		cteName := fmt.Sprintf("_gs_cte_%d", cteID)
 		cte := fmt.Sprintf(
-			"(WITH RECURSIVE _gs_cte(%s) AS (SELECT %s UNION ALL SELECT %s + (%s) FROM _gs_cte WHERE %s + (%s) %s %s) SELECT %s FROM _gs_cte) AS %s",
-			colName, start, colName, step, colName, step, cmpOp, stop, colName, alias,
+			"(WITH RECURSIVE %s(%s) AS (SELECT %s UNION ALL SELECT %s + (%s) FROM %s WHERE %s + (%s) %s %s) SELECT %s FROM %s) AS %s",
+			cteName, colName, start, colName, step, cteName, colName, step, cmpOp, stop, colName, cteName, alias,
 		)
 
 		var afterPart string

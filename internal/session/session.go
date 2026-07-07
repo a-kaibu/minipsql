@@ -611,6 +611,20 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 		return &backend.CommandTag{Tag: "DROP EXTENSION"}, true
 	case strings.HasPrefix(lower, "drop owned by ") || strings.HasPrefix(lower, "drop owned by;"):
 		return &backend.CommandTag{Tag: "DROP OWNED"}, true
+
+	// Replication features — not supported by SQLite backend, silently no-op
+	case strings.HasPrefix(lower, "create publication ") || lower == "create publication":
+		return &backend.CommandTag{Tag: "CREATE PUBLICATION"}, true
+	case strings.HasPrefix(lower, "alter publication "):
+		return &backend.CommandTag{Tag: "ALTER PUBLICATION"}, true
+	case strings.HasPrefix(lower, "drop publication ") || lower == "drop publication":
+		return &backend.CommandTag{Tag: "DROP PUBLICATION"}, true
+	case strings.HasPrefix(lower, "create subscription ") || lower == "create subscription":
+		return &backend.CommandTag{Tag: "CREATE SUBSCRIPTION"}, true
+	case strings.HasPrefix(lower, "alter subscription "):
+		return &backend.CommandTag{Tag: "ALTER SUBSCRIPTION"}, true
+	case strings.HasPrefix(lower, "drop subscription ") || lower == "drop subscription":
+		return &backend.CommandTag{Tag: "DROP SUBSCRIPTION"}, true
 	}
 
 	// ALTER TABLE with unsupported subcommands → no-op

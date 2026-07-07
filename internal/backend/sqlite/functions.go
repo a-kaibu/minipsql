@@ -410,6 +410,87 @@ func init() {
 	sqlite.MustRegisterDeterministicScalarFunction("jsonb_object_agg", 2, func(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
 		return nil, nil
 	})
+	// float4send / float8send — return binary representation (stub: returns NULL)
+	sqlite.MustRegisterDeterministicScalarFunction("float4send", 1, func(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
+		return nil, nil
+	})
+	sqlite.MustRegisterDeterministicScalarFunction("float8send", 1, func(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
+		return nil, nil
+	})
+	// erf / erfc — error function
+	sqlite.MustRegisterDeterministicScalarFunction("erf", 1, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+		if args[0] == nil { return nil, nil }
+		return math.Erf(valueFloat64(args[0])), nil
+	})
+	sqlite.MustRegisterDeterministicScalarFunction("erfc", 1, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+		if args[0] == nil { return nil, nil }
+		return math.Erfc(valueFloat64(args[0])), nil
+	})
+	// gamma / lgamma — gamma function
+	sqlite.MustRegisterDeterministicScalarFunction("gamma", 1, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+		if args[0] == nil { return nil, nil }
+		return math.Gamma(valueFloat64(args[0])), nil
+	})
+	sqlite.MustRegisterDeterministicScalarFunction("lgamma", 1, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+		if args[0] == nil { return nil, nil }
+		v, _ := math.Lgamma(valueFloat64(args[0]))
+		return v, nil
+	})
+	// Degree-based trig functions
+	sqlite.MustRegisterDeterministicScalarFunction("sind", 1, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+		if args[0] == nil { return nil, nil }
+		return math.Sin(valueFloat64(args[0]) * math.Pi / 180.0), nil
+	})
+	sqlite.MustRegisterDeterministicScalarFunction("cosd", 1, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+		if args[0] == nil { return nil, nil }
+		return math.Cos(valueFloat64(args[0]) * math.Pi / 180.0), nil
+	})
+	sqlite.MustRegisterDeterministicScalarFunction("tand", 1, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+		if args[0] == nil { return nil, nil }
+		return math.Tan(valueFloat64(args[0]) * math.Pi / 180.0), nil
+	})
+	sqlite.MustRegisterDeterministicScalarFunction("cotd", 1, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+		if args[0] == nil { return nil, nil }
+		return 1.0 / math.Tan(valueFloat64(args[0]) * math.Pi / 180.0), nil
+	})
+	sqlite.MustRegisterDeterministicScalarFunction("asind", 1, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+		if args[0] == nil { return nil, nil }
+		return math.Asin(valueFloat64(args[0])) * 180.0 / math.Pi, nil
+	})
+	sqlite.MustRegisterDeterministicScalarFunction("acosd", 1, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+		if args[0] == nil { return nil, nil }
+		return math.Acos(valueFloat64(args[0])) * 180.0 / math.Pi, nil
+	})
+	sqlite.MustRegisterDeterministicScalarFunction("atand", 1, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+		if args[0] == nil { return nil, nil }
+		return math.Atan(valueFloat64(args[0])) * 180.0 / math.Pi, nil
+	})
+	sqlite.MustRegisterDeterministicScalarFunction("atan2d", 2, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+		if args[0] == nil || args[1] == nil { return nil, nil }
+		return math.Atan2(valueFloat64(args[0]), valueFloat64(args[1])) * 180.0 / math.Pi, nil
+	})
+	// cbrt — cube root
+	sqlite.MustRegisterDeterministicScalarFunction("cbrt", 1, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+		if args[0] == nil { return nil, nil }
+		return math.Cbrt(valueFloat64(args[0])), nil
+	})
+	// pg_read_file stub — returns NULL
+	sqlite.MustRegisterDeterministicScalarFunction("pg_read_file", -1, func(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
+		return nil, nil
+	})
+	sqlite.MustRegisterDeterministicScalarFunction("pg_read_binary_file", -1, func(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
+		return nil, nil
+	})
+	// pg_log_backend_memory_contexts stub
+	sqlite.MustRegisterDeterministicScalarFunction("pg_log_backend_memory_contexts", 1, func(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
+		return nil, nil
+	})
+	// fipshash stub
+	sqlite.MustRegisterDeterministicScalarFunction("fipshash", 1, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+		if args[0] == nil { return nil, nil }
+		h := sha256.Sum256([]byte(valueString(args[0])))
+		return hex.EncodeToString(h[:]), nil
+	})
 }
 
 func asciiFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
@@ -4880,6 +4961,19 @@ func valueInt64(v driver.Value) int64 {
 	case string:
 		n, _ := strconv.ParseInt(x, 10, 64)
 		return n
+	}
+	return 0
+}
+
+func valueFloat64(v driver.Value) float64 {
+	switch x := v.(type) {
+	case float64:
+		return x
+	case int64:
+		return float64(x)
+	case string:
+		f, _ := strconv.ParseFloat(x, 64)
+		return f
 	}
 	return 0
 }

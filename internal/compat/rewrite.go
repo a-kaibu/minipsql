@@ -237,6 +237,7 @@ func Rewrite(sql string) string {
 		mapped := mapPGType(tName)
 		return "CAST(" + sub[2] + " AS " + mapped + ")"
 	})
+	out = rewritePGNumericOps(out)
 	out = rewriteAnonymousIndex(out)
 	out = createIndexUsingRE.ReplaceAllString(out, "$1 $2")
 	out = ilikeRE.ReplaceAllString(out, "LIKE")
@@ -244,6 +245,7 @@ func Rewrite(sql string) string {
 	out = rewriteSimilarTo(out)
 	out = rewriteNullsOrder(out)
 	out = rewriteGenerateSeries(out)
+	out = rewriteSubqueryColumnAlias(out)
 	out = rewritePosition(out)
 	out = rewriteOverlay(out)
 	out = rewriteSubstring(out)
@@ -2649,6 +2651,91 @@ func rewriteGeneratedColumns(sql string) string {
 	return out
 }
 
+// rewriteSubqueryColumnAlias strips column aliases from subquery references:
+//   (subquery) AS alias(col1, col2) → (subquery) AS alias
+// SQLite does not support column name lists after subquery aliases.
+func rewriteSubqueryColumnAlias(sql string) string {
+	// Look for ") AS identifier(" pattern
+	lower := strings.ToLower(sql)
+	if !strings.Contains(lower, ") as ") && !strings.Contains(lower, ") as\t") {
+		return sql
+	}
+	var result strings.Builder
+	i := 0
+	n := len(sql)
+	inSingle := false
+	inDouble := false
+	for i < n {
+		if inSingle {
+			result.WriteByte(sql[i])
+			if sql[i] == '\'' {
+				if i+1 < n && sql[i+1] == '\'' { result.WriteByte('\''); i += 2; continue }
+				inSingle = false
+			}
+			i++; continue
+		}
+		if inDouble {
+			result.WriteByte(sql[i])
+			if sql[i] == '"' {
+				if i+1 < n && sql[i+1] == '"' { result.WriteByte('"'); i += 2; continue }
+				inDouble = false
+			}
+			i++; continue
+		}
+		if sql[i] == '\'' { inSingle = true; result.WriteByte(sql[i]); i++; continue }
+		if sql[i] == '"' { inDouble = true; result.WriteByte(sql[i]); i++; continue }
+		// Look for: ) <whitespace> AS <whitespace> identifier (
+		if sql[i] == ')' {
+			result.WriteByte(sql[i])
+			i++
+			// skip whitespace
+			wsStart := i
+			for i < n && (sql[i] == ' ' || sql[i] == '\t' || sql[i] == '\n' || sql[i] == '\r') { i++ }
+			// check for AS keyword
+			if i+2 <= n && strings.EqualFold(sql[i:i+2], "as") && (i+2 >= n || !isIdentByte(sql[i+2])) {
+				asEnd := i + 2
+				// skip whitespace after AS
+				k := asEnd
+				for k < n && (sql[k] == ' ' || sql[k] == '\t' || sql[k] == '\n' || sql[k] == '\r') { k++ }
+				// read identifier
+				aliasStart := k
+				for k < n && (isIdentByte(sql[k]) || sql[k] == '"') { k++ }
+				if k > aliasStart {
+					aliasName := sql[aliasStart:k]
+					// skip whitespace
+					j := k
+					for j < n && (sql[j] == ' ' || sql[j] == '\t') { j++ }
+					// check for opening paren with col names
+					if j < n && sql[j] == '(' {
+						// find closing paren — only if contents are identifiers/commas/spaces (no nested parens, no keywords)
+						closeP := j + 1
+						valid := true
+						for closeP < n && sql[closeP] != ')' {
+							if sql[closeP] == '(' { valid = false; break }
+							if sql[closeP] == '\'' || sql[closeP] == '"' { valid = false; break }
+							closeP++
+						}
+						if valid && closeP < n && sql[closeP] == ')' {
+							// It's a column alias list — strip it
+							result.WriteString(sql[wsStart:i])   // whitespace before AS
+							result.WriteString("AS ")
+							result.WriteString(aliasName)
+							i = closeP + 1
+							continue
+						}
+					}
+				}
+			}
+			// Not a subquery column alias — restore position
+			result.WriteString(sql[wsStart:i])
+			continue
+		}
+		result.WriteByte(sql[i])
+		i++
+	}
+	return result.String()
+}
+
 // rewriteDropCascade strips CASCADE/RESTRICT from DROP statements that SQLite doesn't support.
 func rewriteDropCascade(sql string) string {
 	lower := strings.ToLower(sql)
@@ -3032,6 +3119,194 @@ func rewriteDropMultiTable(sql string) string {
 		return sql
 	}
 	return strings.Join(stmts, "; ")
+}
+
+// rewritePGNumericOps rewrites PostgreSQL-specific numeric operators:
+//   @expr    → ABS(expr)
+//   |/ expr  → SQRT(expr)
+//   ||/ expr → POWER(expr, 1.0/3.0)  [cubic root]
+//   a ^ b    → POWER(a, b)           [exponentiation — PG uses ^ for power, not bitXOR]
+func rewritePGNumericOps(sql string) string {
+	if !strings.ContainsAny(sql, "@|^") {
+		return sql
+	}
+	var b strings.Builder
+	n := len(sql)
+	inSingle := false
+	inDouble := false
+	i := 0
+	for i < n {
+		if inSingle {
+			b.WriteByte(sql[i])
+			if sql[i] == '\'' {
+				if i+1 < n && sql[i+1] == '\'' {
+					b.WriteByte('\''); i += 2; continue
+				}
+				inSingle = false
+			}
+			i++; continue
+		}
+		if inDouble {
+			b.WriteByte(sql[i])
+			if sql[i] == '"' {
+				if i+1 < n && sql[i+1] == '"' {
+					b.WriteByte('"'); i += 2; continue
+				}
+				inDouble = false
+			}
+			i++; continue
+		}
+		if sql[i] == '\'' { inSingle = true; b.WriteByte(sql[i]); i++; continue }
+		if sql[i] == '"' { inDouble = true; b.WriteByte(sql[i]); i++; continue }
+
+		// ||/ cubic root (must check before |/)
+		if i+3 <= n && sql[i:i+3] == "||/" {
+			// check this is an operator context (preceded by space, (, comma, operator, or start)
+			if isOpContext(sql, i) {
+				j := i + 3
+				for j < n && (sql[j] == ' ' || sql[j] == '\t') { j++ }
+				expr, end := extractOperand(sql, j)
+				if expr != "" {
+					b.WriteString("POWER(" + expr + ", 1.0/3.0)")
+					i = end; continue
+				}
+			}
+		}
+		// |/ square root
+		if i+2 <= n && sql[i:i+2] == "|/" && (i+2 >= n || sql[i+2] != '/') {
+			if isOpContext(sql, i) {
+				j := i + 2
+				for j < n && (sql[j] == ' ' || sql[j] == '\t') { j++ }
+				expr, end := extractOperand(sql, j)
+				if expr != "" {
+					b.WriteString("SQRT(" + expr + ")")
+					i = end; continue
+				}
+			}
+		}
+		// @ absolute value (unary prefix) — avoid matching @... in identifiers
+		if sql[i] == '@' && (i == 0 || isOpContext(sql, i)) && i+1 < n && sql[i+1] != '>' && sql[i+1] != '@' {
+			// Check not part of an identifier (@ is not valid in SQL identifiers)
+			j := i + 1
+			for j < n && (sql[j] == ' ' || sql[j] == '\t') { j++ }
+			expr, end := extractOperand(sql, j)
+			if expr != "" {
+				b.WriteString("ABS(" + expr + ")")
+				i = end; continue
+			}
+		}
+		// ^ exponentiation (binary operator: left ^ right → POWER(left, right))
+		// PG uses ^ for power, SQLite uses ^ for bitXOR — always convert.
+		if sql[i] == '^' {
+			// Ensure this is not inside a string (handled by inSingle/inDouble above)
+			// Extract right operand
+			j := i + 1
+			for j < n && (sql[j] == ' ' || sql[j] == '\t') { j++ }
+			rExpr, rEnd := extractOperand(sql, j)
+			if rExpr != "" {
+				// Extract left operand (scan backwards in b)
+				bStr := b.String()
+				lExpr, lStart := extractOperandBackward(bStr)
+				if lExpr != "" {
+					newB := bStr[:lStart]
+					b.Reset()
+					b.WriteString(newB)
+					b.WriteString("POWER(" + lExpr + ", " + rExpr + ")")
+					i = rEnd; continue
+				}
+			}
+		}
+		b.WriteByte(sql[i])
+		i++
+	}
+	return b.String()
+}
+
+// extractOperandBackward extracts the last operand from s, scanning backwards.
+// Returns the operand string and its start index in s.
+func extractOperandBackward(s string) (string, int) {
+	n := len(s)
+	if n == 0 { return "", 0 }
+	i := n - 1
+	// Skip trailing whitespace
+	for i >= 0 && (s[i] == ' ' || s[i] == '\t') { i-- }
+	if i < 0 { return "", 0 }
+	end := i + 1
+	// String literal
+	if s[i] == '\'' {
+		i--
+		for i >= 0 {
+			if s[i] == '\'' {
+				if i > 0 && s[i-1] == '\'' { i -= 2; continue }
+				break
+			}
+			i--
+		}
+		if i < 0 { return "", 0 }
+		return s[i:end], i
+	}
+	// Closing paren — find matching open
+	if s[i] == ')' {
+		depth := 1; i--
+		for i >= 0 && depth > 0 {
+			if s[i] == ')' { depth++ } else if s[i] == '(' { depth-- }
+			i--
+		}
+		i++
+		// skip preceding function name
+		for i > 0 && isIdentByte(s[i-1]) { i-- }
+		return s[i:end], i
+	}
+	// Identifier, number, or qualified name (a.b.c)
+	for i > 0 && (isIdentByte(s[i-1]) || s[i-1] == '.') { i-- }
+	if i == end { return "", 0 }
+	return s[i:end], i
+}
+
+// isOpContext returns true if position i is an operator context
+// (preceded by whitespace, open paren, comma, or start of string).
+func isOpContext(sql string, i int) bool {
+	if i == 0 { return true }
+	prev := sql[i-1]
+	return prev == ' ' || prev == '\t' || prev == '\n' || prev == '(' || prev == ',' || prev == '=' || prev == '>' || prev == '<'
+}
+
+// extractOperand extracts a single SQL operand starting at pos.
+// Returns the operand string and the end position.
+func extractOperand(sql string, pos int) (string, int) {
+	n := len(sql)
+	if pos >= n { return "", pos }
+	// Function call or parenthesized expr
+	if sql[pos] == '(' {
+		end := findMatchingParen(sql, pos)
+		if end < 0 { return "", pos }
+		// check for .field after paren (qualified name)
+		return sql[pos : end+1], end + 1
+	}
+	// String literal
+	if sql[pos] == '\'' {
+		j := pos + 1
+		for j < n {
+			if sql[j] == '\'' {
+				if j+1 < n && sql[j+1] == '\'' { j += 2; continue }
+				j++; break
+			}
+			j++
+		}
+		return sql[pos:j], j
+	}
+	// Identifier or number (possibly qualified: a.b, a.b.c, or function call)
+	j := pos
+	for j < n && (isIdentByte(sql[j]) || sql[j] == '.' || sql[j] == '-' || sql[j] == '+') {
+		j++
+	}
+	// Function call
+	if j < n && sql[j] == '(' {
+		end := findMatchingParen(sql, j)
+		if end >= 0 { return sql[pos : end+1], end + 1 }
+	}
+	if j == pos { return "", pos }
+	return sql[pos:j], j
 }
 
 // rewriteExtract rewrites EXTRACT(field FROM expr) to date_part('field', expr).

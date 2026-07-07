@@ -166,46 +166,60 @@ func checkUnsupportedDDL(sql string) error {
 	}{
 		{"create operator", "CREATE OPERATOR is not supported"},
 		{"alter operator", "ALTER OPERATOR is not supported"},
-		{"drop operator", "DROP OPERATOR is not supported"},
 		{"create function", "CREATE FUNCTION is not supported"},
 		{"create or replace function", "CREATE FUNCTION is not supported"},
-		{"drop function", "DROP FUNCTION is not supported"},
 		{"alter function", "ALTER FUNCTION is not supported"},
 		{"create procedure", "CREATE PROCEDURE is not supported"},
 		{"create or replace procedure", "CREATE PROCEDURE is not supported"},
-		{"drop procedure", "DROP PROCEDURE is not supported"},
 		{"create aggregate", "CREATE AGGREGATE is not supported"},
-		{"drop aggregate", "DROP AGGREGATE is not supported"},
 		{"create type", "CREATE TYPE is not supported"},
 		{"alter type", "ALTER TYPE is not supported"},
-		{"drop type", "DROP TYPE is not supported"},
 		{"create extension", "CREATE EXTENSION is not supported"},
-		{"drop extension", "DROP EXTENSION is not supported"},
 		{"create rule", "CREATE RULE is not supported"},
-		{"drop rule", "DROP RULE is not supported"},
 		{"create trigger", "CREATE TRIGGER is not supported"},
-		{"drop trigger", "DROP TRIGGER is not supported"},
 		{"create foreign", "CREATE FOREIGN is not supported"},
 		{"alter foreign", "ALTER FOREIGN is not supported"},
-		{"drop foreign", "DROP FOREIGN is not supported"},
 		{"create domain", "CREATE DOMAIN is not supported"},
 		{"alter domain", "ALTER DOMAIN is not supported"},
-		{"drop domain", "DROP DOMAIN is not supported"},
 		{"create conversion", "CREATE CONVERSION is not supported"},
-		{"drop conversion", "DROP CONVERSION is not supported"},
 		{"create statistics", "CREATE STATISTICS is not supported"},
-		{"drop statistics", "DROP STATISTICS is not supported"},
 		{"create language", "CREATE LANGUAGE is not supported"},
-		{"drop language", "DROP LANGUAGE is not supported"},
 		{"create cast", "CREATE CAST is not supported"},
-		{"drop cast", "DROP CAST is not supported"},
 		{"create collation", "CREATE COLLATION is not supported"},
-		{"drop collation", "DROP COLLATION is not supported"},
 		{"create access method", "CREATE ACCESS METHOD is not supported"},
 		{"create event trigger", "CREATE EVENT TRIGGER is not supported"},
 		{"create policy", "CREATE POLICY is not supported"},
 		{"alter policy", "ALTER POLICY is not supported"},
-		{"drop policy", "DROP POLICY is not supported"},
+	}
+
+	// DROP commands for unsupported object types always succeed as no-op
+	// (these objects can never be created, so DROP is always a no-op)
+	dropNoops := []struct {
+		prefix string
+		tag    string
+	}{
+		{"drop operator", "DROP OPERATOR"},
+		{"drop function", "DROP FUNCTION"},
+		{"drop procedure", "DROP PROCEDURE"},
+		{"drop aggregate", "DROP AGGREGATE"},
+		{"drop type", "DROP TYPE"},
+		{"drop extension", "DROP EXTENSION"},
+		{"drop rule", "DROP RULE"},
+		{"drop trigger", "DROP TRIGGER"},
+		{"drop foreign", "DROP FOREIGN"},
+		{"drop domain", "DROP DOMAIN"},
+		{"drop conversion", "DROP CONVERSION"},
+		{"drop statistics", "DROP STATISTICS"},
+		{"drop language", "DROP LANGUAGE"},
+		{"drop cast", "DROP CAST"},
+		{"drop collation", "DROP COLLATION"},
+		{"drop policy", "DROP POLICY"},
+	}
+
+	for _, d := range dropNoops {
+		if strings.HasPrefix(lower, d.prefix) {
+			return nil
+		}
 	}
 
 	for _, u := range unsupported {

@@ -31,28 +31,57 @@ func rewriteRegexOp(sql string, op string, negate bool, icase bool) string {
 		for rhsStart < len(sql) && sql[rhsStart] == ' ' {
 			rhsStart++
 		}
-		if rhsStart >= len(sql) || sql[rhsStart] != '\'' {
+		if rhsStart >= len(sql) {
 			break
 		}
-		rhsEnd := rhsStart + 1
-		for rhsEnd < len(sql) {
-			if sql[rhsEnd] == '\'' {
-				if rhsEnd+1 < len(sql) && sql[rhsEnd+1] == '\'' {
-					rhsEnd += 2
-					continue
+
+		// Extract RHS: either a string literal, identifier, or function call like CAST(...)
+		var rhsEnd int
+		var pattern string
+		if sql[rhsStart] == '\'' {
+			// String literal — extract pattern
+			rhsEnd = rhsStart + 1
+			for rhsEnd < len(sql) {
+				if sql[rhsEnd] == '\'' {
+					if rhsEnd+1 < len(sql) && sql[rhsEnd+1] == '\'' {
+						rhsEnd += 2
+						continue
+					}
+					break
 				}
-				break
-			}
-			if sql[rhsEnd] == '\\' {
+				if sql[rhsEnd] == '\\' {
+					rhsEnd++
+				}
 				rhsEnd++
 			}
+			if rhsEnd >= len(sql) {
+				break
+			}
 			rhsEnd++
-		}
-		if rhsEnd >= len(sql) {
+			pattern = sql[rhsStart+1 : rhsEnd-1]
+		} else if isIdentByte(sql[rhsStart]) || sql[rhsStart] == '(' {
+			// Identifier or parenthesized expression: use the whole RHS as expression
+			rhsEnd = extractExprEnd(sql, rhsStart)
+			if rhsEnd <= rhsStart {
+				break
+			}
+			// RHS is an expression; use it directly in the function call
+			rhsExpr := sql[rhsStart:rhsEnd]
+			flags := "''"
+			if icase {
+				flags = "'i'"
+			}
+			var replacement string
+			if negate {
+				replacement = fmt.Sprintf("NOT minipsql_regexp_match(%s, %s, %s)", rhsExpr, lhs, flags)
+			} else {
+				replacement = fmt.Sprintf("minipsql_regexp_match(%s, %s, %s)", rhsExpr, lhs, flags)
+			}
+			sql = sql[:lhsStart] + replacement + sql[rhsEnd:]
+			continue
+		} else {
 			break
 		}
-		rhsEnd++
-		pattern := sql[rhsStart+1 : rhsEnd-1]
 
 		flags := "''"
 		if icase {
@@ -68,6 +97,54 @@ func rewriteRegexOp(sql string, op string, negate bool, icase bool) string {
 		sql = sql[:lhsStart] + replacement + sql[rhsEnd:]
 	}
 	return sql
+}
+
+// extractExprEnd finds the end of an expression starting at pos.
+func extractExprEnd(sql string, pos int) int {
+	if pos >= len(sql) {
+		return pos
+	}
+	if sql[pos] == '(' {
+		depth := 1
+		i := pos + 1
+		inSingle := false
+		for i < len(sql) {
+			c := sql[i]
+			if inSingle {
+				if c == '\'' && i+1 < len(sql) && sql[i+1] == '\'' {
+					i += 2
+					continue
+				}
+				if c == '\'' {
+					inSingle = false
+				}
+				i++
+				continue
+			}
+			if c == '\'' {
+				inSingle = true
+			} else if c == '(' {
+				depth++
+			} else if c == ')' {
+				depth--
+				if depth == 0 {
+					return i + 1
+				}
+			}
+			i++
+		}
+		return i
+	}
+	// Identifier (possibly with schema and function call)
+	i := pos
+	for i < len(sql) && (isIdentByte(sql[i]) || sql[i] == '.') {
+		i++
+	}
+	// Check for function call
+	if i < len(sql) && sql[i] == '(' {
+		return extractExprEnd(sql, i)
+	}
+	return i
 }
 
 func findRegexOp(sql string, op string) int {

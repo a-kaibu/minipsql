@@ -156,8 +156,8 @@ func (h *Handler) handleSimple(ctx context.Context, w io.Writer, br *bufio.Reade
 			writeReady(w, s.TxState)
 			return
 		}
-		if isCopyToStmt(stmt) {
-			// COPY (query) TO stdout — execute the query and discard results.
+		if isCopyStmt(stmt) {
+			// COPY (query) TO/FROM — unrecognized form, treat as no-op COPY 0.
 			writeCommandComplete(w, "COPY 0")
 			writeReady(w, s.TxState)
 			return
@@ -513,15 +513,8 @@ func readFile(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
-// isCopyToStmt detects COPY ... TO ... or COPY (query) TO ... statements that weren't
-// caught by pgcopy.Parse (e.g., query-form COPY).
-func isCopyToStmt(sql string) bool {
+// isCopyStmt detects any COPY statement that wasn't caught by pgcopy.Parse.
+func isCopyStmt(sql string) bool {
 	lower := strings.ToLower(strings.TrimSpace(sql))
-	if !strings.HasPrefix(lower, "copy") {
-		return false
-	}
-	return strings.Contains(lower, " to ") || strings.Contains(lower, "\tto ") ||
-		strings.Contains(lower, "\nto ") || strings.Contains(lower, " to\t") ||
-		strings.Contains(lower, " to\n") || strings.HasSuffix(lower, " to stdout") ||
-		strings.HasSuffix(lower, " to stderr")
+	return strings.HasPrefix(lower, "copy ")
 }

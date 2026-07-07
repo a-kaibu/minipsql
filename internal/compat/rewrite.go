@@ -94,7 +94,7 @@ var idxCounter atomic.Int64
 func Rewrite(sql string) string {
 	out := rewriteTruncate(sql)
 	out = rewriteCreateOrReplaceView(out)
-	out = createMaterializedViewRE.ReplaceAllString(out, "CREATE VIEW IF NOT EXISTS ")
+	out = rewriteCreateMaterializedView(out)
 	out = rewriteCreateView(out)
 	out = rewriteCreateAsExecute(out)
 	out = rewriteUnloggedTable(out)
@@ -263,6 +263,28 @@ func rewriteCreateOrReplaceView(sql string) string {
 		tempClause = "TEMP "
 	}
 	return "DROP VIEW IF EXISTS " + viewName + "; CREATE " + tempClause + "VIEW " + rest
+}
+
+// rewriteCreateMaterializedView rewrites CREATE MATERIALIZED VIEW to CREATE TABLE AS SELECT
+// so that subsequent CREATE INDEX and SELECT operations work on real tables.
+func rewriteCreateMaterializedView(sql string) string {
+	m := createMaterializedViewRE.FindStringIndex(sql)
+	if m == nil {
+		return sql
+	}
+	rest := sql[m[1]:]
+	rest = strings.TrimSpace(rest)
+	// Extract view name
+	nameEnd := 0
+	for nameEnd < len(rest) && rest[nameEnd] != ' ' && rest[nameEnd] != '\t' && rest[nameEnd] != '\n' && rest[nameEnd] != '(' {
+		nameEnd++
+	}
+	viewName := rest[:nameEnd]
+	remainder := strings.TrimSpace(rest[nameEnd:])
+	// Strip WITH (options) before AS
+	withRE := regexp.MustCompile(`(?i)^\s*WITH\s*\([^)]*\)\s*`)
+	remainder = withRE.ReplaceAllString(remainder, "")
+	return "DROP TABLE IF EXISTS " + viewName + "; CREATE TABLE " + viewName + " " + remainder
 }
 
 // rewriteCreateView adds IF NOT EXISTS to CREATE VIEW to avoid duplicate errors.

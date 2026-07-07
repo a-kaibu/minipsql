@@ -527,6 +527,7 @@ func tryAlterTableNoop(lower string) (*backend.CommandTag, bool) {
 		"add constraint",
 		"drop constraint",
 		"validate constraint",
+		"rename constraint",
 		"add exclude",
 	}
 	// Find the part after "alter table <name>"

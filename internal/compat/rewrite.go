@@ -2650,6 +2650,9 @@ func rewriteUnnest(sql string) string {
 			break
 		}
 		inner := sql[j+1 : end]
+		// If inner contains minipsql_array (from ARRAY[] constructor), convert to json_array
+		// so that json_each() receives valid JSON instead of PostgreSQL {a,b} array syntax.
+		inner = strings.ReplaceAll(inner, "minipsql_array(", "json_array(")
 		// Scan for optional WITH ORDINALITY, AS alias[(col)] after the closing paren
 		after := end + 1
 		rawAfter := after // position before skipping whitespace — used as aliasEnd when no alias found

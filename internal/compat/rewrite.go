@@ -83,6 +83,8 @@ var (
 	createIndexRE      = regexp.MustCompile(`(?i)(CREATE\s+(?:UNIQUE\s+)?INDEX\s+)(IF\s+NOT\s+EXISTS\s+|)([A-Za-z0-9_"]+)`)
 	createAsExecuteRE  = regexp.MustCompile(`(?i)^\s*CREATE\s+(?:TEMP(?:ORARY)?\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z0-9_".]+)\s+AS\s+EXECUTE\b`)
 	anyArrayRE         = regexp.MustCompile(`(?i)=\s*ANY\s*\(\s*ARRAY\s*\[([^\]]*)\](?:::[A-Za-z0-9_\[\]]+)?\s*\)`)
+	namedArgRE         = regexp.MustCompile(`(?i)\b[A-Za-z_][A-Za-z0-9_]*\s*=>\s*`)
+	forPortionOfRE     = regexp.MustCompile(`(?i)\s+FOR\s+PORTION\s+OF\s+\S+\s+FROM\s+\S+\s+TO\s+\S+`)
 )
 
 var idxCounter atomic.Int64
@@ -126,6 +128,8 @@ func Rewrite(sql string) string {
 	out = indexWithOptsRE.ReplaceAllString(out, "$1")
 	out = rewriteCreateIndex(out)
 	out = anyArrayRE.ReplaceAllString(out, "IN ($1)")
+	out = namedArgRE.ReplaceAllString(out, "")
+	out = forPortionOfRE.ReplaceAllString(out, "")
 	out = rewriteCollateClause(out)
 	out = rewriteColumnCompression(out)
 	out = rewriteWithOids(out)

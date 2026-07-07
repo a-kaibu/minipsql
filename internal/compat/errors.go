@@ -40,12 +40,34 @@ func Error(err error) PGError {
 		return PGError{Code: "42703", Message: msg, Hint: hint}
 	case strings.Contains(lower, "no such function"):
 		return PGError{Code: "42883", Message: msg, Hint: hint}
-	case strings.Contains(lower, "constraint failed") || strings.Contains(lower, "unique constraint"):
-		return PGError{Code: "23505", Message: msg, Hint: hint}
+	case strings.Contains(lower, "not null constraint failed:"):
+		// SQLite: "NOT NULL constraint failed: table.col" → PG style
+		pgMsg := msg
+		if idx := strings.LastIndex(lower, "not null constraint failed: "); idx >= 0 {
+			tableCol := msg[idx+len("NOT NULL constraint failed: "):]
+			if dotIdx := strings.LastIndex(tableCol, "."); dotIdx >= 0 {
+				tbl := tableCol[:dotIdx]
+				col := tableCol[dotIdx+1:]
+				pgMsg = `null value in column "` + col + `" of relation "` + tbl + `" violates not-null constraint`
+			}
+		}
+		return PGError{Code: "23502", Message: pgMsg, Hint: hint}
 	case strings.Contains(lower, "not null constraint"):
 		return PGError{Code: "23502", Message: msg, Hint: hint}
+	case strings.Contains(lower, "check constraint failed:"):
+		// SQLite: "CHECK constraint failed: constraintname" → PG style
+		pgMsg := msg
+		if idx := strings.LastIndex(lower, "check constraint failed: "); idx >= 0 {
+			cname := msg[idx+len("CHECK constraint failed: "):]
+			pgMsg = `new row for relation "` + cname + `" violates check constraint "` + cname + `"`
+		}
+		return PGError{Code: "23514", Message: pgMsg, Hint: hint}
 	case strings.Contains(lower, "check constraint"):
 		return PGError{Code: "23514", Message: msg, Hint: hint}
+	case strings.Contains(lower, "unique constraint") || strings.Contains(lower, "unique index"):
+		return PGError{Code: "23505", Message: msg, Hint: hint}
+	case strings.Contains(lower, "constraint failed"):
+		return PGError{Code: "23505", Message: msg, Hint: hint}
 	case strings.Contains(lower, "stack depth limit"):
 		return PGError{Code: "54001", Message: "stack depth limit exceeded"}
 	case strings.Contains(lower, "division by zero") || strings.Contains(lower, "divide by zero"):

@@ -179,7 +179,6 @@ func checkUnsupportedDDL(sql string) error {
 		{"create trigger", "CREATE TRIGGER is not supported"},
 		{"create foreign", "CREATE FOREIGN is not supported"},
 		{"alter foreign", "ALTER FOREIGN is not supported"},
-		{"create domain", "CREATE DOMAIN is not supported"},
 		{"alter domain", "ALTER DOMAIN is not supported"},
 		{"create conversion", "CREATE CONVERSION is not supported"},
 		{"create statistics", "CREATE STATISTICS is not supported"},
@@ -393,6 +392,18 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 		return &backend.CommandTag{Tag: "SECURITY LABEL"}, true
 	case strings.HasPrefix(lower, "import foreign schema"):
 		return &backend.CommandTag{Tag: "IMPORT FOREIGN SCHEMA"}, true
+	case strings.HasPrefix(lower, "create domain ") || lower == "create domain":
+		return &backend.CommandTag{Tag: "CREATE DOMAIN"}, true
+	case strings.HasPrefix(lower, "create operator ") || lower == "create operator":
+		return &backend.CommandTag{Tag: "CREATE OPERATOR"}, true
+	case strings.HasPrefix(lower, "create operator class "):
+		return &backend.CommandTag{Tag: "CREATE OPERATOR CLASS"}, true
+	case strings.HasPrefix(lower, "create operator family "):
+		return &backend.CommandTag{Tag: "CREATE OPERATOR FAMILY"}, true
+	case strings.HasPrefix(lower, "alter operator ") || strings.HasPrefix(lower, "alter operator class ") || strings.HasPrefix(lower, "alter operator family "):
+		return &backend.CommandTag{Tag: "ALTER OPERATOR"}, true
+	case strings.HasPrefix(lower, "drop operator class ") || strings.HasPrefix(lower, "drop operator family "):
+		return &backend.CommandTag{Tag: "DROP OPERATOR"}, true
 	}
 
 	// ALTER TABLE with unsupported subcommands → no-op

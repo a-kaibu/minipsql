@@ -51,7 +51,7 @@ func init() {
 	sqlite.MustRegisterDeterministicScalarFunction("md5", 1, md5Func)
 	sqlite.MustRegisterDeterministicScalarFunction("pg_numa_available", 0, pgNumaAvailableFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("pg_input_is_valid", 2, pgInputIsValidFunc)
-	sqlite.MustRegisterDeterministicScalarFunction("pg_relation_size", 1, pgRelationSizeFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_relation_size", -1, pgRelationSizeFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("pclose", 1, pcloseFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("point", 2, pointFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("popen", 1, popenFunc)
@@ -215,6 +215,12 @@ func init() {
 	sqlite.MustRegisterDeterministicScalarFunction("pg_total_relation_size", 1, pgRelationSizeFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("pg_table_size", 1, pgRelationSizeFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("pg_indexes_size", 1, pgRelationSizeFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("current_setting", -1, currentSettingFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("set_config", 3, setConfigFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_size_pretty", 1, pgSizePrettyFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_size_bytes", 1, pgSizeBytesFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("xid8cmp", 2, xid8cmpFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_column_compression", 1, pgColumnCompressionFunc)
 }
 
 func asciiFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
@@ -405,8 +411,8 @@ func pgInputIsValidFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.
 }
 
 func pgRelationSizeFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
-	if len(args) != 1 {
-		return nil, fmt.Errorf("pg_relation_size requires 1 argument")
+	if len(args) < 1 {
+		return nil, fmt.Errorf("pg_relation_size requires at least 1 argument")
 	}
 	if args[0] == nil {
 		return nil, nil
@@ -3987,6 +3993,247 @@ func toInt(v driver.Value) (int, bool) {
 		return int(val), true
 	}
 	return 0, false
+}
+
+// pgSettings stores GUC (Grand Unified Configuration) settings for current_setting/set_config
+var pgSettings = map[string]string{
+	"min_parallel_index_scan_size": "512kB",
+	"min_parallel_table_scan_size": "8MB",
+	"parallel_setup_cost":          "1000",
+	"parallel_tuple_cost":          "0.1",
+	"max_parallel_workers_per_gather": "2",
+	"max_parallel_workers":         "8",
+	"work_mem":                     "4MB",
+	"maintenance_work_mem":         "64MB",
+	"shared_buffers":               "128MB",
+	"effective_cache_size":         "4GB",
+	"default_statistics_target":    "100",
+	"random_page_cost":             "4.0",
+	"seq_page_cost":                "1.0",
+	"cpu_tuple_cost":               "0.01",
+	"cpu_index_tuple_cost":         "0.005",
+	"cpu_operator_cost":            "0.0025",
+	"effective_io_concurrency":     "1",
+	"max_connections":              "100",
+	"server_version":               "17.0",
+	"server_encoding":              "UTF8",
+	"client_encoding":              "UTF8",
+	"lc_collate":                   "en_US.UTF-8",
+	"lc_ctype":                     "en_US.UTF-8",
+	"TimeZone":                     "UTC",
+	"timezone":                     "UTC",
+	"datestyle":                    "ISO, MDY",
+	"intervalstyle":                "postgres",
+	"extra_float_digits":           "1",
+	"default_text_search_config":   "pg_catalog.english",
+	"search_path":                  "\"$user\", public",
+	"transaction_isolation":        "read committed",
+	"transaction_read_only":        "off",
+	"enable_seqscan":               "on",
+	"enable_indexscan":             "on",
+	"enable_bitmapscan":            "on",
+	"enable_hashjoin":              "on",
+	"enable_mergejoin":             "on",
+	"enable_nestloop":              "on",
+	"enable_parallel_hash":         "on",
+	"enable_parallel_append":       "on",
+	"enable_partitionwise_join":    "off",
+	"enable_partitionwise_aggregate": "off",
+	"jit":                          "on",
+	"log_min_messages":             "warning",
+	"log_min_error_statement":      "error",
+	"log_statement":                "none",
+	"synchronous_commit":           "on",
+	"fsync":                        "on",
+	"autovacuum":                   "on",
+	"integer_datetimes":            "on",
+	"standard_conforming_strings":  "on",
+	"escape_string_warning":        "on",
+	"bytea_output":                 "hex",
+	"xmloption":                    "content",
+	"gin_fuzzy_search_limit":       "0",
+	"from_collapse_limit":          "8",
+	"join_collapse_limit":          "8",
+	"geqo":                         "on",
+	"geqo_threshold":               "12",
+}
+
+func currentSettingFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) < 1 || len(args) > 2 {
+		return nil, fmt.Errorf("current_setting requires 1 or 2 arguments")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	key := strings.ToLower(valueString(args[0]))
+	missingOk := false
+	if len(args) == 2 && args[1] != nil {
+		switch v := args[1].(type) {
+		case int64:
+			missingOk = v != 0
+		case string:
+			missingOk = strings.ToLower(v) == "true" || v == "1" || strings.ToLower(v) == "t"
+		}
+	}
+	if val, ok := pgSettings[key]; ok {
+		return val, nil
+	}
+	// try original case key too
+	if val, ok := pgSettings[valueString(args[0])]; ok {
+		return val, nil
+	}
+	if missingOk {
+		return nil, nil
+	}
+	return nil, fmt.Errorf("unrecognized configuration parameter \"%s\"", valueString(args[0]))
+}
+
+func setConfigFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 3 {
+		return nil, fmt.Errorf("set_config requires 3 arguments")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	key := valueString(args[0])
+	var val string
+	if args[1] != nil {
+		val = valueString(args[1])
+	}
+	pgSettings[strings.ToLower(key)] = val
+	pgSettings[key] = val
+	return val, nil
+}
+
+func pgSizePrettyFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("pg_size_pretty requires 1 argument")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	var n int64
+	switch v := args[0].(type) {
+	case int64:
+		n = v
+	case float64:
+		n = int64(v)
+	default:
+		var err error
+		n, err = strconv.ParseInt(valueString(args[0]), 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid input for pg_size_pretty")
+		}
+	}
+	abs := n
+	if abs < 0 {
+		abs = -n
+	}
+	switch {
+	case abs < 1024:
+		return fmt.Sprintf("%d bytes", n), nil
+	case abs < 1024*1024:
+		return fmt.Sprintf("%d kB", n/1024), nil
+	case abs < 1024*1024*1024:
+		return fmt.Sprintf("%d MB", n/(1024*1024)), nil
+	case abs < int64(1024)*1024*1024*1024:
+		return fmt.Sprintf("%d GB", n/(1024*1024*1024)), nil
+	default:
+		return fmt.Sprintf("%d TB", n/(1024*1024*1024*1024)), nil
+	}
+}
+
+func pgSizeBytesFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("pg_size_bytes requires 1 argument")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	s := strings.TrimSpace(valueString(args[0]))
+	// Parse PostgreSQL size notation: "128MB", "1GB", "512kB", etc.
+	s = strings.ToUpper(s)
+	var numStr, unit string
+	for i, c := range s {
+		if c == ' ' || c == '\t' {
+			continue
+		}
+		if (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '+' {
+			numStr += string(c)
+		} else {
+			unit = strings.TrimSpace(s[i:])
+			break
+		}
+	}
+	if numStr == "" {
+		return nil, fmt.Errorf("invalid size: \"%s\"", valueString(args[0]))
+	}
+	n, err := strconv.ParseFloat(numStr, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid size: \"%s\"", valueString(args[0]))
+	}
+	var multiplier float64
+	switch unit {
+	case "", "B", "BYTES", "BYTE":
+		multiplier = 1
+	case "KB", "KILOBYTES", "KIB":
+		multiplier = 1024
+	case "MB", "MEGABYTES", "MIB":
+		multiplier = 1024 * 1024
+	case "GB", "GIGABYTES", "GIB":
+		multiplier = 1024 * 1024 * 1024
+	case "TB", "TERABYTES", "TIB":
+		multiplier = 1024 * 1024 * 1024 * 1024
+	default:
+		return nil, fmt.Errorf("unrecognized size: \"%s\"", valueString(args[0]))
+	}
+	return int64(n * multiplier), nil
+}
+
+func xid8cmpFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 {
+		return nil, fmt.Errorf("xid8cmp requires 2 arguments")
+	}
+	toXid8 := func(v driver.Value) (uint64, error) {
+		if v == nil {
+			return 0, fmt.Errorf("null argument")
+		}
+		switch val := v.(type) {
+		case int64:
+			return uint64(val), nil
+		case float64:
+			return uint64(val), nil
+		case string:
+			n, err := strconv.ParseUint(val, 10, 64)
+			if err != nil {
+				return 0, fmt.Errorf("invalid xid8: %s", val)
+			}
+			return n, nil
+		}
+		return 0, fmt.Errorf("invalid xid8 type")
+	}
+	a, err := toXid8(args[0])
+	if err != nil {
+		return nil, err
+	}
+	b, err := toXid8(args[1])
+	if err != nil {
+		return nil, err
+	}
+	if a < b {
+		return int64(-1), nil
+	} else if a > b {
+		return int64(1), nil
+	}
+	return int64(0), nil
+}
+
+func pgColumnCompressionFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("pg_column_compression requires 1 argument")
+	}
+	// SQLite has no compression; always return NULL
+	return nil, nil
 }
 
 

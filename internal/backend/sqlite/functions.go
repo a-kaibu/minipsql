@@ -29,6 +29,60 @@ import (
 
 var regexCache sync.Map
 
+// Sequence support: global state for CREATE/ALTER/DROP SEQUENCE + nextval/currval/setval/lastval.
+type seqState struct {
+	mu        sync.Mutex
+	value     int64
+	increment int64
+	minValue  int64
+	maxValue  int64
+	cycle     bool
+}
+
+var (
+	seqMu    sync.Mutex
+	seqMap   = map[string]*seqState{}
+	lastSeqName string // for lastval()
+)
+
+// SequenceCreate creates or replaces a sequence (called from session.go).
+func SequenceCreate(name string, start, increment, minVal, maxVal int64, cycle bool) {
+	seqMu.Lock()
+	defer seqMu.Unlock()
+	seqMap[strings.ToLower(name)] = &seqState{
+		value:     start - increment, // nextval will add increment before returning
+		increment: increment,
+		minValue:  minVal,
+		maxValue:  maxVal,
+		cycle:     cycle,
+	}
+}
+
+// SequenceDrop removes a sequence (called from session.go).
+func SequenceDrop(name string) {
+	seqMu.Lock()
+	defer seqMu.Unlock()
+	delete(seqMap, strings.ToLower(name))
+}
+
+// SequenceAlter updates sequence parameters (called from session.go).
+func SequenceAlter(name string, newStart *int64, newIncrement *int64) {
+	seqMu.Lock()
+	defer seqMu.Unlock()
+	s, ok := seqMap[strings.ToLower(name)]
+	if !ok {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if newIncrement != nil {
+		s.increment = *newIncrement
+	}
+	if newStart != nil {
+		s.value = *newStart - s.increment
+	}
+}
+
 func init() {
 	sqlite.MustRegisterDeterministicScalarFunction("ascii", 1, asciiFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("btrim", -1, btrimFunc)
@@ -278,6 +332,12 @@ func init() {
 	sqlite.MustRegisterDeterministicScalarFunction("pg_try_advisory_lock_shared", -1, pgAdvisoryUnlockFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("pg_try_advisory_xact_lock", -1, pgAdvisoryUnlockFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("pg_try_advisory_xact_lock_shared", -1, pgAdvisoryUnlockFunc)
+	// Sequence functions (non-deterministic: state changes on each call)
+	sqlite.MustRegisterScalarFunction("nextval", 1, nextvalFunc)
+	sqlite.MustRegisterScalarFunction("currval", 1, currvalFunc)
+	sqlite.MustRegisterScalarFunction("setval", -1, setvalFunc)
+	sqlite.MustRegisterScalarFunction("lastval", 0, lastvalFunc)
+	sqlite.MustRegisterScalarFunction("pg_sequence_last_value", 1, currvalFunc)
 }
 
 func asciiFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
@@ -4548,6 +4608,126 @@ func pgAdvisoryUnlockFunc(_ *sqlite.FunctionContext, args []driver.Value) (drive
 // pgAdvisoryUnlockAllFunc releases all advisory locks (no-op).
 func pgAdvisoryUnlockAllFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
 	return nil, nil
+}
+
+func seqName(args []driver.Value) (string, error) {
+	if len(args) < 1 || args[0] == nil {
+		return "", fmt.Errorf("sequence name required")
+	}
+	name := strings.ToLower(valueString(args[0]))
+	// strip schema prefix e.g. "public.seq"
+	if idx := strings.LastIndex(name, "."); idx >= 0 {
+		name = name[idx+1:]
+	}
+	return name, nil
+}
+
+func nextvalFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	name, err := seqName(args)
+	if err != nil {
+		return nil, err
+	}
+	seqMu.Lock()
+	s, ok := seqMap[name]
+	seqMu.Unlock()
+	if !ok {
+		return nil, &compat.PGError{Code: "42P01", Message: "relation \"" + name + "\" does not exist"}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.value += s.increment
+	if s.increment > 0 && s.value > s.maxValue {
+		if s.cycle {
+			s.value = s.minValue
+		} else {
+			return nil, &compat.PGError{Code: "2200H", Message: "nextval: reached maximum value of sequence \"" + name + "\""}
+		}
+	} else if s.increment < 0 && s.value < s.minValue {
+		if s.cycle {
+			s.value = s.maxValue
+		} else {
+			return nil, &compat.PGError{Code: "2200H", Message: "nextval: reached minimum value of sequence \"" + name + "\""}
+		}
+	}
+	seqMu.Lock()
+	lastSeqName = name
+	seqMu.Unlock()
+	return s.value, nil
+}
+
+func currvalFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	name, err := seqName(args)
+	if err != nil {
+		return nil, err
+	}
+	seqMu.Lock()
+	s, ok := seqMap[name]
+	seqMu.Unlock()
+	if !ok {
+		return nil, &compat.PGError{Code: "42P01", Message: "relation \"" + name + "\" does not exist"}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.value, nil
+}
+
+func setvalFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) < 2 {
+		return nil, fmt.Errorf("setval requires at least 2 arguments")
+	}
+	name, err := seqName(args)
+	if err != nil {
+		return nil, err
+	}
+	seqMu.Lock()
+	s, ok := seqMap[name]
+	seqMu.Unlock()
+	if !ok {
+		// create on demand
+		SequenceCreate(name, 1, 1, 1, 9223372036854775807, false)
+		seqMu.Lock()
+		s = seqMap[name]
+		seqMu.Unlock()
+	}
+	val := valueInt64(args[1])
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.value = val
+	seqMu.Lock()
+	lastSeqName = name
+	seqMu.Unlock()
+	return val, nil
+}
+
+func lastvalFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	seqMu.Lock()
+	name := lastSeqName
+	seqMu.Unlock()
+	if name == "" {
+		return nil, &compat.PGError{Code: "55000", Message: "lastval is not yet defined in this session"}
+	}
+	seqMu.Lock()
+	s, ok := seqMap[name]
+	seqMu.Unlock()
+	if !ok {
+		return nil, &compat.PGError{Code: "42P01", Message: "relation \"" + name + "\" does not exist"}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.value, nil
+}
+
+func valueInt64(v driver.Value) int64 {
+	switch x := v.(type) {
+	case int64:
+		return x
+	case float64:
+		return int64(x)
+	case string:
+		n, _ := strconv.ParseInt(x, 10, 64)
+		return n
+	}
+	return 0
 }
 
 

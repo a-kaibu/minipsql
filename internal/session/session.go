@@ -5,12 +5,14 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/yashikota/minipsql/internal/backend"
 	"github.com/yashikota/minipsql/internal/compat"
 	pgcopy "github.com/yashikota/minipsql/internal/copy"
+	sqlitebackend "github.com/yashikota/minipsql/internal/backend/sqlite"
 )
 
 type TxState byte
@@ -442,15 +444,17 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 		return &backend.CommandTag{Tag: "SET"}, true
 	case lower == "reset session authorization" || strings.HasPrefix(lower, "reset session authorization"):
 		return &backend.CommandTag{Tag: "RESET"}, true
-	case strings.HasPrefix(lower, "alter sequence "):
+	case strings.HasPrefix(lower, "alter sequence ") || lower == "alter sequence":
+		handleAlterSequence(sql)
 		return &backend.CommandTag{Tag: "ALTER SEQUENCE"}, true
-	case strings.HasPrefix(lower, "create sequence "):
-		return &backend.CommandTag{Tag: "CREATE SEQUENCE"}, true
-	case strings.HasPrefix(lower, "create temp sequence "):
-		return &backend.CommandTag{Tag: "CREATE SEQUENCE"}, true
-	case strings.HasPrefix(lower, "create temporary sequence "):
+	case strings.HasPrefix(lower, "create sequence "),
+		strings.HasPrefix(lower, "create temp sequence "),
+		strings.HasPrefix(lower, "create temporary sequence "),
+		strings.HasPrefix(lower, "create sequence if not exists "):
+		handleCreateSequence(sql)
 		return &backend.CommandTag{Tag: "CREATE SEQUENCE"}, true
 	case strings.HasPrefix(lower, "drop sequence "):
+		handleDropSequence(sql)
 		return &backend.CommandTag{Tag: "DROP SEQUENCE"}, true
 	case strings.HasPrefix(lower, "refresh materialized view"):
 		return &backend.CommandTag{Tag: "REFRESH MATERIALIZED VIEW"}, true
@@ -1475,4 +1479,88 @@ func hashPassword(username, password, encryption string, scramIterations int) (s
 	return fmt.Sprintf("SCRAM-SHA-256$%d:%s$%s:%s", scramIterations, salt, stored, server), nil
 }
 
+var (
+	seqNameRE      = regexp.MustCompile(`(?i)(?:CREATE\s+(?:TEMP(?:ORARY)?\s+)?SEQUENCE\s+(?:IF\s+NOT\s+EXISTS\s+)?)([A-Za-z0-9_".]+)`)
+	seqDropNameRE  = regexp.MustCompile(`(?i)DROP\s+SEQUENCE\s+(?:IF\s+EXISTS\s+)?([A-Za-z0-9_".,\s]+?)(?:\s+(?:CASCADE|RESTRICT))?\s*;?\s*$`)
+	seqAlterNameRE = regexp.MustCompile(`(?i)ALTER\s+SEQUENCE\s+(?:IF\s+EXISTS\s+)?([A-Za-z0-9_".]+)`)
+	seqIncrRE      = regexp.MustCompile(`(?i)\bINCREMENT\s+(?:BY\s+)?(-?\d+)`)
+	seqStartRE     = regexp.MustCompile(`(?i)\bSTART\s+(?:WITH\s+)?(-?\d+)`)
+	seqMinRE       = regexp.MustCompile(`(?i)\bMINVALUE\s+(-?\d+)`)
+	seqMaxRE       = regexp.MustCompile(`(?i)\bMAXVALUE\s+(-?\d+)`)
+	seqRestartRE   = regexp.MustCompile(`(?i)\bRESTART\s+(?:WITH\s+)?(-?\d+)`)
+)
 
+func handleCreateSequence(sql string) {
+	m := seqNameRE.FindStringSubmatch(sql)
+	if m == nil {
+		return
+	}
+	name := strings.Trim(m[1], `"`)
+	if idx := strings.LastIndex(name, "."); idx >= 0 {
+		name = name[idx+1:]
+	}
+
+	increment := int64(1)
+	if ms := seqIncrRE.FindStringSubmatch(sql); ms != nil {
+		increment, _ = strconv.ParseInt(ms[1], 10, 64)
+	}
+	start := int64(1)
+	if increment < 0 {
+		start = -1
+	}
+	if ms := seqStartRE.FindStringSubmatch(sql); ms != nil {
+		start, _ = strconv.ParseInt(ms[1], 10, 64)
+	}
+	minVal := int64(1)
+	if increment < 0 {
+		minVal = -9223372036854775807
+	}
+	if ms := seqMinRE.FindStringSubmatch(sql); ms != nil {
+		minVal, _ = strconv.ParseInt(ms[1], 10, 64)
+	}
+	maxVal := int64(9223372036854775807)
+	if increment < 0 {
+		maxVal = -1
+	}
+	if ms := seqMaxRE.FindStringSubmatch(sql); ms != nil {
+		maxVal, _ = strconv.ParseInt(ms[1], 10, 64)
+	}
+	cycle := strings.Contains(strings.ToUpper(sql), " CYCLE") && !strings.Contains(strings.ToUpper(sql), "NO CYCLE")
+
+	sqlitebackend.SequenceCreate(name, start, increment, minVal, maxVal, cycle)
+}
+
+func handleDropSequence(sql string) {
+	m := seqDropNameRE.FindStringSubmatch(sql)
+	if m == nil {
+		return
+	}
+	for _, name := range strings.Split(m[1], ",") {
+		name = strings.TrimSpace(strings.Trim(name, `"`))
+		if idx := strings.LastIndex(name, "."); idx >= 0 {
+			name = name[idx+1:]
+		}
+		sqlitebackend.SequenceDrop(name)
+	}
+}
+
+func handleAlterSequence(sql string) {
+	m := seqAlterNameRE.FindStringSubmatch(sql)
+	if m == nil {
+		return
+	}
+	name := strings.Trim(m[1], `"`)
+	if idx := strings.LastIndex(name, "."); idx >= 0 {
+		name = name[idx+1:]
+	}
+	var newStart, newIncrement *int64
+	if ms := seqRestartRE.FindStringSubmatch(sql); ms != nil {
+		v, _ := strconv.ParseInt(ms[1], 10, 64)
+		newStart = &v
+	}
+	if ms := seqIncrRE.FindStringSubmatch(sql); ms != nil {
+		v, _ := strconv.ParseInt(ms[1], 10, 64)
+		newIncrement = &v
+	}
+	sqlitebackend.SequenceAlter(name, newStart, newIncrement)
+}

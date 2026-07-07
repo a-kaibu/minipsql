@@ -90,6 +90,7 @@ var (
 	notAnyArrayRE      = regexp.MustCompile(`(?i)<>\s*ANY\s*\(\s*ARRAY\s*\[([^\]]*)\](?:::[A-Za-z0-9_\[\]]+)?\s*\)|!=\s*ANY\s*\(\s*ARRAY\s*\[([^\]]*)\](?:::[A-Za-z0-9_\[\]]+)?\s*\)`)
 	namedArgRE         = regexp.MustCompile(`(?i)\b[A-Za-z_][A-Za-z0-9_]*\s*=>\s*`)
 	forPortionOfRE     = regexp.MustCompile(`(?i)\s+FOR\s+PORTION\s+OF\s+\S+\s+FROM\s+\S+\s+TO\s+\S+`)
+	bitLiteralRE       = regexp.MustCompile(`(?i)\bB'([01]*)'`)
 )
 
 var idxCounter atomic.Int64
@@ -190,6 +191,7 @@ func Rewrite(sql string) string {
 	out = boolRE.ReplaceAllString(out, "integer")
 	out = nowRE.ReplaceAllString(out, "datetime('now')")
 	out = quotedCharRE.ReplaceAllString(out, "::text")
+	out = rewriteBitHexLiterals(out)
 	out = rewritePGCast(out)
 	out = charLiteralRE.ReplaceAllString(out, "$1")
 	out = pgLsnLiteralRE.ReplaceAllString(out, "$1")
@@ -235,10 +237,12 @@ func Rewrite(sql string) string {
 }
 
 var (
-	// FETCH FIRST n ROWS ONLY / FETCH NEXT n ROWS ONLY
+	// FETCH FIRST n ROWS ONLY / FETCH NEXT n ROWS ONLY (n is a simple integer)
 	fetchFirstRE = regexp.MustCompile(`(?i)\bFETCH\s+(?:FIRST|NEXT)\s+(\d+)\s+ROWS?\s+(?:ONLY|WITH\s+TIES)\b`)
-	// FETCH FIRST ROWS ONLY (no count = 1)
-	fetchFirstNoCountRE = regexp.MustCompile(`(?i)\bFETCH\s+(?:FIRST|NEXT)\s+ROWS?\s+ONLY\b`)
+	// FETCH FIRST ROWS ONLY/WITH TIES (no count = 1)
+	fetchFirstNoCountRE = regexp.MustCompile(`(?i)\bFETCH\s+(?:FIRST|NEXT)\s+ROWS?\s+(?:ONLY|WITH\s+TIES)\b`)
+	// FETCH FIRST (expr) ROWS ONLY/WITH TIES — parenthesized expression
+	fetchFirstExprRE = regexp.MustCompile(`(?i)\bFETCH\s+(?:FIRST|NEXT)\s+(\([^)]+\))\s+ROWS?\s+(?:ONLY|WITH\s+TIES)\b`)
 	// OFFSET n ROWS
 	offsetRowsRE = regexp.MustCompile(`(?i)\bOFFSET\s+(\d+)\s+ROWS\b`)
 	// LATERAL keyword before subqueries/functions
@@ -353,9 +357,27 @@ func rewriteSelectInto(sql string) string {
 	return "CREATE TABLE " + tableName + " AS SELECT " + selectList + " FROM " + sql[fromPos:]
 }
 
+// rewriteBitHexLiterals converts PG bit-string literals B'...' to integer values.
+// SQLite does not support B'...' syntax; we convert to the decimal integer equivalent.
+func rewriteBitHexLiterals(sql string) string {
+	return bitLiteralRE.ReplaceAllStringFunc(sql, func(m string) string {
+		sub := bitLiteralRE.FindStringSubmatch(m)
+		bits := sub[1]
+		if bits == "" {
+			return "0"
+		}
+		val := int64(0)
+		for _, c := range bits {
+			val = val*2 + int64(c-'0')
+		}
+		return strconv.FormatInt(val, 10)
+	})
+}
+
 // rewriteFetchFirst rewrites SQL:2008 FETCH FIRST/NEXT syntax to LIMIT/OFFSET.
 func rewriteFetchFirst(sql string) string {
-	out := fetchFirstNoCountRE.ReplaceAllString(sql, "LIMIT 1")
+	out := fetchFirstExprRE.ReplaceAllString(sql, "LIMIT $1")
+	out = fetchFirstNoCountRE.ReplaceAllString(out, "LIMIT 1")
 	out = fetchFirstRE.ReplaceAllString(out, "LIMIT $1")
 	out = offsetRowsRE.ReplaceAllString(out, "OFFSET $1")
 	return out
@@ -684,8 +706,16 @@ func extractCastExpr(sql string) string {
 			}
 			i--
 		}
-		if i > 0 && (sql[i-1] == 'E' || sql[i-1] == 'e') {
-			i--
+		if i > 0 {
+			prev := sql[i-1]
+			switch prev {
+			case 'E', 'e', 'B', 'b', 'X', 'x', 'N', 'n':
+				i--
+			}
+		}
+		// U& prefix
+		if i >= 2 && (sql[i] == '&') && (sql[i-1] == 'U' || sql[i-1] == 'u') {
+			i -= 2
 		}
 		return sql[i:]
 	}

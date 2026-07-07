@@ -355,6 +355,9 @@ func init() {
 	sqlite.MustRegisterDeterministicScalarFunction("pg_partition_parent", 1, func(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
 		return nil, nil
 	})
+	sqlite.MustRegisterDeterministicScalarFunction("satisfies_hash_partition", -1, func(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
+		return int64(0), nil
+	})
 	// PG type cast functions: float8(x), float4(x), int8(x), int4(x), int2(x)
 	castToFloat := func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
 		if args[0] == nil {

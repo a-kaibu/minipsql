@@ -481,7 +481,12 @@ func initDatabase(ctx context.Context, db *sql.DB) error {
 			rngcollation INTEGER,
 			rngsubopc INTEGER,
 			rngcanonical INTEGER,
-			rngsubdiff INTEGER
+			rngsubdiff INTEGER,
+			rngconstruct2 INTEGER DEFAULT 0,
+			rngconstruct3 INTEGER DEFAULT 0,
+			rngmltconstruct0 INTEGER DEFAULT 0,
+			rngmltconstruct1 INTEGER DEFAULT 0,
+			rngmltconstruct2 INTEGER DEFAULT 0
 		)`,
 		`CREATE TABLE IF NOT EXISTS main.pg_roles (
 			oid INTEGER,
@@ -991,7 +996,7 @@ func (s *sessionBackend) Query(ctx context.Context, query string, args []backend
 		if i < len(types) {
 			dbType = types[i].DatabaseTypeName()
 		}
-		cols[i] = backend.Column{Name: name, TypeOID: compat.TypeOID(dbType)}
+		cols[i] = backend.Column{Name: normalizeSQLiteColName(name), TypeOID: compat.TypeOID(dbType)}
 	}
 	var out [][]backend.Value
 	for rows.Next() {
@@ -1016,6 +1021,15 @@ func (s *sessionBackend) Query(ctx context.Context, query string, args []backend
 		return nil, err
 	}
 	return &backend.Result{Columns: cols, Rows: out}, nil
+}
+
+// normalizeSQLiteColName removes trailing () from function call column names.
+// e.g. "txid_current()" → "txid_current", "current_user()" → "current_user"
+func normalizeSQLiteColName(name string) string {
+	if strings.HasSuffix(name, "()") {
+		return name[:len(name)-2]
+	}
+	return name
 }
 
 func (s *sessionBackend) Exec(ctx context.Context, query string, args []backend.Value) (*backend.CommandTag, error) {
@@ -1118,7 +1132,7 @@ func (b *Backend) Query(ctx context.Context, query string, args []backend.Value)
 		if i < len(types) {
 			dbType = types[i].DatabaseTypeName()
 		}
-		cols[i] = backend.Column{Name: name, TypeOID: compat.TypeOID(dbType), Format: 0}
+		cols[i] = backend.Column{Name: normalizeSQLiteColName(name), TypeOID: compat.TypeOID(dbType), Format: 0}
 	}
 
 	var out [][]backend.Value

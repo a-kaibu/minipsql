@@ -63,6 +63,8 @@ var (
 	collationForRE       = regexp.MustCompile(`(?i)\bCOLLATION\s+FOR\s*\(`)
 	castCollateRE        = regexp.MustCompile(`(?i)(CAST\s*\([^)]+\s+AS\s+[A-Za-z0-9_\s]+)\s+COLLATE\s+(?:"[^"]*"|[A-Za-z0-9_]+)\s*(\))`)
 	nullsDistinctRE      = regexp.MustCompile(`(?i)\s+NULLS\s+(?:NOT\s+)?DISTINCT\b`)
+	// USER keyword (standalone, not part of CURRENT_USER/SESSION_USER) → current_user()
+	bareUserRE           = regexp.MustCompile(`(?i)\bUSER\b`)
 	partitionByClauseRE = regexp.MustCompile(`(?i)\s+PARTITION\s+BY\s+(?:RANGE|LIST|HASH)\s*\(`)
 	partitionOfRE       = regexp.MustCompile(`(?i)^\s*CREATE\s+TABLE\s+\S+\s+PARTITION\s+OF\s+`)
 	attachPartitionRE   = regexp.MustCompile(`(?i)\bATTACH\s+PARTITION\b`)
@@ -137,6 +139,7 @@ func Rewrite(sql string) string {
 	out = castCollateRE.ReplaceAllString(out, "$1$2")
 	out = pgCatalogCollateRE.ReplaceAllString(out, "")
 	out = nullsDistinctRE.ReplaceAllString(out, "")
+	out = rewriteStandaloneUser(out)
 	out = rewriteSchemaPrefix(out)
 	out = rewriteViewOptions(out)
 	out = rewriteTableWithOptions(out)
@@ -3681,6 +3684,16 @@ func rewriteExtract(sql string) string {
 	})
 	// The closing paren of EXTRACT is kept as-is since we just replaced the opening
 	return result
+}
+
+// rewriteStandaloneUser replaces the bare USER keyword with current_user(),
+// skipping occurrences that are part of CURRENT_USER or SESSION_USER.
+func rewriteStandaloneUser(sql string) string {
+	return bareUserRE.ReplaceAllStringFunc(sql, func(m string) string {
+		upper := strings.ToUpper(m)
+		// Don't replace if it's part of CURRENT_USER or SESSION_USER
+		return strings.ReplaceAll(upper, "USER", "current_user()")
+	})
 }
 
 

@@ -20,7 +20,7 @@ var (
 	charLiteralRE      = regexp.MustCompile(`(?i)\bchar\s+('(?:''|[^'])*')`)
 	pgLsnLiteralRE     = regexp.MustCompile(`(?i)\bpg_lsn\s+('(?:''|[^'])*')`)
 	pointLiteralRE     = regexp.MustCompile(`(?i)\bpoint\s+('(?:''|[^'])*')`)
-	typedLiteralRE     = regexp.MustCompile(`(?i)\b(int2|int4|int8|float4|float8|numeric|decimal|real|double|integer|smallint|bigint|text|varchar|bpchar|char|pg_lsn|point|bit|varbit|date|time|timestamp|timestamptz|interval|macaddr|macaddr8|uuid|regclass|regtype|oid|regproc|regoper|circle|path|line|lseg|polygon|box|cidr|inet|name)\s+('(?:''|[^'])*')`)
+	typedLiteralRE     = regexp.MustCompile(`(?i)\b(int2|int4|int8|float4|float8|numeric|decimal|real|double|integer|smallint|bigint|text|varchar|bpchar|char|pg_lsn|point|bit|varbit|date|time|timestamp|timestamptz|interval|macaddr|macaddr8|uuid|regclass|regtype|oid|regproc|regoper|circle|path|line|lseg|polygon|box|cidr|inet|name|txid_snapshot|pg_snapshot|xid|xid8|tid|cid|money|json|jsonb|bytea)\s+('(?:''|[^'])*')`)
 	createIndexUsingRE = regexp.MustCompile(`(?i)(CREATE\s+(?:UNIQUE\s+)?INDEX\b.+?\bON\s+\S+)\s+USING\s+\S+\s*(\()`)
 	ilikeRE            = regexp.MustCompile(`(?i)\bILIKE\b`)
 	returningRE        = regexp.MustCompile(`(?i)\bRETURNING\b`)
@@ -50,11 +50,14 @@ var (
 	createTableWithNoDataRE = regexp.MustCompile(`(?i)\bWITH\s+NO\s+DATA\b`)
 	createTableColListRE = regexp.MustCompile(`(?i)^\s*(CREATE\s+(?:UNLOGGED\s+|TEMP(?:ORARY)?\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[A-Za-z0-9_".]+)\s*\(([^)]+)\)\s*(AS\s+)`)
 	withOrdinalityRE   = regexp.MustCompile(`(?i)\bWITH\s+ORDINALITY\b`)
-	bareOffsetRE       = regexp.MustCompile(`(?i)\bOFFSET\s+(\d+)(?:\s+ROWS?)?\s*$`)
+	bareOffsetRE       = regexp.MustCompile(`(?i)\bOFFSET\s+(\d+)(?:\s+ROWS?)?(?:\s*[;)\s]|$)`)
 	dropMultiTableRE   = regexp.MustCompile(`(?i)^\s*(DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?)([A-Za-z0-9_".,\s]+?)(\s+(?:CASCADE|RESTRICT))?\s*;?\s*$`)
 	indexOpClassRE     = regexp.MustCompile(`(?i)\b([A-Za-z0-9_]+)\s+([A-Za-z0-9_]+_ops\b)(?:\s+ASC|\s+DESC)?`)
 	nullsFirstLastRE   = regexp.MustCompile(`(?i)\bNULLS\s+(?:FIRST|LAST)\b`)
 	collateClauseRE    = regexp.MustCompile(`(?i)\bCOLLATE\s+(?:"[^"]*"|[A-Za-z0-9_".-]+)`)
+	forUpdateRE        = regexp.MustCompile(`(?i)\s+FOR\s+(?:UPDATE|SHARE|NO\s+KEY\s+UPDATE|KEY\s+SHARE)(?:\s+OF\s+\S+)?(?:\s+NOWAIT|\s+SKIP\s+LOCKED)?\s*$`)
+	indexIncludeRE     = regexp.MustCompile(`(?i)\bINCLUDE\s*\([^)]*\)`)
+	compressionRE      = regexp.MustCompile(`(?i)\bCOMPRESSION\s+\w+\b`)
 )
 
 var idxCounter atomic.Int64
@@ -80,6 +83,9 @@ func Rewrite(sql string) string {
 	out = rewriteDropMultiTable(out)
 	out = rewriteIndexOpClasses(out)
 	out = rewriteNullsFirstLast(out)
+	out = rewriteForUpdate(out)
+	out = rewriteIndexInclude(out)
+	out = rewriteColumnCompression(out)
 	out = rewriteUnicodeLiterals(out)
 	out = rewriteValuesAlias(out)
 	out = tableKeywordRE.ReplaceAllStringFunc(out, func(m string) string {
@@ -2329,20 +2335,149 @@ func rewriteWithOrdinality(sql string) string {
 	return withOrdinalityRE.ReplaceAllString(sql, "")
 }
 
-// rewriteBareOffset rewrites "OFFSET n" without a LIMIT clause to "LIMIT -1 OFFSET n".
+// rewriteBareOffset rewrites "OFFSET n" without a preceding LIMIT clause to "LIMIT -1 OFFSET n".
 // SQLite requires LIMIT when OFFSET is used.
+// Handles both standalone and subquery OFFSET.
 func rewriteBareOffset(sql string) string {
 	lower := strings.ToLower(sql)
 	if !strings.Contains(lower, "offset") {
 		return sql
 	}
-	if strings.Contains(lower, "limit") {
+	// Look for each OFFSET occurrence; check if there's a LIMIT in the same scope
+	var result strings.Builder
+	i := 0
+	n := len(sql)
+	inSingle := false
+	inDouble := false
+	for i < n {
+		if inSingle {
+			if sql[i] == '\'' && i+1 < n && sql[i+1] == '\'' {
+				result.WriteString("''")
+				i += 2
+				continue
+			}
+			if sql[i] == '\'' {
+				inSingle = false
+			}
+			result.WriteByte(sql[i])
+			i++
+			continue
+		}
+		if inDouble {
+			if sql[i] == '"' && i+1 < n && sql[i+1] == '"' {
+				result.WriteString(`""`)
+				i += 2
+				continue
+			}
+			if sql[i] == '"' {
+				inDouble = false
+			}
+			result.WriteByte(sql[i])
+			i++
+			continue
+		}
+		if sql[i] == '\'' {
+			inSingle = true
+			result.WriteByte(sql[i])
+			i++
+			continue
+		}
+		if sql[i] == '"' {
+			inDouble = true
+			result.WriteByte(sql[i])
+			i++
+			continue
+		}
+		// Check for OFFSET keyword
+		if i+6 <= n && strings.ToLower(sql[i:i+6]) == "offset" {
+			leftBound := i == 0 || !isIdentByte(sql[i-1])
+			rightBound := i+6 == n || !isIdentByte(sql[i+6])
+			if leftBound && rightBound {
+				// Extract the number after OFFSET
+				j := i + 6
+				for j < n && (sql[j] == ' ' || sql[j] == '\t') {
+					j++
+				}
+				numStart := j
+				for j < n && sql[j] >= '0' && sql[j] <= '9' {
+					j++
+				}
+				if j > numStart {
+					numStr := sql[numStart:j]
+					// Skip optional ROWS/ROW
+					k := j
+					for k < n && (sql[k] == ' ' || sql[k] == '\t') {
+						k++
+					}
+					if k+4 <= n && strings.ToLower(sql[k:k+4]) == "rows" {
+						k += 4
+					} else if k+3 <= n && strings.ToLower(sql[k:k+3]) == "row" {
+						k += 3
+					} else {
+						k = j
+					}
+					// Check what's after: if it's ) ; or end of clause, no LIMIT
+					// Check if LIMIT exists before OFFSET in same "scope" (search backwards)
+					scopeStart := findScopeStart(sql, i)
+					scopeText := strings.ToLower(sql[scopeStart:i])
+					hasFetch := strings.Contains(scopeText, "fetch")
+					hasLimit := strings.Contains(scopeText, "limit")
+					if !hasLimit && !hasFetch {
+						result.WriteString("LIMIT -1 OFFSET ")
+						result.WriteString(numStr)
+						i = k
+						continue
+					}
+				}
+			}
+		}
+		result.WriteByte(sql[i])
+		i++
+	}
+	return result.String()
+}
+
+// findScopeStart finds where the current SELECT scope starts (at a '(' or beginning).
+func findScopeStart(sql string, pos int) int {
+	depth := 0
+	i := pos - 1
+	for i >= 0 {
+		switch sql[i] {
+		case ')':
+			depth++
+		case '(':
+			if depth == 0 {
+				return i + 1
+			}
+			depth--
+		}
+		i--
+	}
+	return 0
+}
+
+// rewriteIndexInclude strips INCLUDE (col1, col2) from CREATE INDEX statements.
+// SQLite does not support covering index INCLUDE columns.
+func rewriteIndexInclude(sql string) string {
+	lower := strings.ToLower(sql)
+	if !strings.Contains(lower, "include") {
 		return sql
 	}
-	if strings.Contains(lower, "fetch") {
+	if !strings.Contains(lower, "index") {
 		return sql
 	}
-	return bareOffsetRE.ReplaceAllString(sql, "LIMIT -1 OFFSET $1")
+	return indexIncludeRE.ReplaceAllString(sql, "")
+}
+
+// rewriteColumnCompression strips COMPRESSION method from column definitions.
+func rewriteColumnCompression(sql string) string {
+	return compressionRE.ReplaceAllString(sql, "")
+}
+
+// rewriteForUpdate strips SELECT ... FOR UPDATE/SHARE locking clauses.
+// SQLite does not support row-level locking.
+func rewriteForUpdate(sql string) string {
+	return forUpdateRE.ReplaceAllString(sql, "")
 }
 
 // rewriteIndexOpClasses strips PostgreSQL operator class names from CREATE INDEX.

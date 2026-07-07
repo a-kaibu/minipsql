@@ -188,6 +188,33 @@ func init() {
 	sqlite.MustRegisterDeterministicScalarFunction("pg_snapshot_xip", 1, txidSnapshotXipFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("pg_visible_in_snapshot", 2, txidVisibleInSnapshotFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("pg_current_snapshot", 0, txidCurrentSnapshotFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("txid_current_if_assigned", 0, pgCurrentXactIdFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("txid_status", 1, txidStatusFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_xact_status", 1, txidStatusFunc)
+	sqlite.MustRegisterScalarFunction("array_to_string", -1, arrayToStringFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_relation_filenode", 1, pgRelationFilenodeFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_filenode_relation", 2, pgFilenodeRelationFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_relation_filepath", 1, pgRelationFilepathFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_index_column_has_property", 3, pgIndexColumnHasPropertyFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_index_has_property", 2, pgIndexHasPropertyFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_indexam_has_property", 2, pgIndexamHasPropertyFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_am_has_property", 3, pgIndexamHasPropertyFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_get_indexdef", -1, pgGetIndexdefFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_get_constraintdef", -1, pgGetConstraintdefFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_get_triggerdef", -1, pgGetTriggerdefFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_get_functiondef", 1, pgGetFunctiondefFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_get_function_arguments", 1, pgGetFunctiondefFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_get_function_result", 1, pgGetFunctiondefFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_get_expr", -1, pgGetExprFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_get_userbyid", 1, pgGetUserbyidFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_tablespace_location", 1, pgTablespaceLocationFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_describe_object", 3, pgDescribeObjectFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_identify_object", 4, pgIdentifyObjectFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_identify_object_as_address", 3, pgIdentifyObjectFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_column_size", 1, pgColumnSizeFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_total_relation_size", 1, pgRelationSizeFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_table_size", 1, pgRelationSizeFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_indexes_size", 1, pgRelationSizeFunc)
 }
 
 func asciiFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
@@ -3789,6 +3816,167 @@ func pgXactCommitTimestampFunc(_ *sqlite.FunctionContext, args []driver.Value) (
 
 func pgLastCommittedXactFunc(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
 	return nil, nil
+}
+
+func txidStatusFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	// Returns 'committed', 'aborted', 'in progress', or NULL
+	return "committed", nil
+}
+
+func arrayToStringFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) < 2 {
+		return nil, fmt.Errorf("array_to_string requires at least 2 arguments")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	sep := ""
+	if args[1] != nil {
+		sep, _ = args[1].(string)
+	}
+	var nullStr string
+	if len(args) >= 3 && args[2] != nil {
+		nullStr, _ = args[2].(string)
+	}
+	// args[0] should be an array - for now handle string representation
+	arrStr, ok := args[0].(string)
+	if !ok {
+		return fmt.Sprintf("%v", args[0]), nil
+	}
+	// strip brackets from JSON array or PG array
+	arrStr = strings.TrimPrefix(arrStr, "[")
+	arrStr = strings.TrimSuffix(arrStr, "]")
+	arrStr = strings.TrimPrefix(arrStr, "{")
+	arrStr = strings.TrimSuffix(arrStr, "}")
+	if arrStr == "" {
+		return "", nil
+	}
+	parts := strings.Split(arrStr, ",")
+	result := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		p = strings.Trim(p, `"`)
+		if p == "null" || p == "NULL" {
+			if nullStr != "" {
+				result = append(result, nullStr)
+			}
+		} else {
+			result = append(result, p)
+		}
+	}
+	return strings.Join(result, sep), nil
+}
+
+func pgRelationFilenodeFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	return int64(1), nil
+}
+
+func pgFilenodeRelationFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	return nil, nil
+}
+
+func pgRelationFilepathFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	return nil, nil
+}
+
+func pgIndexColumnHasPropertyFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) < 3 || args[2] == nil {
+		return nil, nil
+	}
+	prop, _ := args[2].(string)
+	switch strings.ToLower(prop) {
+	case "asc", "orderable", "returnable", "search_nulls":
+		return int64(1), nil
+	case "desc", "nulls_first", "nulls_last", "distance_orderable", "search_array":
+		return int64(0), nil
+	default:
+		return nil, nil
+	}
+}
+
+func pgIndexHasPropertyFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) < 2 || args[1] == nil {
+		return nil, nil
+	}
+	prop, _ := args[1].(string)
+	switch strings.ToLower(prop) {
+	case "clusterable", "index_scan", "bitmap_scan":
+		return int64(1), nil
+	case "backward_scan":
+		return int64(1), nil
+	default:
+		return nil, nil
+	}
+}
+
+func pgIndexamHasPropertyFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) < 2 || args[1] == nil {
+		return nil, nil
+	}
+	prop, _ := args[1].(string)
+	switch strings.ToLower(prop) {
+	case "can_order", "can_unique", "can_multi_col":
+		return int64(1), nil
+	case "can_exclude", "can_include":
+		return int64(1), nil
+	default:
+		return int64(0), nil
+	}
+}
+
+func pgGetIndexdefFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	return nil, nil
+}
+
+func pgGetConstraintdefFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	return nil, nil
+}
+
+func pgGetTriggerdefFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	return nil, nil
+}
+
+func pgGetFunctiondefFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	return nil, nil
+}
+
+func pgGetExprFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) >= 1 && args[0] != nil {
+		return args[0], nil
+	}
+	return nil, nil
+}
+
+func pgGetUserbyidFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	return "minipsql_user", nil
+}
+
+func pgTablespaceLocationFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	return "", nil
+}
+
+func pgDescribeObjectFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	return "", nil
+}
+
+func pgIdentifyObjectFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	return nil, nil
+}
+
+func pgColumnSizeFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) < 1 || args[0] == nil {
+		return nil, nil
+	}
+	switch v := args[0].(type) {
+	case string:
+		return int64(len(v)), nil
+	case int64:
+		return int64(8), nil
+	case float64:
+		return int64(8), nil
+	default:
+		return int64(4), nil
+	}
 }
 
 func toInt(v driver.Value) (int, bool) {

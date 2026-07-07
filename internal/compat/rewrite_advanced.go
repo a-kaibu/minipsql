@@ -578,10 +578,16 @@ func parseGenerateSeriesAlias(trimmed string) (alias string, colName string, con
 			pos++
 		}
 	}
-	if startsWithKeyword(trimmed[pos:], "WHERE") ||
-		startsWithKeyword(trimmed[pos:], "ORDER") ||
-		startsWithKeyword(trimmed[pos:], "GROUP") ||
-		startsWithKeyword(trimmed[pos:], "LIMIT") {
+	setOps := []string{"WHERE", "ORDER", "GROUP", "LIMIT", "UNION", "EXCEPT", "INTERSECT", "HAVING", "ON", "JOIN", "CROSS", "INNER", "LEFT", "RIGHT", "FULL", "NATURAL"}
+	checkKeyword := func(s string) bool {
+		for _, kw := range setOps {
+			if startsWithKeyword(s, kw) {
+				return true
+			}
+		}
+		return false
+	}
+	if checkKeyword(trimmed[pos:]) {
 		return "", "", 0
 	}
 
@@ -593,10 +599,7 @@ func parseGenerateSeriesAlias(trimmed string) (alias string, colName string, con
 		return "", "", 0
 	}
 	alias = trimmed[aliasStart:pos]
-	if strings.EqualFold(alias, "WHERE") ||
-		strings.EqualFold(alias, "ORDER") ||
-		strings.EqualFold(alias, "GROUP") ||
-		strings.EqualFold(alias, "LIMIT") {
+	if checkKeyword(alias) {
 		return "", "", 0
 	}
 

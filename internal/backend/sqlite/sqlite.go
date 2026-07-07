@@ -839,7 +839,7 @@ func initDatabase(ctx context.Context, db *sql.DB) error {
 	views := []string{
 		`CREATE VIEW IF NOT EXISTS main.pg_class AS
 		SELECT
-			10000 + rowid AS oid,
+			CAST(10000 + rowid AS TEXT) AS oid,
 			name AS relname,
 			2200 AS relnamespace,
 			0 AS reltype,
@@ -875,8 +875,8 @@ func initDatabase(ctx context.Context, db *sql.DB) error {
 		WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'pg_%'`,
 
 		`CREATE VIEW IF NOT EXISTS main.pg_attribute AS
-		SELECT 
-			10000 + t.rowid AS attrelid,
+		SELECT
+			CAST(10000 + t.rowid AS TEXT) AS attrelid,
 			p.name AS attname,
 			CASE 
 				WHEN lower(p.type) = 'integer' THEN 23
@@ -898,13 +898,15 @@ func initDatabase(ctx context.Context, db *sql.DB) error {
 			0 AS attisdropped,
 			1 AS attislocal,
 			0 AS attinhcount,
-			0 AS attcollation
+			0 AS attcollation,
+			'' AS attcompression,
+			-1 AS attstattarget
 		FROM sqlite_schema t
 		JOIN pragma_table_info(t.name) p
-		WHERE t.type = 'table' AND t.name NOT LIKE 'sqlite_%'`,
+		WHERE t.type = 'table' AND t.name NOT LIKE 'sqlite_%' AND t.name NOT LIKE 'pg_%'`,
 
 		`CREATE VIEW IF NOT EXISTS main.pg_tables AS
-		SELECT 
+		SELECT
 			'public' AS schemaname,
 			name AS tablename,
 			'mini' AS tableowner,
@@ -915,6 +917,40 @@ func initDatabase(ctx context.Context, db *sql.DB) error {
 			0 AS rowsecurity
 		FROM sqlite_schema
 		WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`,
+
+		// pg_attrdef: column default values (always empty in minipsql)
+		`CREATE VIEW IF NOT EXISTS main.pg_attrdef AS
+		SELECT
+			0 AS oid,
+			0 AS adrelid,
+			0 AS adnum,
+			'' AS adbin
+		WHERE 1 = 0`,
+
+		// pg_collation: collation definitions (always empty in minipsql)
+		`CREATE VIEW IF NOT EXISTS main.pg_collation AS
+		SELECT
+			0 AS oid,
+			'' AS collname,
+			0 AS collnamespace,
+			0 AS collowner,
+			'' AS collprovider,
+			0 AS collisdeterministic,
+			0 AS collencoding,
+			'' AS collcollate,
+			'' AS collctype,
+			NULL AS collictarget,
+			NULL AS collversion
+		WHERE 1 = 0`,
+
+		// pg_am: access methods (index types)
+		`CREATE VIEW IF NOT EXISTS main.pg_am AS
+		SELECT
+			0 AS oid,
+			'' AS amname,
+			0 AS amhandler,
+			'' AS amtype
+		WHERE 1 = 0`,
 	}
 
 	for _, view := range views {

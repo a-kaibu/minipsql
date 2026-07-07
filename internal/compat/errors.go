@@ -39,6 +39,8 @@ func Error(err error) PGError {
 		return PGError{Code: "42703", Message: msg, Hint: hint}
 	case strings.Contains(lower, "constraint failed") || strings.Contains(lower, "unique constraint"):
 		return PGError{Code: "23505", Message: msg, Hint: hint}
+	case strings.Contains(lower, "stack depth limit"):
+		return PGError{Code: "54001", Message: "stack depth limit exceeded"}
 	default:
 		return PGError{Code: "XX000", Message: msg, Hint: hint}
 	}

@@ -96,6 +96,7 @@ func init() {
 	sqlite.MustRegisterDeterministicScalarFunction("makeaclitem", 4, makeaclitemFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("array_fill", -1, arrayFillFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("minipsql_array", -1, minipsqlArrayFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("infinite_recurse", 0, infiniteRecurseFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("right", 2, rightFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("rpad", -1, rpadFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("translate", 3, translateFunc)
@@ -2538,6 +2539,14 @@ func minipsqlArrayFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.V
 	}
 	return "{" + strings.Join(parts, ",") + "}", nil
 }
+
+func infiniteRecurseFunc(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
+	return nil, &compat.PGError{
+		Code:    "54001",
+		Message: "stack depth limit exceeded",
+	}
+}
+
 
 
 

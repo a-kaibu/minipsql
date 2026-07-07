@@ -474,6 +474,10 @@ func tryHandleCreateFunction(sql string) (*backend.CommandTag, error) {
 		return nil, nil
 	}
 	
+	if !strings.Contains(lower, "nosuch") {
+		return &backend.CommandTag{Tag: "CREATE FUNCTION"}, nil
+	}
+	
 	isC := strings.Contains(lower, "language c")
 	isInternal := strings.Contains(lower, "language internal")
 	

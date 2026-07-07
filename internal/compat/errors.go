@@ -12,6 +12,9 @@ type PGError struct {
 }
 
 func Error(err error) PGError {
+	if pg, ok := err.(*PGError); ok {
+		return *pg
+	}
 	msg := cleanSQLiteError(err.Error())
 	var hint string
 	if idx := strings.Index(strings.ToLower(msg), "\nhint: "); idx >= 0 {

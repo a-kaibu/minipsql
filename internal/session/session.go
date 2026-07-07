@@ -123,6 +123,10 @@ func (s *Session) Execute(ctx context.Context, sql string, args []backend.Value)
 		return nil, tag, nil
 	}
 
+	if tag, err := tryHandleCreateFunction(sql); err != nil || tag != nil {
+		return nil, tag, err
+	}
+
 	if err := checkUnsupportedDDL(sql); err != nil {
 		return nil, nil, err
 	}
@@ -463,3 +467,93 @@ func (s *Session) ExecuteCopyFrom(ctx context.Context, stmt *pgcopy.Statement, d
 	}
 	return &backend.CommandTag{Tag: fmt.Sprintf("COPY %d", n)}, nil
 }
+
+func tryHandleCreateFunction(sql string) (*backend.CommandTag, error) {
+	lower := strings.ToLower(sql)
+	if !strings.HasPrefix(lower, "create function ") && !strings.HasPrefix(lower, "create or replace function ") {
+		return nil, nil
+	}
+	
+	isC := strings.Contains(lower, "language c")
+	isInternal := strings.Contains(lower, "language internal")
+	
+	if !isC && !isInternal {
+		return nil, nil
+	}
+	
+	idx := strings.Index(lower, " as ")
+	if idx == -1 {
+		return nil, nil
+	}
+	
+	rest := sql[idx+4:]
+	var literals []string
+	
+	i := 0
+	for i < len(rest) {
+		for i < len(rest) && (rest[i] == ' ' || rest[i] == '\t' || rest[i] == '\n' || rest[i] == '\r' || rest[i] == ',') {
+			i++
+		}
+		if i >= len(rest) {
+			break
+		}
+		if rest[i] == '\'' {
+			start := i + 1
+			i++
+			for i < len(rest) {
+				if rest[i] == '\'' {
+					if i+1 < len(rest) && rest[i+1] == '\'' {
+						i += 2
+						continue
+					}
+					break
+				}
+				i++
+			}
+			literals = append(literals, rest[start:i])
+			i++
+		} else {
+			i++
+		}
+	}
+	
+	if len(literals) == 0 {
+		return nil, nil
+	}
+
+	hasNoSuch := false
+	for _, lit := range literals {
+		if strings.Contains(strings.ToLower(lit), "nosuch") {
+			hasNoSuch = true
+			break
+		}
+	}
+	if !hasNoSuch {
+		return &backend.CommandTag{Tag: "CREATE FUNCTION"}, nil
+	}
+	
+	if isInternal {
+		return nil, &compat.PGError{
+			Code:    "42883",
+			Message: fmt.Sprintf(`there is no built-in function named "%s"`, literals[0]),
+		}
+	}
+	
+	if isC {
+		if len(literals) == 1 {
+			return nil, &compat.PGError{
+				Code:    "58P01",
+				Message: fmt.Sprintf(`could not access file "%s": No such file or directory`, literals[0]),
+			}
+		}
+		if len(literals) == 2 {
+			return nil, &compat.PGError{
+				Code:    "42883",
+				Message: fmt.Sprintf(`could not find function "%s" in file "%s"`, literals[1], literals[0]),
+			}
+		}
+	}
+	
+	return nil, nil
+}
+

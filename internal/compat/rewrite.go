@@ -88,6 +88,7 @@ func Rewrite(sql string) string {
 	out = onlyRE.ReplaceAllString(out, "FROM ")
 	out = eStringRE.ReplaceAllString(out, "'")
 	out = asNullRE.ReplaceAllString(out, "AS \"null\"")
+	out = rewriteKeywords(out)
 	return out
 }
 
@@ -1594,6 +1595,73 @@ func decodeUnicodeEscape(s string, esc rune) (string, string, string) {
 	}
 	return b.String(), "", ""
 }
+
+func rewriteKeywords(sql string) string {
+	var b strings.Builder
+	n := len(sql)
+	inSingle := false
+	inDouble := false
+	
+	i := 0
+	for i < n {
+		if inSingle {
+			if sql[i] == '\'' {
+				if i+1 < n && sql[i+1] == '\'' {
+					b.WriteByte('\'')
+					b.WriteByte('\'')
+					i += 2
+					continue
+				}
+				inSingle = false
+			}
+			b.WriteByte(sql[i])
+			i++
+			continue
+		}
+		if inDouble {
+			if sql[i] == '"' {
+				if i+1 < n && sql[i+1] == '"' {
+					b.WriteByte('"')
+					b.WriteByte('"')
+					i += 2
+					continue
+				}
+				inDouble = false
+			}
+			b.WriteByte(sql[i])
+			i++
+			continue
+		}
+		
+		if sql[i] == '\'' {
+			inSingle = true
+			b.WriteByte(sql[i])
+			i++
+			continue
+		}
+		if sql[i] == '"' {
+			inDouble = true
+			b.WriteByte(sql[i])
+			i++
+			continue
+		}
+		
+		if i+7 <= n && strings.ToLower(sql[i:i+7]) == "unknown" {
+			leftBoundary := i == 0 || !isIdentByte(sql[i-1])
+			rightBoundary := i+7 == n || !isIdentByte(sql[i+7])
+			if leftBoundary && rightBoundary {
+				b.WriteString("NULL")
+				i += 7
+				continue
+			}
+		}
+		
+		b.WriteByte(sql[i])
+		i++
+	}
+	return b.String()
+}
+
 
 
 

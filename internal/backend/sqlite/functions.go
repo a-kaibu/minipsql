@@ -88,6 +88,8 @@ func init() {
 	sqlite.MustRegisterDeterministicScalarFunction("minipsql_error", 3, minipsqlErrorFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("minipsql_similar_substring", 3, minipsqlSimilarSubstringFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("minipsql_similar_to", 3, minipsqlSimilarToFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("booleq", 2, booleqFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("boolne", 2, boolneFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("right", 2, rightFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("rpad", -1, rpadFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("translate", 3, translateFunc)
@@ -2338,6 +2340,38 @@ func minipsqlSimilarToFunc(_ *sqlite.FunctionContext, args []driver.Value) (driv
 	}
 	return int64(0), nil
 }
+
+func booleqFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 {
+		return nil, fmt.Errorf("booleq requires 2 arguments")
+	}
+	if args[0] == nil || args[1] == nil {
+		return nil, nil
+	}
+	// Convert both to boolean/integer (0 or 1)
+	v1 := valueInt(args[0]) != 0
+	v2 := valueInt(args[1]) != 0
+	if v1 == v2 {
+		return int64(1), nil
+	}
+	return int64(0), nil
+}
+
+func boolneFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 {
+		return nil, fmt.Errorf("boolne requires 2 arguments")
+	}
+	if args[0] == nil || args[1] == nil {
+		return nil, nil
+	}
+	v1 := valueInt(args[0]) != 0
+	v2 := valueInt(args[1]) != 0
+	if v1 != v2 {
+		return int64(1), nil
+	}
+	return int64(0), nil
+}
+
 
 
 

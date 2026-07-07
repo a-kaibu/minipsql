@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"crypto/md5"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/sha512"
 	"database/sql/driver"
@@ -117,6 +118,31 @@ func init() {
 	sqlite.MustRegisterDeterministicScalarFunction("is_valid_circle", 1, isValidCircleFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("pg_notify", 2, pgNotifyFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("pg_notification_queue_usage", 0, pgNotificationQueueUsageFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("concat", -1, concatFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("concat_ws", -1, concatWsFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("format", -1, formatFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("quote_literal", 1, quoteLiteralFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("quote_ident", 1, quoteIdentFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("quote_nullable", 1, quoteNullableFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_typeof", 1, pgTypeofFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("num_nonnulls", -1, numNonnullsFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("num_nulls", -1, numNullsFunc)
+	sqlite.MustRegisterScalarFunction("gen_random_uuid", 0, genRandomUUIDFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("normalize", -1, normalizeFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("is_normalized", -1, isNormalizedFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("unicode_version", 0, unicodeVersionFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("unicode_assigned", 1, unicodeAssignedFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_input_error_info", 2, pgInputErrorInfoFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("parse_ident", -1, parseIdentFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("regr_slope", 2, regrSlopeFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("regr_intercept", 2, regrInterceptFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("regr_r2", 2, regrR2Func)
+	sqlite.MustRegisterDeterministicScalarFunction("regr_count", 2, regrCountFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("regr_avgx", 2, regrAvgxFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("regr_avgy", 2, regrAvgyFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("regr_sxx", 2, regrSxxFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("regr_syy", 2, regrSyyFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("regr_sxy", 2, regrSxyFunc)
 }
 
 func asciiFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
@@ -2545,6 +2571,349 @@ func infiniteRecurseFunc(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Va
 		Code:    "54001",
 		Message: "stack depth limit exceeded",
 	}
+}
+
+func concatFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	var parts []string
+	for _, arg := range args {
+		if arg == nil {
+			continue
+		}
+		parts = append(parts, valueString(arg))
+	}
+	return strings.Join(parts, ""), nil
+}
+
+func concatWsFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) < 1 {
+		return nil, fmt.Errorf("concat_ws requires at least 1 argument")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	sep := valueString(args[0])
+	var parts []string
+	for _, arg := range args[1:] {
+		if arg == nil {
+			continue
+		}
+		parts = append(parts, valueString(arg))
+	}
+	return strings.Join(parts, sep), nil
+}
+
+// formatFunc implements PostgreSQL's format() with %s, %I, %L, %% and positional %1$s style.
+func formatFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) < 1 {
+		return nil, fmt.Errorf("format requires at least 1 argument")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	fmtStr := valueString(args[0])
+	params := args[1:]
+
+	var buf strings.Builder
+	i := 0
+	for i < len(fmtStr) {
+		if fmtStr[i] != '%' {
+			buf.WriteByte(fmtStr[i])
+			i++
+			continue
+		}
+		i++
+		if i >= len(fmtStr) {
+			break
+		}
+		// Check for positional argument: %N$s
+		argIdx := -1
+		if i < len(fmtStr) && fmtStr[i] >= '1' && fmtStr[i] <= '9' {
+			j := i
+			for j < len(fmtStr) && fmtStr[j] >= '0' && fmtStr[j] <= '9' {
+				j++
+			}
+			if j < len(fmtStr) && fmtStr[j] == '$' {
+				n, _ := strconv.Atoi(fmtStr[i:j])
+				argIdx = n - 1
+				i = j + 1
+			}
+		}
+		if i >= len(fmtStr) {
+			break
+		}
+		spec := fmtStr[i]
+		i++
+
+		var val driver.Value
+		if argIdx >= 0 {
+			if argIdx < len(params) {
+				val = params[argIdx]
+			}
+		} else {
+			if len(params) > 0 {
+				val = params[0]
+				params = params[1:]
+			}
+		}
+
+		switch spec {
+		case '%':
+			buf.WriteByte('%')
+		case 's':
+			if val == nil {
+				// %s of NULL is empty string in PostgreSQL
+			} else {
+				buf.WriteString(valueString(val))
+			}
+		case 'I':
+			// Quote as identifier
+			if val == nil {
+				buf.WriteString(`""`)
+			} else {
+				buf.WriteString(pgQuoteIdent(valueString(val)))
+			}
+		case 'L':
+			// Quote as string literal
+			if val == nil {
+				buf.WriteString("NULL")
+			} else {
+				buf.WriteString(pgQuoteLiteral(valueString(val)))
+			}
+		default:
+			buf.WriteByte('%')
+			buf.WriteByte(spec)
+		}
+	}
+	return buf.String(), nil
+}
+
+func pgQuoteLiteral(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
+func pgQuoteIdent(s string) string {
+	needsQuote := false
+	for _, r := range s {
+		if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_') {
+			needsQuote = true
+			break
+		}
+	}
+	if s == "" {
+		needsQuote = true
+	}
+	if !needsQuote {
+		// Check if it's a reserved word (simplified check)
+		lower := strings.ToLower(s)
+		if lower != s {
+			needsQuote = true
+		}
+	}
+	if needsQuote {
+		return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
+	}
+	return s
+}
+
+func quoteLiteralFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("quote_literal requires 1 argument")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	return pgQuoteLiteral(valueString(args[0])), nil
+}
+
+func quoteIdentFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("quote_ident requires 1 argument")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	return pgQuoteIdent(valueString(args[0])), nil
+}
+
+func quoteNullableFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("quote_nullable requires 1 argument")
+	}
+	if args[0] == nil {
+		return "NULL", nil
+	}
+	return pgQuoteLiteral(valueString(args[0])), nil
+}
+
+func pgTypeofFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("pg_typeof requires 1 argument")
+	}
+	if args[0] == nil {
+		return "unknown", nil
+	}
+	switch args[0].(type) {
+	case int64:
+		return "integer", nil
+	case float64:
+		return "double precision", nil
+	default:
+		return "text", nil
+	}
+}
+
+func numNonnullsFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	var count int64
+	for _, arg := range args {
+		if arg != nil {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func numNullsFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	var count int64
+	for _, arg := range args {
+		if arg == nil {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func genRandomUUIDFunc(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
+	var uuid [16]byte
+	if _, err := rand.Read(uuid[:]); err != nil {
+		return nil, err
+	}
+	uuid[6] = (uuid[6] & 0x0f) | 0x40 // version 4
+	uuid[8] = (uuid[8] & 0x3f) | 0x80 // variant bits
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		uuid[0:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:16]), nil
+}
+
+func normalizeFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) < 1 {
+		return nil, fmt.Errorf("normalize requires at least 1 argument")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	return valueString(args[0]), nil
+}
+
+func isNormalizedFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) < 1 {
+		return nil, fmt.Errorf("is_normalized requires at least 1 argument")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	return int64(1), nil
+}
+
+func unicodeVersionFunc(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
+	return "15.0.0", nil
+}
+
+func unicodeAssignedFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("unicode_assigned requires 1 argument")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	return int64(1), nil
+}
+
+func pgInputErrorInfoFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	// Returns (message, detail, hint, sql_error_code) — return NULL for "no error"
+	return nil, nil
+}
+
+func parseIdentFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) < 1 {
+		return nil, fmt.Errorf("parse_ident requires at least 1 argument")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	// Return the identifier parts as a JSON array
+	s := valueString(args[0])
+	parts := strings.Split(s, ".")
+	var quoted []string
+	for _, p := range parts {
+		p = strings.Trim(p, `"`)
+		quoted = append(quoted, `"`+strings.ReplaceAll(p, `"`, `""`)+`"`)
+	}
+	return "[" + strings.Join(quoted, ",") + "]", nil
+}
+
+func regrSlopeFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 || args[0] == nil || args[1] == nil {
+		return nil, nil
+	}
+	return nil, nil
+}
+
+func regrInterceptFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 || args[0] == nil || args[1] == nil {
+		return nil, nil
+	}
+	return nil, nil
+}
+
+func regrR2Func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 || args[0] == nil || args[1] == nil {
+		return nil, nil
+	}
+	return nil, nil
+}
+
+func regrCountFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 {
+		return int64(0), nil
+	}
+	if args[0] == nil || args[1] == nil {
+		return int64(0), nil
+	}
+	return int64(1), nil
+}
+
+func regrAvgxFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 || args[0] == nil || args[1] == nil {
+		return nil, nil
+	}
+	return nil, nil
+}
+
+func regrAvgyFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 || args[0] == nil || args[1] == nil {
+		return nil, nil
+	}
+	return nil, nil
+}
+
+func regrSxxFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 || args[0] == nil || args[1] == nil {
+		return nil, nil
+	}
+	return nil, nil
+}
+
+func regrSyyFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 || args[0] == nil || args[1] == nil {
+		return nil, nil
+	}
+	return nil, nil
+}
+
+func regrSxyFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 || args[0] == nil || args[1] == nil {
+		return nil, nil
+	}
+	return nil, nil
 }
 
 

@@ -121,6 +121,8 @@ func Rewrite(sql string) string {
 	out = onlyRE.ReplaceAllString(out, "FROM ")
 	out = eStringRE.ReplaceAllString(out, "'")
 	out = asNullRE.ReplaceAllString(out, "AS \"null\"")
+	out = rewriteStringAgg(out)
+	out = rewriteArrayAgg(out)
 	out = rewriteKeywords(out)
 	return out
 }
@@ -1627,6 +1629,143 @@ func decodeUnicodeEscape(s string, esc rune) (string, string, string) {
 		}
 	}
 	return b.String(), "", ""
+}
+
+// rewriteStringAgg rewrites PostgreSQL string_agg(expr, sep [ORDER BY ...]) to
+// SQLite group_concat(expr, sep), discarding any ORDER BY inside the aggregate.
+func rewriteStringAgg(sql string) string {
+	return rewriteAggFunc(sql, "string_agg", func(inner string) string {
+		// inner is everything between the outer parens
+		// strip ORDER BY clause inside aggregate if present
+		lower := strings.ToLower(inner)
+		orderIdx := findOrderByOutsideParens(lower)
+		if orderIdx >= 0 {
+			inner = inner[:orderIdx]
+		}
+		return "group_concat(" + strings.TrimSpace(inner) + ")"
+	})
+}
+
+// rewriteArrayAgg rewrites PostgreSQL array_agg(expr [ORDER BY ...]) to
+// SQLite json_group_array(expr), discarding ORDER BY inside aggregate.
+func rewriteArrayAgg(sql string) string {
+	return rewriteAggFunc(sql, "array_agg", func(inner string) string {
+		lower := strings.ToLower(inner)
+		orderIdx := findOrderByOutsideParens(lower)
+		if orderIdx >= 0 {
+			inner = inner[:orderIdx]
+		}
+		return "json_group_array(" + strings.TrimSpace(inner) + ")"
+	})
+}
+
+// rewriteAggFunc is a generic helper to rewrite aggregate function calls.
+func rewriteAggFunc(sql, funcName string, transform func(string) string) string {
+	lower := strings.ToLower(sql)
+	var result strings.Builder
+	pos := 0
+	for {
+		idx := strings.Index(lower[pos:], funcName+"(")
+		if idx == -1 {
+			break
+		}
+		idx += pos
+		// Check word boundary before funcName
+		if idx > 0 && isIdentByte(sql[idx-1]) {
+			pos = idx + 1
+			continue
+		}
+		parenStart := idx + len(funcName)
+		// Find matching closing paren
+		depth := 0
+		i := parenStart
+		inSingle := false
+		inDouble := false
+		for i < len(sql) {
+			c := sql[i]
+			if inSingle {
+				if c == '\'' && i+1 < len(sql) && sql[i+1] == '\'' {
+					i += 2
+					continue
+				}
+				if c == '\'' {
+					inSingle = false
+				}
+				i++
+				continue
+			}
+			if inDouble {
+				if c == '"' && i+1 < len(sql) && sql[i+1] == '"' {
+					i += 2
+					continue
+				}
+				if c == '"' {
+					inDouble = false
+				}
+				i++
+				continue
+			}
+			if c == '\'' {
+				inSingle = true
+			} else if c == '"' {
+				inDouble = true
+			} else if c == '(' {
+				depth++
+			} else if c == ')' {
+				depth--
+				if depth == 0 {
+					break
+				}
+			}
+			i++
+		}
+		if depth != 0 {
+			break
+		}
+		inner := sql[parenStart+1 : i]
+		result.WriteString(sql[pos:idx])
+		result.WriteString(transform(inner))
+		pos = i + 1
+		lower = strings.ToLower(sql)
+	}
+	result.WriteString(sql[pos:])
+	return result.String()
+}
+
+// findOrderByOutsideParens finds "order by" keyword outside of parentheses.
+func findOrderByOutsideParens(lower string) int {
+	depth := 0
+	inSingle := false
+	for i := 0; i < len(lower); i++ {
+		c := lower[i]
+		if inSingle {
+			if c == '\'' && i+1 < len(lower) && lower[i+1] == '\'' {
+				i++
+				continue
+			}
+			if c == '\'' {
+				inSingle = false
+			}
+			continue
+		}
+		if c == '\'' {
+			inSingle = true
+			continue
+		}
+		if c == '(' {
+			depth++
+		} else if c == ')' {
+			depth--
+		} else if depth == 0 && i+8 <= len(lower) && lower[i:i+8] == "order by" {
+			// check word boundaries
+			leftOK := i == 0 || lower[i-1] == ' ' || lower[i-1] == '\t' || lower[i-1] == '\n'
+			rightOK := i+8 == len(lower) || lower[i+8] == ' ' || lower[i+8] == '\t' || lower[i+8] == '\n'
+			if leftOK && rightOK {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 func rewriteKeywords(sql string) string {

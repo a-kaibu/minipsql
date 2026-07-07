@@ -2647,10 +2647,11 @@ func minipsqlSimilarSubstringFunc(_ *sqlite.FunctionContext, args []driver.Value
 	if args[2] != nil {
 		escStr = valueString(args[2])
 	}
-	if len(escStr) != 1 {
+	escRunes := []rune(escStr)
+	if len(escRunes) != 1 {
 		return nil, &compat.PGError{Code: "22025", Message: "invalid escape sequence"}
 	}
-	esc := rune(escStr[0])
+	esc := escRunes[0]
 
 	sep := string(esc) + `"`
 	parts := strings.Split(pat, sep)

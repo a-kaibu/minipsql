@@ -316,6 +316,11 @@ func tryUnsupportedDDLNoop(sql string) (*backend.CommandTag, bool) {
 func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 	q := strings.TrimSpace(strings.TrimSuffix(sql, ";"))
 	lower := strings.ToLower(q)
+	// Normalize "CREATE OR REPLACE xxx" → "CREATE xxx" for matching purposes
+	if strings.HasPrefix(lower, "create or replace ") {
+		lower = "create " + lower[len("create or replace "):]
+		q = "CREATE " + q[len("CREATE OR REPLACE "):]
+	}
 
 	if strings.HasPrefix(lower, "set ") {
 		var parts []string
@@ -427,6 +432,16 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 		return &backend.CommandTag{Tag: "DROP TRIGGER"}, true
 	case strings.HasPrefix(lower, "drop foreign ") || strings.HasPrefix(lower, "drop foreign;"):
 		return &backend.CommandTag{Tag: "DROP FOREIGN"}, true
+	case strings.HasPrefix(lower, "drop server ") || lower == "drop server":
+		return &backend.CommandTag{Tag: "DROP SERVER"}, true
+	case strings.HasPrefix(lower, "drop routine ") || lower == "drop routine":
+		return &backend.CommandTag{Tag: "DROP ROUTINE"}, true
+	case strings.HasPrefix(lower, "create server ") || strings.HasPrefix(lower, "create foreign server "):
+		return &backend.CommandTag{Tag: "CREATE SERVER"}, true
+	case strings.HasPrefix(lower, "create user mapping "):
+		return &backend.CommandTag{Tag: "CREATE USER MAPPING"}, true
+	case strings.HasPrefix(lower, "alter server "):
+		return &backend.CommandTag{Tag: "ALTER SERVER"}, true
 	case strings.HasPrefix(lower, "drop conversion ") || strings.HasPrefix(lower, "drop conversion;"):
 		return &backend.CommandTag{Tag: "DROP CONVERSION"}, true
 	case strings.HasPrefix(lower, "drop statistics ") || strings.HasPrefix(lower, "drop statistics;"):
@@ -1270,19 +1285,25 @@ func extractFunctionBody(sql string) string {
 func (s *Session) tryRoleCommand(ctx context.Context, sql string) (*backend.CommandTag, error) {
 	lower := strings.ToLower(strings.TrimSpace(sql))
 	
-	isCreate := strings.HasPrefix(lower, "create role ") || strings.HasPrefix(lower, "create user ")
-	isAlter := strings.HasPrefix(lower, "alter role ") || strings.HasPrefix(lower, "alter user ")
-	isDrop := strings.HasPrefix(lower, "drop role ") || strings.HasPrefix(lower, "drop user ")
-	
+	isCreate := strings.HasPrefix(lower, "create role ") || strings.HasPrefix(lower, "create user ") ||
+		strings.HasPrefix(lower, "create group ")
+	isAlter := strings.HasPrefix(lower, "alter role ") || strings.HasPrefix(lower, "alter user ") ||
+		strings.HasPrefix(lower, "alter group ")
+	isDrop := strings.HasPrefix(lower, "drop role ") || strings.HasPrefix(lower, "drop user ") ||
+		strings.HasPrefix(lower, "drop group ")
+
 	if !isCreate && !isAlter && !isDrop {
 		return nil, nil
 	}
 	
 	if isCreate {
 		var rest string
-		if strings.HasPrefix(lower, "create role ") {
+		switch {
+		case strings.HasPrefix(lower, "create role "):
 			rest = sql[len("create role "):]
-		} else {
+		case strings.HasPrefix(lower, "create group "):
+			rest = sql[len("create group "):]
+		default:
 			rest = sql[len("create user "):]
 		}
 		

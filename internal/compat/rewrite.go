@@ -108,6 +108,8 @@ var (
 	// current_time(n) / current_timestamp(n) — precision versions not supported by SQLite
 	currentTimePrecRE      = regexp.MustCompile(`(?i)\bcurrent_time\s*\(\s*\d+\s*\)`)
 	currentTimestampPrecRE = regexp.MustCompile(`(?i)\bcurrent_timestamp\s*\(\s*\d+\s*\)`)
+	// ROW(...) constructor — strip the ROW keyword, keep the parens
+	rowConstructorRE = regexp.MustCompile(`(?i)\bROW\s*\(`)
 )
 
 var idxCounter atomic.Int64
@@ -170,6 +172,7 @@ func Rewrite(sql string) string {
 	out = namedArgRE.ReplaceAllString(out, "")
 	out = forPortionOfRE.ReplaceAllString(out, "")
 	out = variadicRE.ReplaceAllString(out, "")
+	out = rowConstructorRE.ReplaceAllString(out, "(")
 	out = withoutTimeZoneRE.ReplaceAllString(out, "$1")
 	out = withTimeZoneRE.ReplaceAllString(out, "$1")
 	out = rewriteCollateClause(out)

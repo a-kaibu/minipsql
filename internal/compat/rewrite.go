@@ -46,7 +46,7 @@ var (
 	extractRE          = regexp.MustCompile(`(?i)\bEXTRACT\s*\(\s*([A-Za-z_]+)\s+FROM\s+`)
 	schemaPrefixRE     = regexp.MustCompile(`(?i)\b(?:public|pg_temp|pg_catalog)\s*\.\s*([A-Za-z0-9_"]+)`)
 	createViewWithOptsRE = regexp.MustCompile(`(?i)(CREATE\s+(?:OR\s+REPLACE\s+)?(?:TEMP(?:ORARY)?\s+)?VIEW\s+\S+)\s+WITH\s*\([^)]*\)`)
-	createTableWithOptsRE = regexp.MustCompile(`(?i)(CREATE\s+(?:UNLOGGED\s+|TEMP(?:ORARY)?\s+)?TABLE\s+[^\s(]+)\s+WITH\s*\([^)]*\)`)
+	createTableWithOptsRE = regexp.MustCompile(`(?i)(CREATE\s+(?:UNLOGGED\s+|TEMP(?:ORARY)?\s+)?TABLE\s+[^\s(]+(?:\s*\([^)]*\))?)\s+WITH\s*\([^)]*\)`)
 	createTableWithNoDataRE = regexp.MustCompile(`(?i)\bWITH\s+NO\s+DATA\b`)
 	createTableColListRE = regexp.MustCompile(`(?i)^\s*(CREATE\s+(?:UNLOGGED\s+|TEMP(?:ORARY)?\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[A-Za-z0-9_".]+)\s*\(([^)]+)\)\s*(AS\s+)`)
 	withOrdinalityRE   = regexp.MustCompile(`(?i)\bWITH\s+ORDINALITY\b`)
@@ -58,6 +58,11 @@ var (
 	forUpdateRE        = regexp.MustCompile(`(?i)\s+FOR\s+(?:UPDATE|SHARE|NO\s+KEY\s+UPDATE|KEY\s+SHARE)(?:\s+OF\s+\S+)?(?:\s+NOWAIT|\s+SKIP\s+LOCKED)?\s*$`)
 	indexIncludeRE     = regexp.MustCompile(`(?i)\bINCLUDE\s*\([^)]*\)`)
 	compressionRE      = regexp.MustCompile(`(?i)\bCOMPRESSION\s+\w+\b`)
+	withOidsRE         = regexp.MustCompile(`(?i)\s+WITH\s+OIDS\b|\s+WITH\s*\(\s*oids(?:\s*=\s*true)?\s*\)`)
+	withoutOidsRE      = regexp.MustCompile(`(?i)\s+WITHOUT\s+OIDS\b|\s+WITH\s*\(\s*oids\s*=\s*false\s*\)`)
+	emptyTableRE       = regexp.MustCompile(`(?i)(CREATE\s+(?:TEMP(?:ORARY)?\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[A-Za-z0-9_".]+)\s*\(\s*\)`)
+	insertDefaultRE    = regexp.MustCompile(`(?i)\bDEFAULT\b`)
+	insertSelectRE     = regexp.MustCompile(`(?i)^\s*(INSERT\s+INTO\s+[A-Za-z0-9_".]+)\s*\(\s*(SELECT\b.+)\)\s*$`)
 )
 
 var idxCounter atomic.Int64
@@ -86,6 +91,10 @@ func Rewrite(sql string) string {
 	out = rewriteForUpdate(out)
 	out = rewriteIndexInclude(out)
 	out = rewriteColumnCompression(out)
+	out = rewriteWithOids(out)
+	out = rewriteEmptyTable(out)
+	out = rewriteInsertDefault(out)
+	out = rewriteInsertSelect(out)
 	out = rewriteUnicodeLiterals(out)
 	out = rewriteValuesAlias(out)
 	out = tableKeywordRE.ReplaceAllStringFunc(out, func(m string) string {
@@ -2472,6 +2481,105 @@ func rewriteIndexInclude(sql string) string {
 // rewriteColumnCompression strips COMPRESSION method from column definitions.
 func rewriteColumnCompression(sql string) string {
 	return compressionRE.ReplaceAllString(sql, "")
+}
+
+// rewriteInsertSelect rewrites INSERT INTO t (SELECT ...) to INSERT INTO t SELECT ...
+// SQLite requires SELECT without wrapping parens in INSERT.
+func rewriteInsertSelect(sql string) string {
+	return insertSelectRE.ReplaceAllString(sql, "$1 $2")
+}
+
+// rewriteInsertDefault replaces DEFAULT in INSERT VALUES lists with NULL.
+// SQLite does not support DEFAULT in VALUES lists (only DEFAULT VALUES).
+// This is an approximation — columns with non-NULL defaults may get NULL.
+func rewriteInsertDefault(sql string) string {
+	lower := strings.ToLower(sql)
+	if !strings.Contains(lower, "default") {
+		return sql
+	}
+	if !strings.Contains(lower, "insert") {
+		return sql
+	}
+	// Find VALUES keyword and replace DEFAULT within the values list
+	valuesIdx := indexKeywordOutsideQuotesAndParens(lower, "values")
+	if valuesIdx == -1 {
+		return sql
+	}
+	// Everything before VALUES stays the same
+	prefix := sql[:valuesIdx+len("values")]
+	suffix := sql[valuesIdx+len("values"):]
+	// In the VALUES section, replace standalone DEFAULT with NULL
+	suffixLower := strings.ToLower(suffix)
+	var result strings.Builder
+	i := 0
+	n := len(suffix)
+	inSingle := false
+	inDouble := false
+	for i < n {
+		if inSingle {
+			if suffix[i] == '\'' && i+1 < n && suffix[i+1] == '\'' {
+				result.WriteString("''")
+				i += 2
+				continue
+			}
+			if suffix[i] == '\'' {
+				inSingle = false
+			}
+			result.WriteByte(suffix[i])
+			i++
+			continue
+		}
+		if inDouble {
+			if suffix[i] == '"' && i+1 < n && suffix[i+1] == '"' {
+				result.WriteString(`""`)
+				i += 2
+				continue
+			}
+			if suffix[i] == '"' {
+				inDouble = false
+			}
+			result.WriteByte(suffix[i])
+			i++
+			continue
+		}
+		if suffix[i] == '\'' {
+			inSingle = true
+			result.WriteByte(suffix[i])
+			i++
+			continue
+		}
+		if suffix[i] == '"' {
+			inDouble = true
+			result.WriteByte(suffix[i])
+			i++
+			continue
+		}
+		if i+7 <= n && strings.ToLower(suffixLower[i:i+7]) == "default" {
+			leftBound := i == 0 || !isIdentByte(suffix[i-1])
+			rightBound := i+7 == n || !isIdentByte(suffix[i+7])
+			if leftBound && rightBound {
+				result.WriteString("NULL")
+				i += 7
+				continue
+			}
+		}
+		result.WriteByte(suffix[i])
+		i++
+	}
+	return prefix + result.String()
+}
+
+// rewriteWithOids strips WITH OIDS and WITHOUT OIDS clauses (legacy PostgreSQL).
+func rewriteWithOids(sql string) string {
+	result := withOidsRE.ReplaceAllString(sql, "")
+	result = withoutOidsRE.ReplaceAllString(result, "")
+	return result
+}
+
+// rewriteEmptyTable adds a dummy column to empty table definitions.
+// SQLite does not support tables with no columns.
+func rewriteEmptyTable(sql string) string {
+	return emptyTableRE.ReplaceAllString(sql, "$1 (_dummy integer)")
 }
 
 // rewriteForUpdate strips SELECT ... FOR UPDATE/SHARE locking clauses.

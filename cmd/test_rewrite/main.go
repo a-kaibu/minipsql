@@ -7,9 +7,10 @@ import (
 
 func main() {
 	tests := []string{
-		"SELECT * FROM unnest(array['a', 'b', 'c']) as u(prop,ord)",
-		"SELECT * FROM unnest(ARRAY['a', 'b', 'c']) WITH ORDINALITY as u(prop,ord)",
-		"SELECT unnest(ARRAY[1,2,3]) as u",
+		"CREATE TABLE large_tuple_test (a int, b text) WITH (fillfactor = 10)",
+		"INSERT INTO t (select 1, NULL)",
+		"INSERT INTO large_tuple_test (select 2, repeat('a', 1000))",
+		"CREATE TABLE withoid() WITH OIDS",
 	}
 	for _, s := range tests {
 		out := compat.Rewrite(s)

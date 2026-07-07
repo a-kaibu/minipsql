@@ -192,7 +192,6 @@ func Rewrite(sql string) string {
 	out = rewriteBareOffset(out)
 	out = rewriteDropMultiTable(out)
 	out = rewriteIndexOpClasses(out)
-	out = rewriteNullsFirstLast(out)
 	out = rewriteForUpdate(out)
 	out = rewriteIndexInclude(out)
 	out = indexWithOptsRE.ReplaceAllString(out, "$1")

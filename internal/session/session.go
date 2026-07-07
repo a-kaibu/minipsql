@@ -311,6 +311,14 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 		return &backend.CommandTag{Tag: "CHECKPOINT"}, true
 	case strings.HasPrefix(lower, "reassign owned"):
 		return &backend.CommandTag{Tag: "REASSIGN OWNED"}, true
+	case strings.HasPrefix(lower, "declare ") && strings.Contains(lower, " cursor "):
+		return &backend.CommandTag{Tag: "DECLARE"}, true
+	case strings.HasPrefix(lower, "move "):
+		return &backend.CommandTag{Tag: "MOVE"}, true
+	case strings.HasPrefix(lower, "close "):
+		return &backend.CommandTag{Tag: "CLOSE"}, true
+	case strings.HasPrefix(lower, "fetch "):
+		return &backend.CommandTag{Tag: "FETCH 0"}, true
 	case strings.HasPrefix(lower, "drop function ") || strings.HasPrefix(lower, "drop function;"):
 		return &backend.CommandTag{Tag: "DROP FUNCTION"}, true
 	case strings.HasPrefix(lower, "drop procedure ") || strings.HasPrefix(lower, "drop procedure;"):

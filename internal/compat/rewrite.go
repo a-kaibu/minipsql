@@ -55,7 +55,7 @@ var (
 	dropCascadeRE       = regexp.MustCompile(`(?i)^(\s*DROP\s+(?:VIEW|INDEX|SCHEMA|SEQUENCE|FUNCTION|PROCEDURE|AGGREGATE|TYPE|DOMAIN|OPERATOR|RULE|TRIGGER|CAST|COLLATION|CONVERSION|STATISTICS|LANGUAGE|POLICY|EXTENSION|ACCESS\s+METHOD|OPERATOR\s+CLASS|OPERATOR\s+FAMILY|FOREIGN\s+(?:TABLE|DATA\s+WRAPPER|SERVER))\s+(?:IF\s+EXISTS\s+)?(?:[A-Za-z0-9_".,\s]+?))(\s+(?:CASCADE|RESTRICT))(\s*;?\s*)$`)
 	pgCatalogOperatorRE  = regexp.MustCompile(`(?i)\bOPERATOR\s*\(\s*(?:pg_catalog\s*\.\s*)?(~\*?|=|<>|!=|<|>|<=|>=|\|\|)\s*\)`)
 	pgCatalogCollateRE   = regexp.MustCompile(`(?i)\s+COLLATE\s+(?:pg_catalog\.[A-Za-z0-9_]+|"pg_catalog"\.[A-Za-z0-9_]+|[A-Za-z0-9_".-]+\.[A-Za-z0-9_"]+)`)
-	partitionByClauseRE = regexp.MustCompile(`(?i)\s+PARTITION\s+BY\s+(?:RANGE|LIST|HASH)\s*\([^)]*\)`)
+	partitionByClauseRE = regexp.MustCompile(`(?i)\s+PARTITION\s+BY\s+(?:RANGE|LIST|HASH)\s*\(`)
 	partitionOfRE       = regexp.MustCompile(`(?i)^\s*CREATE\s+TABLE\s+\S+\s+PARTITION\s+OF\s+`)
 	attachPartitionRE   = regexp.MustCompile(`(?i)\bATTACH\s+PARTITION\b`)
 	detachPartitionRE   = regexp.MustCompile(`(?i)\bDETACH\s+PARTITION\b`)
@@ -79,6 +79,7 @@ var (
 	emptyTableRE       = regexp.MustCompile(`(?i)(CREATE\s+(?:TEMP(?:ORARY)?\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[A-Za-z0-9_".]+)\s*\(\s*\)`)
 	insertDefaultRE    = regexp.MustCompile(`(?i)\bDEFAULT\b`)
 	insertSelectRE     = regexp.MustCompile(`(?i)^\s*(INSERT\s+INTO\s+[A-Za-z0-9_".]+)\s*\(\s*(SELECT\b.+)\)\s*$`)
+	indexWithOptsRE    = regexp.MustCompile(`(?i)(CREATE\s+(?:UNIQUE\s+)?INDEX\b.+?)\s+WITH\s*\([^)]*\)`)
 )
 
 var idxCounter atomic.Int64
@@ -87,6 +88,7 @@ var idxCounter atomic.Int64
 func Rewrite(sql string) string {
 	out := rewriteTruncate(sql)
 	out = rewriteCreateOrReplaceView(out)
+	out = rewriteCreateView(out)
 	out = rewriteUnloggedTable(out)
 	out = rewriteSelectInto(out)
 	out = rewriteIndexConcurrently(out)
@@ -117,6 +119,7 @@ func Rewrite(sql string) string {
 	out = rewriteNullsFirstLast(out)
 	out = rewriteForUpdate(out)
 	out = rewriteIndexInclude(out)
+	out = indexWithOptsRE.ReplaceAllString(out, "$1")
 	out = rewriteColumnCompression(out)
 	out = rewriteWithOids(out)
 	out = rewriteEmptyTable(out)
@@ -214,6 +217,7 @@ var (
 	tablesampleRE = regexp.MustCompile(`(?i)\bTABLESAMPLE\s+\w+\s*\([^)]*\)`)
 
 	createOrReplaceViewRE = regexp.MustCompile(`(?i)^\s*CREATE\s+OR\s+REPLACE\s+(TEMP(?:ORARY)?\s+)?VIEW\s+`)
+	createViewRE          = regexp.MustCompile(`(?i)(^\s*CREATE\s+(?:TEMP(?:ORARY)?\s+)?VIEW\s+)(IF\s+NOT\s+EXISTS\s+|)([A-Za-z0-9_".]+)`)
 	createUnloggedTableRE = regexp.MustCompile(`(?i)\bCREATE\s+UNLOGGED\s+TABLE\b`)
 	selectIntoRE          = regexp.MustCompile(`(?i)^\s*SELECT\s+(.+?)\s+INTO\s+(?:TEMP(?:ORARY)?\s+)?(?:TABLE\s+)?([A-Za-z0-9_".]+)\s+FROM\s+`)
 	indexConcurrentlyRE   = regexp.MustCompile(`(?i)\b(CREATE\s+(?:UNIQUE\s+)?INDEX|DROP\s+INDEX)\s+CONCURRENTLY\s+`)
@@ -237,6 +241,17 @@ func rewriteCreateOrReplaceView(sql string) string {
 		tempClause = "TEMP "
 	}
 	return "DROP VIEW IF EXISTS " + viewName + "; CREATE " + tempClause + "VIEW " + rest
+}
+
+// rewriteCreateView adds IF NOT EXISTS to CREATE VIEW to avoid duplicate errors.
+func rewriteCreateView(sql string) string {
+	return createViewRE.ReplaceAllStringFunc(sql, func(m string) string {
+		sub := createViewRE.FindStringSubmatch(m)
+		if sub[2] != "" {
+			return m // already has IF NOT EXISTS
+		}
+		return sub[1] + "IF NOT EXISTS " + sub[3]
+	})
 }
 
 // rewriteUnloggedTable strips UNLOGGED keyword from CREATE TABLE.
@@ -2443,18 +2458,40 @@ func rewritePartitionBy(sql string) string {
 	if !strings.Contains(lower, "partition") {
 		return sql
 	}
-	// Strip "PARTITION BY RANGE/LIST/HASH (...)" from CREATE TABLE
-	out := partitionByClauseRE.ReplaceAllString(sql, "")
+	out := stripPartitionByClause(sql)
 	// Rewrite "CREATE TABLE t PARTITION OF parent FOR VALUES ..." to "CREATE TABLE IF NOT EXISTS t (LIKE parent)"
-	// Since we can't do inheritance, just create an empty table with the same approach
 	if partitionOfRE.MatchString(out) {
-		// Extract just the table name and convert to CREATE TABLE IF NOT EXISTS name ()
 		m := regexp.MustCompile(`(?i)^\s*CREATE\s+TABLE\s+((?:IF\s+NOT\s+EXISTS\s+)?[A-Za-z0-9_"]+)\s+PARTITION\s+OF\s+.*$`).FindStringSubmatch(out)
 		if m != nil {
 			return "CREATE TABLE IF NOT EXISTS " + m[1] + " (_dummy integer)"
 		}
 	}
 	return out
+}
+
+// stripPartitionByClause removes PARTITION BY RANGE/LIST/HASH (...) handling nested parens.
+func stripPartitionByClause(sql string) string {
+	result := sql
+	for {
+		loc := partitionByClauseRE.FindStringIndex(result)
+		if loc == nil {
+			break
+		}
+		// loc[1] points to the char after the opening '('
+		depth := 1
+		i := loc[1]
+		for i < len(result) && depth > 0 {
+			switch result[i] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+			}
+			i++
+		}
+		result = result[:loc[0]] + result[i:]
+	}
+	return result
 }
 
 // rewriteOffsetBeforeLimit swaps "OFFSET m LIMIT n" to "LIMIT n OFFSET m" for SQLite compatibility.

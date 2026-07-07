@@ -3537,14 +3537,23 @@ func toCharFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, e
 		if !isDateTimeFormat(fmtStr) {
 			return toCharNumeric(v, fmtStr), nil
 		}
+	case string:
+		// String value — try numeric if format looks numeric
+		if !isDateTimeFormat(fmtStr) {
+			trimmed := strings.TrimSpace(v)
+			if f, err := strconv.ParseFloat(trimmed, 64); err == nil {
+				return toCharNumeric(f, fmtStr), nil
+			}
+		}
 	}
 
 	t, ok := parseTimestamp(args[0])
 	if !ok {
-		// Try numeric
-		switch v := args[0].(type) {
-		case float64:
-			return toCharNumeric(v, fmtStr), nil
+		// Try numeric as last resort
+		s := fmt.Sprint(args[0])
+		trimmed := strings.TrimSpace(s)
+		if f, err := strconv.ParseFloat(trimmed, 64); err == nil {
+			return toCharNumeric(f, fmtStr), nil
 		}
 		return nil, fmt.Errorf("to_char: cannot parse value: %v", args[0])
 	}
@@ -3625,15 +3634,29 @@ func julianDay(t time.Time) int {
 }
 
 func toCharNumeric(v float64, format string) string {
-	// Basic numeric formatting: 9 = digit, 0 = zero-padded digit, . = decimal, , = thousands
-	// FM prefix removes leading/trailing spaces
+	fmtUpper := strings.ToUpper(format)
 	fm := false
-	fmtStr := format
-	if strings.HasPrefix(strings.ToUpper(fmtStr), "FM") {
+	fmtStr := fmtUpper
+	if strings.HasPrefix(fmtStr, "FM") {
 		fm = true
 		fmtStr = fmtStr[2:]
 	}
-	// Find decimal point position
+	// PR = angle brackets for negative, S = explicit sign, MI/PL variants
+	usePR := strings.HasSuffix(fmtStr, "PR")
+	useS := strings.HasSuffix(fmtStr, "S") && !usePR
+	useSPrefix := strings.HasPrefix(fmtStr, "S")
+	if usePR {
+		fmtStr = fmtStr[:len(fmtStr)-2]
+	} else if useS {
+		fmtStr = fmtStr[:len(fmtStr)-1]
+	} else if useSPrefix {
+		fmtStr = fmtStr[1:]
+	}
+	// G = group separator (same as comma), D = decimal point (same as dot)
+	// Replace G with comma, D with dot for processing
+	fmtStr = strings.ReplaceAll(fmtStr, "G", ",")
+	fmtStr = strings.ReplaceAll(fmtStr, "D", ".")
+	// Find decimal point
 	dotPos := strings.Index(fmtStr, ".")
 	var intFmt, decFmt string
 	if dotPos >= 0 {
@@ -3642,29 +3665,75 @@ func toCharNumeric(v float64, format string) string {
 	} else {
 		intFmt = fmtStr
 	}
-	intDigits := 0
-	for _, c := range intFmt {
-		if c == '9' || c == '0' {
-			intDigits++
-		}
-	}
+	// Count digit places
 	decDigits := 0
 	for _, c := range decFmt {
 		if c == '9' || c == '0' {
 			decDigits++
 		}
 	}
-	var formatted string
-	if decDigits > 0 {
-		formatted = fmt.Sprintf("%.*f", decDigits, v)
-	} else {
-		formatted = fmt.Sprintf("%.0f", v)
+	intDigits := 0
+	for _, c := range intFmt {
+		if c == '9' || c == '0' {
+			intDigits++
+		}
 	}
 	_ = intDigits
-	if fm {
-		formatted = strings.TrimSpace(formatted)
+	// Format the number
+	negative := v < 0
+	absV := math.Abs(v)
+	var numStr string
+	if decDigits > 0 {
+		numStr = fmt.Sprintf("%.*f", decDigits, absV)
+	} else {
+		numStr = fmt.Sprintf("%.0f", absV)
 	}
-	return formatted
+	// Add thousands separators if the format has commas in the integer part
+	if strings.Contains(intFmt, ",") {
+		parts := strings.SplitN(numStr, ".", 2)
+		intPart := parts[0]
+		// Insert commas every 3 digits from the right
+		if len(intPart) > 3 {
+			var result []byte
+			for i, c := range intPart {
+				if i > 0 && (len(intPart)-i)%3 == 0 {
+					result = append(result, ',')
+				}
+				result = append(result, byte(c))
+			}
+			intPart = string(result)
+		}
+		if len(parts) > 1 {
+			numStr = intPart + "." + parts[1]
+		} else {
+			numStr = intPart
+		}
+	}
+	// Apply sign
+	var result string
+	if usePR {
+		if negative {
+			result = "<" + numStr + ">"
+		} else {
+			result = " " + numStr + " "
+		}
+	} else if useS || useSPrefix {
+		if negative {
+			result = "-" + numStr
+		} else {
+			result = "+" + numStr
+		}
+	} else {
+		if negative {
+			result = "-" + numStr
+		} else {
+			result = " " + numStr
+		}
+	}
+	if fm {
+		result = strings.TrimSpace(result)
+	}
+	return result
 }
 
 // toDateFunc implements to_date(text, format).

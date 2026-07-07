@@ -37,6 +37,11 @@ var (
 	tableColumnAliasRE = regexp.MustCompile(`(?i)\b(int2_tbl|int4_tbl|int8_tbl)\b\s*\)?\s*(?:AS\s+)?([A-Za-z0-9_]+)\s*\(\s*([A-Za-z0-9_, ]+)\s*\)`)
 	tableKeywordRE     = regexp.MustCompile(`(?i)(^|[^a-zA-Z0-9_.])(?:([a-zA-Z0-9_]+)\s+)?\bTABLE\s+([A-Za-z0-9_]+)\b`)
 	arrayConstructorRE = regexp.MustCompile(`(?i)\bARRAY\s*\[(.*?)\]`)
+	usingLessRE         = regexp.MustCompile(`(?i)\busing\s+<`)
+	usingGreaterRE      = regexp.MustCompile(`(?i)\busing\s+>`)
+	asteriskTableRE     = regexp.MustCompile(`(?i)\b([a-zA-Z0-9_]+)\*`)
+	parenthesizedStartSelectRE = regexp.MustCompile(`(?i)^\s*\(\s*(SELECT\b[^)]+?)\)`)
+	parenthesizedSetSelectRE   = regexp.MustCompile(`(?i)\b(UNION\s+ALL|UNION|EXCEPT|INTERSECT)\s*\(\s*(SELECT\b[^)]+?)\)`)
 )
 
 var idxCounter atomic.Int64
@@ -64,6 +69,11 @@ func Rewrite(sql string) string {
 	})
 	out = rewriteTableColumnAlias(out)
 	out = arrayConstructorRE.ReplaceAllString(out, "minipsql_array($1)")
+	out = usingLessRE.ReplaceAllString(out, "")
+	out = usingGreaterRE.ReplaceAllString(out, "DESC")
+	out = asteriskTableRE.ReplaceAllString(out, "$1")
+	out = parenthesizedStartSelectRE.ReplaceAllString(out, "SELECT * FROM ($1)")
+	out = parenthesizedSetSelectRE.ReplaceAllString(out, "$1 SELECT * FROM ($2)")
 	out = rewriteStringContinuation(out)
 	out = rewriteDollarQuotes(out)
 	out = rewriteRegexFunctions(out)

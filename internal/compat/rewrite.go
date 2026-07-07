@@ -10,6 +10,7 @@ import (
 )
 
 var (
+	truncateRE         = regexp.MustCompile(`(?i)^\s*TRUNCATE\s+(?:TABLE\s+)?([A-Za-z0-9_".,\s]+?)(?:\s+(?:CASCADE|RESTRICT))?\s*;?\s*$`)
 	paramRE            = regexp.MustCompile(`\$([0-9]+)`)
 	serialRE           = regexp.MustCompile(`(?i)\bserial\b`)
 	boolRE             = regexp.MustCompile(`(?i)\bboolean\b|\bbool\b`)
@@ -48,7 +49,8 @@ var idxCounter atomic.Int64
 
 
 func Rewrite(sql string) string {
-	out := rewriteUnicodeLiterals(sql)
+	out := rewriteTruncate(sql)
+	out = rewriteUnicodeLiterals(out)
 	out = rewriteValuesAlias(out)
 	out = tableKeywordRE.ReplaceAllStringFunc(out, func(m string) string {
 		sub := tableKeywordRE.FindStringSubmatch(m)
@@ -125,6 +127,26 @@ func Rewrite(sql string) string {
 	out = rewriteArrayAgg(out)
 	out = rewriteKeywords(out)
 	return out
+}
+
+func rewriteTruncate(sql string) string {
+	m := truncateRE.FindStringSubmatch(sql)
+	if m == nil {
+		return sql
+	}
+	tableList := strings.TrimSpace(m[1])
+	tables := strings.Split(tableList, ",")
+	var deletes []string
+	for _, t := range tables {
+		t = strings.TrimSpace(t)
+		if t != "" {
+			deletes = append(deletes, "DELETE FROM "+t)
+		}
+	}
+	if len(deletes) == 0 {
+		return sql
+	}
+	return strings.Join(deletes, "; ")
 }
 
 func rewriteAnonymousIndex(sql string) string {

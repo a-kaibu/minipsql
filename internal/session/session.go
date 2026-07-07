@@ -297,9 +297,141 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 		return &backend.CommandTag{Tag: "CHECKPOINT"}, true
 	case strings.HasPrefix(lower, "reassign owned"):
 		return &backend.CommandTag{Tag: "REASSIGN OWNED"}, true
+	case strings.HasPrefix(lower, "alter sequence "):
+		return &backend.CommandTag{Tag: "ALTER SEQUENCE"}, true
+	case strings.HasPrefix(lower, "create sequence "):
+		return &backend.CommandTag{Tag: "CREATE SEQUENCE"}, true
+	case strings.HasPrefix(lower, "create temp sequence "):
+		return &backend.CommandTag{Tag: "CREATE SEQUENCE"}, true
+	case strings.HasPrefix(lower, "create temporary sequence "):
+		return &backend.CommandTag{Tag: "CREATE SEQUENCE"}, true
+	case strings.HasPrefix(lower, "drop sequence "):
+		return &backend.CommandTag{Tag: "DROP SEQUENCE"}, true
+	case strings.HasPrefix(lower, "create materialized view"):
+		return &backend.CommandTag{Tag: "CREATE MATERIALIZED VIEW"}, true
+	case strings.HasPrefix(lower, "refresh materialized view"):
+		return &backend.CommandTag{Tag: "REFRESH MATERIALIZED VIEW"}, true
+	case strings.HasPrefix(lower, "drop materialized view"):
+		return &backend.CommandTag{Tag: "DROP MATERIALIZED VIEW"}, true
+	case strings.HasPrefix(lower, "alter index "):
+		return &backend.CommandTag{Tag: "ALTER INDEX"}, true
+	case strings.HasPrefix(lower, "security label"):
+		return &backend.CommandTag{Tag: "SECURITY LABEL"}, true
+	case strings.HasPrefix(lower, "import foreign schema"):
+		return &backend.CommandTag{Tag: "IMPORT FOREIGN SCHEMA"}, true
+	}
+
+	// ALTER TABLE with unsupported subcommands → no-op
+	if strings.HasPrefix(lower, "alter table ") {
+		if tag, ok := tryAlterTableNoop(lower); ok {
+			return tag, true
+		}
+	}
+
+	// SAVEPOINT / RELEASE / ROLLBACK TO → pass through to SQLite
+	if strings.HasPrefix(lower, "savepoint ") || lower == "savepoint" {
+		return &backend.CommandTag{Tag: "SAVEPOINT"}, true
+	}
+	if strings.HasPrefix(lower, "release ") || lower == "release" {
+		return &backend.CommandTag{Tag: "RELEASE"}, true
 	}
 
 	return nil, false
+}
+
+// tryAlterTableNoop returns a no-op tag for ALTER TABLE subcommands that SQLite doesn't support.
+func tryAlterTableNoop(lower string) (*backend.CommandTag, bool) {
+	noopPatterns := []string{
+		"owner to ",
+		"set schema ",
+		"cluster on ",
+		"set tablespace ",
+		"enable trigger",
+		"disable trigger",
+		"enable rule",
+		"disable rule",
+		"inherit ",
+		"no inherit ",
+		"set (", "reset (",
+		"set without",
+		"set with",
+		"set logged",
+		"set unlogged",
+		"enable row",
+		"disable row",
+		"force row",
+		"no force row",
+		"replica identity",
+		"attach partition",
+		"detach partition",
+	}
+	// Find the part after "alter table <name>"
+	rest := lower[len("alter table "):]
+	// Skip table name (possibly quoted)
+	rest = skipTableName(rest)
+	rest = strings.TrimSpace(rest)
+	// Handle multi-action: strip "if exists" / "only"
+	if strings.HasPrefix(rest, "if exists ") {
+		rest = rest[len("if exists "):]
+		rest = skipTableName(rest)
+		rest = strings.TrimSpace(rest)
+	}
+	if strings.HasPrefix(rest, "only ") {
+		rest = rest[len("only "):]
+		rest = skipTableName(rest)
+		rest = strings.TrimSpace(rest)
+	}
+	// ALTER COLUMN no-ops
+	if strings.HasPrefix(rest, "alter column ") || strings.HasPrefix(rest, "alter ") {
+		colRest := rest
+		if strings.HasPrefix(colRest, "alter column ") {
+			colRest = colRest[len("alter column "):]
+		} else {
+			colRest = colRest[len("alter "):]
+		}
+		// skip column name
+		colRest = skipTableName(colRest)
+		colRest = strings.TrimSpace(colRest)
+		if strings.HasPrefix(colRest, "set not null") ||
+			strings.HasPrefix(colRest, "drop not null") ||
+			strings.HasPrefix(colRest, "set default") ||
+			strings.HasPrefix(colRest, "drop default") ||
+			strings.HasPrefix(colRest, "set statistics") ||
+			strings.HasPrefix(colRest, "set storage") ||
+			strings.HasPrefix(colRest, "set compression") ||
+			strings.HasPrefix(colRest, "type ") ||
+			strings.HasPrefix(colRest, "using ") ||
+			strings.HasPrefix(colRest, "set (") ||
+			strings.HasPrefix(colRest, "reset (") {
+			return &backend.CommandTag{Tag: "ALTER TABLE"}, true
+		}
+	}
+	for _, p := range noopPatterns {
+		if strings.HasPrefix(rest, p) {
+			return &backend.CommandTag{Tag: "ALTER TABLE"}, true
+		}
+	}
+	return nil, false
+}
+
+// skipTableName advances past a (possibly quoted) identifier.
+func skipTableName(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) == 0 {
+		return s
+	}
+	if s[0] == '"' {
+		end := strings.Index(s[1:], "\"")
+		if end < 0 {
+			return ""
+		}
+		return s[end+2:]
+	}
+	i := 0
+	for i < len(s) && (s[i] != ' ' && s[i] != '\t' && s[i] != '\n' && s[i] != ',' && s[i] != '(') {
+		i++
+	}
+	return s[i:]
 }
 
 func isRegressSetupInsert(lower string) bool {

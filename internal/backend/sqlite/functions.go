@@ -380,6 +380,35 @@ func init() {
 		}
 		return valueInt64(args[0]), nil
 	})
+	// jsonb_pretty — pretty-print JSON; stub just returns the input as-is
+	sqlite.MustRegisterDeterministicScalarFunction("jsonb_pretty", 1, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+		if args[0] == nil {
+			return nil, nil
+		}
+		return valueString(args[0]), nil
+	})
+	// jsonb_build_object — build a JSON object from key/value pairs
+	sqlite.MustRegisterDeterministicScalarFunction("jsonb_build_object", -1, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+		if len(args)%2 != 0 {
+			return nil, fmt.Errorf("jsonb_build_object requires even number of arguments")
+		}
+		var sb strings.Builder
+		sb.WriteByte('{')
+		for i := 0; i < len(args); i += 2 {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			key := valueString(args[i])
+			val := fmt.Sprint(args[i+1])
+			sb.WriteString(`"` + key + `": ` + val)
+		}
+		sb.WriteByte('}')
+		return sb.String(), nil
+	})
+	// jsonb_object_agg stub — returns NULL (used as aggregate, handled by SQLite json_group_object workaround)
+	sqlite.MustRegisterDeterministicScalarFunction("jsonb_object_agg", 2, func(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
+		return nil, nil
+	})
 }
 
 func asciiFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {

@@ -172,6 +172,11 @@ func (s *Session) Execute(ctx context.Context, sql string, args []backend.Value)
 
 	rewritten := compat.Rewrite(sql)
 
+	// Expand CREATE TABLE t (LIKE parent) → CREATE TABLE t AS SELECT * FROM parent WHERE 1=0
+	// SQLite accepts the (LIKE ...) syntax but doesn't actually copy columns, so we rewrite it here
+	// where we have access to the backend for schema info.
+	rewritten = s.expandTableLike(ctx, rewritten)
+
 	// Handle multi-statement rewrites (e.g. CREATE MATERIALIZED VIEW → DROP TABLE IF EXISTS ...; CREATE TABLE ...)
 	if stmts := splitRewrittenStatements(rewritten); len(stmts) > 1 {
 		var lastTag *backend.CommandTag
@@ -1593,4 +1598,18 @@ func handleAlterSequence(sql string) {
 		newIncrement = &v
 	}
 	sqlitebackend.SequenceAlter(name, newStart, newIncrement)
+}
+
+var createTableLikeRE = regexp.MustCompile(`(?i)(CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?["A-Za-z0-9_.]+)\s+\(\s*LIKE\s+(["A-Za-z0-9_.]+)\s*\)`)
+
+// expandTableLike rewrites "CREATE TABLE t (LIKE parent)" to "CREATE TABLE t AS SELECT * FROM parent WHERE 1=0".
+// SQLite accepts (LIKE parent) syntax but doesn't copy the parent's columns.
+func (s *Session) expandTableLike(ctx context.Context, sql string) string {
+	return createTableLikeRE.ReplaceAllStringFunc(sql, func(match string) string {
+		m := createTableLikeRE.FindStringSubmatch(match)
+		if m == nil {
+			return match
+		}
+		return m[1] + " AS SELECT * FROM " + m[2] + " WHERE 1=0"
+	})
 }

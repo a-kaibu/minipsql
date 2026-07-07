@@ -40,7 +40,10 @@ var (
 	arrayConstructorRE = regexp.MustCompile(`(?is)\bARRAY\s*\[(.*?)\]`)
 	usingLessRE         = regexp.MustCompile(`(?i)\busing\s+<`)
 	usingGreaterRE      = regexp.MustCompile(`(?i)\busing\s+>`)
-	asteriskTableRE     = regexp.MustCompile(`(?i)\b([a-zA-Z0-9_]+)\*`)
+	// Match tablename* (PG inheritance asterisk) only when followed by whitespace, comma, ), or end of string.
+	// Does NOT match tablename.* (that's a qualified wildcard, SQLite handles it natively)
+	// Does NOT match g*10 (arithmetic) since the asterisk is followed by a digit or identifier.
+	asteriskTableRE     = regexp.MustCompile(`(?i)\b([a-zA-Z0-9_]+)\*(\s|,|\)|$)`)
 	parenthesizedStartSelectRE = regexp.MustCompile(`(?i)^\s*\(\s*(SELECT\b[^)]+?)\)`)
 	parenthesizedSetSelectRE   = regexp.MustCompile(`(?i)\b(UNION\s+ALL|UNION|EXCEPT|INTERSECT)\s*\(\s*(SELECT\b[^)]+?)\)`)
 	extractRE          = regexp.MustCompile(`(?i)\bEXTRACT\s*\(\s*([A-Za-z_]+)\s+FROM\s+`)
@@ -198,7 +201,7 @@ func Rewrite(sql string) string {
 	out = arrayConstructorRE.ReplaceAllString(out, "minipsql_array($1)")
 	out = usingLessRE.ReplaceAllString(out, "")
 	out = usingGreaterRE.ReplaceAllString(out, "DESC")
-	out = asteriskTableRE.ReplaceAllString(out, "$1")
+	out = asteriskTableRE.ReplaceAllString(out, "$1$2")
 	out = parenthesizedStartSelectRE.ReplaceAllString(out, "SELECT * FROM ($1)")
 	out = parenthesizedSetSelectRE.ReplaceAllString(out, "$1 SELECT * FROM ($2)")
 	out = rewriteStringContinuation(out)
@@ -699,7 +702,7 @@ func rewritePGCast(sql string) string {
 func splitCastTypeTrailingSQL(typeName string) (string, string) {
 	lower := strings.ToLower(typeName)
 	minIdx := -1
-	for _, keyword := range []string{" placing ", " for ", " leading ", " trailing ", " both ", " from ", " where ", " order ", " group ", " limit ", " union ", " intersect ", " except ", " and ", " or ", " is ", " as ", " collate "} {
+	for _, keyword := range []string{" placing ", " for ", " leading ", " trailing ", " both ", " from ", " where ", " order ", " group ", " limit ", " union ", " intersect ", " except ", " and ", " or ", " not ", " is ", " as ", " collate ", " like ", " ilike ", " similar ", " between "} {
 		if idx := strings.Index(lower, keyword); idx >= 0 {
 			if minIdx == -1 || idx < minIdx {
 				minIdx = idx
@@ -2643,9 +2646,9 @@ func rewritePartitionBy(sql string) string {
 	out := stripPartitionByClause(sql)
 	// Rewrite "CREATE TABLE t PARTITION OF parent FOR VALUES ..." to "CREATE TABLE IF NOT EXISTS t (LIKE parent)"
 	if partitionOfRE.MatchString(out) {
-		m := regexp.MustCompile(`(?i)^\s*CREATE\s+TABLE\s+((?:IF\s+NOT\s+EXISTS\s+)?[A-Za-z0-9_"]+)\s+PARTITION\s+OF\s+.*$`).FindStringSubmatch(out)
+		m := regexp.MustCompile(`(?i)^\s*CREATE\s+TABLE\s+((?:IF\s+NOT\s+EXISTS\s+)?[A-Za-z0-9_".]+)\s+PARTITION\s+OF\s+([A-Za-z0-9_".]+)`).FindStringSubmatch(out)
 		if m != nil {
-			return "CREATE TABLE IF NOT EXISTS " + m[1] + " (_dummy integer)"
+			return "CREATE TABLE IF NOT EXISTS " + m[1] + " (LIKE " + m[2] + ")"
 		}
 	}
 	return out

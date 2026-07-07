@@ -271,6 +271,8 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 		return &backend.CommandTag{Tag: "DISCARD ALL"}, true
 	case strings.HasPrefix(lower, "create schema"):
 		return &backend.CommandTag{Tag: "CREATE SCHEMA"}, true
+	case strings.HasPrefix(lower, "alter schema "):
+		return &backend.CommandTag{Tag: "ALTER SCHEMA"}, true
 	case strings.HasPrefix(lower, "drop schema"):
 		return &backend.CommandTag{Tag: "DROP SCHEMA"}, true
 	case strings.HasPrefix(lower, "create tablespace"):
@@ -437,6 +439,10 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 		return &backend.CommandTag{Tag: "CREATE ACCESS METHOD"}, true
 	case strings.HasPrefix(lower, "create event trigger "):
 		return &backend.CommandTag{Tag: "CREATE EVENT TRIGGER"}, true
+	case strings.HasPrefix(lower, "alter event trigger "):
+		return &backend.CommandTag{Tag: "ALTER EVENT TRIGGER"}, true
+	case strings.HasPrefix(lower, "drop event trigger ") || lower == "drop event trigger":
+		return &backend.CommandTag{Tag: "DROP EVENT TRIGGER"}, true
 	case strings.HasPrefix(lower, "create conversion "):
 		return &backend.CommandTag{Tag: "CREATE CONVERSION"}, true
 	case strings.HasPrefix(lower, "create language ") || lower == "create language":

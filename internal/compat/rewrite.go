@@ -94,6 +94,9 @@ var (
 	forPortionOfRE     = regexp.MustCompile(`(?i)\s+FOR\s+PORTION\s+OF\s+\S+\s+FROM\s+\S+\s+TO\s+\S+`)
 	bitLiteralRE       = regexp.MustCompile(`(?i)\bB'([01]*)'`)
 	variadicRE         = regexp.MustCompile(`(?i)\bVARIADIC\s+`)
+	// timestamp/time WITH/WITHOUT TIME ZONE — strip the WITH/WITHOUT TIME ZONE suffix
+	withoutTimeZoneRE  = regexp.MustCompile(`(?i)\b(timestamp|time)\s+without\s+time\s+zone\b`)
+	withTimeZoneRE     = regexp.MustCompile(`(?i)\b(timestamp|time)\s+with\s+time\s+zone\b`)
 	// localtime / localtimestamp — PG-specific aliases for current_time/current_timestamp
 	localtimestampPrecRE = regexp.MustCompile(`(?i)\blocaltimestamp\s*\(\s*\d+\s*\)`)
 	localtimePrecRE      = regexp.MustCompile(`(?i)\blocaltime\s*\(\s*\d+\s*\)`)
@@ -164,6 +167,8 @@ func Rewrite(sql string) string {
 	out = namedArgRE.ReplaceAllString(out, "")
 	out = forPortionOfRE.ReplaceAllString(out, "")
 	out = variadicRE.ReplaceAllString(out, "")
+	out = withoutTimeZoneRE.ReplaceAllString(out, "$1")
+	out = withTimeZoneRE.ReplaceAllString(out, "$1")
 	out = rewriteCollateClause(out)
 	out = rewriteColumnCompression(out)
 	out = rewriteWithOids(out)

@@ -83,6 +83,7 @@ var (
 	createIndexRE      = regexp.MustCompile(`(?i)(CREATE\s+(?:UNIQUE\s+)?INDEX\s+)(IF\s+NOT\s+EXISTS\s+|)([A-Za-z0-9_"]+)`)
 	createAsExecuteRE  = regexp.MustCompile(`(?i)^\s*CREATE\s+(?:TEMP(?:ORARY)?\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z0-9_".]+)\s+AS\s+EXECUTE\b`)
 	anyArrayRE         = regexp.MustCompile(`(?i)=\s*ANY\s*\(\s*ARRAY\s*\[([^\]]*)\](?:::[A-Za-z0-9_\[\]]+)?\s*\)`)
+	notAnyArrayRE      = regexp.MustCompile(`(?i)<>\s*ANY\s*\(\s*ARRAY\s*\[([^\]]*)\](?:::[A-Za-z0-9_\[\]]+)?\s*\)|!=\s*ANY\s*\(\s*ARRAY\s*\[([^\]]*)\](?:::[A-Za-z0-9_\[\]]+)?\s*\)`)
 	namedArgRE         = regexp.MustCompile(`(?i)\b[A-Za-z_][A-Za-z0-9_]*\s*=>\s*`)
 	forPortionOfRE     = regexp.MustCompile(`(?i)\s+FOR\s+PORTION\s+OF\s+\S+\s+FROM\s+\S+\s+TO\s+\S+`)
 )
@@ -93,6 +94,7 @@ var idxCounter atomic.Int64
 func Rewrite(sql string) string {
 	out := rewriteTruncate(sql)
 	out = rewriteCreateOrReplaceView(out)
+	out = createMaterializedViewRE.ReplaceAllString(out, "CREATE VIEW IF NOT EXISTS ")
 	out = rewriteCreateView(out)
 	out = rewriteCreateAsExecute(out)
 	out = rewriteUnloggedTable(out)
@@ -127,6 +129,14 @@ func Rewrite(sql string) string {
 	out = rewriteIndexInclude(out)
 	out = indexWithOptsRE.ReplaceAllString(out, "$1")
 	out = rewriteCreateIndex(out)
+	out = notAnyArrayRE.ReplaceAllStringFunc(out, func(m string) string {
+		sub := notAnyArrayRE.FindStringSubmatch(m)
+		vals := sub[1]
+		if vals == "" {
+			vals = sub[2]
+		}
+		return "NOT IN (" + vals + ")"
+	})
 	out = anyArrayRE.ReplaceAllString(out, "IN ($1)")
 	out = namedArgRE.ReplaceAllString(out, "")
 	out = forPortionOfRE.ReplaceAllString(out, "")
@@ -227,8 +237,9 @@ var (
 	// TABLESAMPLE clause
 	tablesampleRE = regexp.MustCompile(`(?i)\bTABLESAMPLE\s+\w+\s*\([^)]*\)`)
 
-	createOrReplaceViewRE = regexp.MustCompile(`(?i)^\s*CREATE\s+OR\s+REPLACE\s+(TEMP(?:ORARY)?\s+)?VIEW\s+`)
-	createViewRE          = regexp.MustCompile(`(?i)(^\s*CREATE\s+(?:TEMP(?:ORARY)?\s+)?VIEW\s+)(IF\s+NOT\s+EXISTS\s+|)([A-Za-z0-9_".]+)`)
+	createOrReplaceViewRE   = regexp.MustCompile(`(?i)^\s*CREATE\s+OR\s+REPLACE\s+(TEMP(?:ORARY)?\s+)?VIEW\s+`)
+	createViewRE            = regexp.MustCompile(`(?i)(^\s*CREATE\s+(?:TEMP(?:ORARY)?\s+)?VIEW\s+)(IF\s+NOT\s+EXISTS\s+|)([A-Za-z0-9_".]+)`)
+	createMaterializedViewRE = regexp.MustCompile(`(?i)^\s*CREATE\s+MATERIALIZED\s+VIEW\s+`)
 	createUnloggedTableRE = regexp.MustCompile(`(?i)\bCREATE\s+UNLOGGED\s+TABLE\b`)
 	selectIntoRE          = regexp.MustCompile(`(?i)^\s*SELECT\s+(.+?)\s+INTO\s+(?:TEMP(?:ORARY)?\s+)?(?:TABLE\s+)?([A-Za-z0-9_".]+)\s+FROM\s+`)
 	indexConcurrentlyRE   = regexp.MustCompile(`(?i)\b(CREATE\s+(?:UNIQUE\s+)?INDEX|DROP\s+INDEX)\s+CONCURRENTLY\s+`)

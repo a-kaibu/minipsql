@@ -97,7 +97,8 @@ var (
 	createIndexRE      = regexp.MustCompile(`(?i)(CREATE\s+(?:UNIQUE\s+)?INDEX\s+)(IF\s+NOT\s+EXISTS\s+|)([A-Za-z0-9_"]+)`)
 	createAsExecuteRE  = regexp.MustCompile(`(?i)^\s*CREATE\s+(?:TEMP(?:ORARY)?\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z0-9_".]+)\s+AS\s+EXECUTE\b`)
 	anyArrayRE         = regexp.MustCompile(`(?i)=\s*ANY\s*\(\s*ARRAY\s*\[([^\]]*)\](?:::[A-Za-z0-9_\[\]]+)?\s*\)`)
-	notAnyArrayRE      = regexp.MustCompile(`(?i)<>\s*ANY\s*\(\s*ARRAY\s*\[([^\]]*)\](?:::[A-Za-z0-9_\[\]]+)?\s*\)|!=\s*ANY\s*\(\s*ARRAY\s*\[([^\]]*)\](?:::[A-Za-z0-9_\[\]]+)?\s*\)`)
+	notAnyArrayRE      = regexp.MustCompile(`(?i)(?:<>|!=)\s*ANY\s*\(\s*ARRAY\s*\[([^\]]*)\](?:::[A-Za-z0-9_\[\]]+)?\s*\)`)
+	notAllArrayRE      = regexp.MustCompile(`(?i)(?:<>|!=)\s*ALL\s*\(\s*ARRAY\s*\[([^\]]*)\](?:::[A-Za-z0-9_\[\]]+)?\s*\)`)
 	namedArgRE         = regexp.MustCompile(`(?i)\b[A-Za-z_][A-Za-z0-9_]*\s*=>\s*`)
 	forPortionOfRE     = regexp.MustCompile(`(?i)\s+FOR\s+PORTION\s+OF\s+\S+\s+FROM\s+\S+\s+TO\s+\S+`)
 	bitLiteralRE       = regexp.MustCompile(`(?i)\bB'([01]*)'`)
@@ -167,13 +168,13 @@ func Rewrite(sql string) string {
 	out = rewriteIndexInclude(out)
 	out = indexWithOptsRE.ReplaceAllString(out, "$1")
 	out = rewriteCreateIndex(out)
+	out = notAllArrayRE.ReplaceAllStringFunc(out, func(m string) string {
+		sub := notAllArrayRE.FindStringSubmatch(m)
+		return "NOT IN (" + sub[1] + ")"
+	})
 	out = notAnyArrayRE.ReplaceAllStringFunc(out, func(m string) string {
 		sub := notAnyArrayRE.FindStringSubmatch(m)
-		vals := sub[1]
-		if vals == "" {
-			vals = sub[2]
-		}
-		return "NOT IN (" + vals + ")"
+		return "NOT IN (" + sub[1] + ")"
 	})
 	out = anyArrayRE.ReplaceAllString(out, "IN ($1)")
 	out = namedArgRE.ReplaceAllString(out, "")

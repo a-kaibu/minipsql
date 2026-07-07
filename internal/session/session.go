@@ -181,16 +181,42 @@ func (s *Session) Execute(ctx context.Context, sql string, args []backend.Value)
 	return nil, tag, err
 }
 
-// splitRewrittenStatements splits a rewritten SQL string by top-level semicolons.
-// Returns the original single-element slice if there is only one statement.
+// splitRewrittenStatements splits a rewritten SQL string by top-level semicolons,
+// respecting single-quoted string literals. Used for multi-statement rewrites
+// like CREATE MATERIALIZED VIEW → DROP TABLE IF EXISTS ...; CREATE TABLE ...
 func splitRewrittenStatements(sql string) []string {
-	parts := strings.Split(sql, ";")
 	var stmts []string
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			stmts = append(stmts, p)
+	var cur strings.Builder
+	inString := false
+	for i := 0; i < len(sql); i++ {
+		ch := sql[i]
+		if inString {
+			cur.WriteByte(ch)
+			if ch == '\'' {
+				if i+1 < len(sql) && sql[i+1] == '\'' {
+					cur.WriteByte(sql[i+1])
+					i++
+				} else {
+					inString = false
+				}
+			}
+		} else {
+			if ch == '\'' {
+				inString = true
+				cur.WriteByte(ch)
+			} else if ch == ';' {
+				stmt := strings.TrimSpace(cur.String())
+				if stmt != "" {
+					stmts = append(stmts, stmt)
+				}
+				cur.Reset()
+			} else {
+				cur.WriteByte(ch)
+			}
 		}
+	}
+	if stmt := strings.TrimSpace(cur.String()); stmt != "" {
+		stmts = append(stmts, stmt)
 	}
 	return stmts
 }

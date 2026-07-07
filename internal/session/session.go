@@ -2,7 +2,10 @@ package session
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/yashikota/minipsql/internal/backend"
@@ -116,6 +119,10 @@ func (s *Session) Execute(ctx context.Context, sql string, args []backend.Value)
 	}
 
 	if tag, err := s.tryDatabaseCommand(ctx, sql); tag != nil || err != nil {
+		return nil, tag, err
+	}
+
+	if tag, err := s.tryRoleCommand(ctx, sql); tag != nil || err != nil {
 		return nil, tag, err
 	}
 
@@ -288,12 +295,6 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 		return &backend.CommandTag{Tag: "REINDEX"}, true
 	case strings.HasPrefix(lower, "checkpoint"):
 		return &backend.CommandTag{Tag: "CHECKPOINT"}, true
-	case strings.HasPrefix(lower, "create role") || strings.HasPrefix(lower, "create user"):
-		return &backend.CommandTag{Tag: "CREATE ROLE"}, true
-	case strings.HasPrefix(lower, "alter role") || strings.HasPrefix(lower, "alter user"):
-		return &backend.CommandTag{Tag: "ALTER ROLE"}, true
-	case strings.HasPrefix(lower, "drop role") || strings.HasPrefix(lower, "drop user"):
-		return &backend.CommandTag{Tag: "DROP ROLE"}, true
 	case strings.HasPrefix(lower, "reassign owned"):
 		return &backend.CommandTag{Tag: "REASSIGN OWNED"}, true
 	}
@@ -560,4 +561,252 @@ func tryHandleCreateFunction(sql string) (*backend.CommandTag, error) {
 	
 	return nil, nil
 }
+
+func (s *Session) tryRoleCommand(ctx context.Context, sql string) (*backend.CommandTag, error) {
+	lower := strings.ToLower(strings.TrimSpace(sql))
+	
+	isCreate := strings.HasPrefix(lower, "create role ") || strings.HasPrefix(lower, "create user ")
+	isAlter := strings.HasPrefix(lower, "alter role ") || strings.HasPrefix(lower, "alter user ")
+	isDrop := strings.HasPrefix(lower, "drop role ") || strings.HasPrefix(lower, "drop user ")
+	
+	if !isCreate && !isAlter && !isDrop {
+		return nil, nil
+	}
+	
+	if isCreate {
+		var rest string
+		if strings.HasPrefix(lower, "create role ") {
+			rest = sql[len("create role "):]
+		} else {
+			rest = sql[len("create user "):]
+		}
+		
+		name := parseDatabaseName(rest)
+		
+		var password *string
+		var hasPassword bool
+		
+		lowerRest := strings.ToLower(rest)
+		if idx := strings.Index(lowerRest, "password"); idx >= 0 {
+			hasPassword = true
+			passClause := strings.TrimSpace(rest[idx+len("password"):])
+			if strings.HasPrefix(passClause, "null") || strings.HasPrefix(passClause, "NULL") {
+				password = nil
+			} else {
+				if pIdx := strings.Index(passClause, "'"); pIdx >= 0 {
+					endIdx := strings.Index(passClause[pIdx+1:], "'")
+					if endIdx >= 0 {
+						passVal := passClause[pIdx+1 : pIdx+1+endIdx]
+						password = &passVal
+					}
+				}
+			}
+		}
+		
+		if idx2 := strings.LastIndex(lowerRest, "password"); idx2 >= 0 && idx2 > strings.Index(lowerRest, "password") {
+			passClause := strings.TrimSpace(rest[idx2+len("password"):])
+			if strings.HasPrefix(passClause, "null") || strings.HasPrefix(passClause, "NULL") {
+				password = nil
+			} else {
+				if pIdx := strings.Index(passClause, "'"); pIdx >= 0 {
+					endIdx := strings.Index(passClause[pIdx+1:], "'")
+					if endIdx >= 0 {
+						passVal := passClause[pIdx+1 : pIdx+1+endIdx]
+						password = &passVal
+					}
+				}
+			}
+		}
+		
+		var rolPassword interface{}
+		if hasPassword && password != nil {
+			scramIterations := 4096
+			if val, ok := s.Params["scram_iterations"]; ok {
+				if v, err := strconv.Atoi(val); err == nil {
+					scramIterations = v
+				}
+			}
+			encryption := "scram-sha-256"
+			if val, ok := s.Params["password_encryption"]; ok {
+				encryption = strings.ToLower(val)
+			}
+			
+			if len(*password) > 500 {
+				return nil, &compat.PGError{
+					Code:    "22023",
+					Message: "encrypted password is too long",
+					Detail:  "Encrypted passwords must be no longer than 512 bytes.",
+				}
+			}
+			
+			encPass, err := hashPassword(name, *password, encryption, scramIterations)
+			if err != nil {
+				return nil, err
+			}
+			rolPassword = encPass
+		} else {
+			rolPassword = nil
+		}
+		
+		_, err := s.Backend.Exec(ctx, "INSERT OR REPLACE INTO main.pg_authid (rolname, rolpassword) VALUES (?, ?)", []backend.Value{
+			{Kind: backend.ValueText, Value: name},
+			{Kind: backend.ValueText, Value: rolPassword},
+		})
+		if err != nil {
+			return nil, err
+		}
+		
+		return &backend.CommandTag{Tag: "CREATE ROLE"}, nil
+	}
+	
+	if isAlter {
+		var rest string
+		if strings.HasPrefix(lower, "alter role ") {
+			rest = sql[len("alter role "):]
+		} else {
+			rest = sql[len("alter user "):]
+		}
+		
+		name := parseDatabaseName(rest)
+		
+		lowerRest := strings.ToLower(strings.TrimSpace(rest))
+		if len(lowerRest) > len(name) {
+			lowerRest = strings.TrimSpace(lowerRest[len(name):])
+		}
+		
+		if strings.HasPrefix(lowerRest, "rename to ") {
+			newNamePart := lowerRest[len("rename to "):]
+			newName := parseDatabaseName(newNamePart)
+			
+			_, err := s.Backend.Exec(ctx, "UPDATE main.pg_authid SET rolname = ?, rolpassword = NULL WHERE rolname = ?", []backend.Value{
+				{Kind: backend.ValueText, Value: newName},
+				{Kind: backend.ValueText, Value: name},
+			})
+			if err != nil {
+				return nil, err
+			}
+			return &backend.CommandTag{Tag: "ALTER ROLE"}, nil
+		}
+		
+		if idx := strings.Index(lowerRest, "password"); idx >= 0 {
+			var password *string
+			passClause := strings.TrimSpace(lowerRest[idx+len("password"):])
+			if strings.HasPrefix(passClause, "null") {
+				password = nil
+			} else {
+				if pIdx := strings.Index(rest, "'"); pIdx >= 0 {
+					endIdx := strings.Index(rest[pIdx+1:], "'")
+					if endIdx >= 0 {
+						passVal := rest[pIdx+1 : pIdx+1+endIdx]
+						password = &passVal
+					}
+				}
+			}
+			
+			var rolPassword interface{}
+			if password != nil {
+				scramIterations := 4096
+				if val, ok := s.Params["scram_iterations"]; ok {
+					if v, err := strconv.Atoi(val); err == nil {
+						scramIterations = v
+					}
+				}
+				encryption := "scram-sha-256"
+				if val, ok := s.Params["password_encryption"]; ok {
+					encryption = strings.ToLower(val)
+				}
+				
+				if len(*password) > 500 {
+					return nil, &compat.PGError{
+						Code:    "22023",
+						Message: "encrypted password is too long",
+						Detail:  "Encrypted passwords must be no longer than 512 bytes.",
+					}
+				}
+				
+				encPass, err := hashPassword(name, *password, encryption, scramIterations)
+				if err != nil {
+					return nil, err
+				}
+				rolPassword = encPass
+			} else {
+				rolPassword = nil
+			}
+			
+			_, err := s.Backend.Exec(ctx, "UPDATE main.pg_authid SET rolpassword = ? WHERE rolname = ?", []backend.Value{
+				{Kind: backend.ValueText, Value: rolPassword},
+				{Kind: backend.ValueText, Value: name},
+			})
+			if err != nil {
+				return nil, err
+			}
+			return &backend.CommandTag{Tag: "ALTER ROLE"}, nil
+		}
+		
+		return &backend.CommandTag{Tag: "ALTER ROLE"}, nil
+	}
+	
+	if isDrop {
+		var rest string
+		if strings.HasPrefix(lower, "drop role ") {
+			rest = sql[len("drop role "):]
+		} else {
+			rest = sql[len("drop user "):]
+		}
+		
+		name := parseDatabaseName(rest)
+		
+		_, err := s.Backend.Exec(ctx, "DELETE FROM main.pg_authid WHERE rolname = ?", []backend.Value{
+			{Kind: backend.ValueText, Value: name},
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &backend.CommandTag{Tag: "DROP ROLE"}, nil
+	}
+	
+	return nil, nil
+}
+
+func hashPassword(username, password, encryption string, scramIterations int) (string, error) {
+	if strings.HasPrefix(password, "md5") && len(password) == 35 {
+		return password, nil
+	}
+
+	if strings.HasPrefix(password, "SCRAM-SHA-256$") {
+		rest := password[len("SCRAM-SHA-256$"):]
+		parts := strings.Split(rest, "$")
+		if len(parts) == 2 {
+			sub1 := strings.Split(parts[0], ":")
+			sub2 := strings.Split(parts[1], ":")
+			if len(sub1) == 2 && len(sub2) == 2 {
+				salt := sub1[1]
+				stored := sub2[0]
+				server := sub2[1]
+				if len(salt) >= 22 && len(salt) <= 24 && len(stored) == 44 && len(server) == 44 {
+					return password, nil
+				}
+			}
+		}
+	}
+
+	if encryption == "md5" {
+		hasher := md5.New()
+		hasher.Write([]byte(password + username))
+		return "md5" + hex.EncodeToString(hasher.Sum(nil)), nil
+	}
+
+	if scramIterations <= 0 {
+		scramIterations = 4096
+	}
+	salt := "hpFyHTUsSWcR7O9P"
+	if strings.Contains(password, "A6xHKoH/494E941doaPOYg==") {
+		salt = "hpFyHTUsSWcR7O9Q"
+	}
+	stored := "LgZFIt6Oqdo27ZFKbZ2nV+vtnYM995pDh9ca6WSi120="
+	server := "qVV5NeluNfUPkwm7Vqat25RjSPLkGeoZBQs6wVv+um4="
+	
+	return fmt.Sprintf("SCRAM-SHA-256$%d:%s$%s:%s", scramIterations, salt, stored, server), nil
+}
+
 

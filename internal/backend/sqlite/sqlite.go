@@ -235,6 +235,10 @@ func initDatabase(ctx context.Context, db *sql.DB) error {
 			collctype TEXT,
 			colliculocale TEXT
 		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_authid (
+			rolname TEXT PRIMARY KEY,
+			rolpassword TEXT
+		)`,
 	}
 
 	for _, ddl := range ddls {

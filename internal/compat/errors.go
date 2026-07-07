@@ -8,6 +8,7 @@ import (
 type PGError struct {
 	Code    string
 	Message string
+	Detail  string
 	Hint    string
 }
 

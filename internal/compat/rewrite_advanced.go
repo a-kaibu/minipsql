@@ -14,8 +14,9 @@ func rewriteRegexOps(sql string) string {
 }
 
 func rewriteRegexOp(sql string, op string, negate bool, icase bool) string {
+	startPos := 0
 	for {
-		idx := findRegexOp(sql, op)
+		idx := findRegexOpFrom(sql, op, startPos)
 		if idx < 0 {
 			break
 		}
@@ -25,6 +26,11 @@ func rewriteRegexOp(sql string, op string, negate bool, icase bool) string {
 			lhsEnd--
 		}
 		lhs := extractExprBefore(sql, lhsEnd)
+		if lhs == "" || isSQLKeyword(lhs) {
+			// Unary ~ (bitwise NOT) or keyword context: skip this occurrence
+			startPos = idx + len(op)
+			continue
+		}
 		lhsStart := lhsEnd - len(lhs)
 
 		rhsStart := idx + len(op)
@@ -78,9 +84,11 @@ func rewriteRegexOp(sql string, op string, negate bool, icase bool) string {
 				replacement = fmt.Sprintf("minipsql_regexp_match(%s, %s, %s)", rhsExpr, lhs, flags)
 			}
 			sql = sql[:lhsStart] + replacement + sql[rhsEnd:]
+			startPos = 0
 			continue
 		} else {
-			break
+			startPos = idx + len(op)
+			continue
 		}
 
 		flags := "''"
@@ -147,10 +155,27 @@ func extractExprEnd(sql string, pos int) int {
 	return i
 }
 
+// isSQLKeyword returns true if s is a SQL keyword that cannot be an expression LHS for ~.
+func isSQLKeyword(s string) bool {
+	switch strings.ToUpper(strings.TrimSpace(s)) {
+	case "SELECT", "WHERE", "FROM", "AND", "OR", "NOT", "ON", "SET",
+		"THEN", "ELSE", "CASE", "WHEN", "END", "IN", "AS", "BY",
+		"HAVING", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "CROSS",
+		"UNION", "INTERSECT", "EXCEPT", "ALL", "DISTINCT", "LIMIT",
+		"ORDER", "GROUP", "INSERT", "UPDATE", "DELETE", "INTO", "VALUES":
+		return true
+	}
+	return false
+}
+
 func findRegexOp(sql string, op string) int {
+	return findRegexOpFrom(sql, op, 0)
+}
+
+func findRegexOpFrom(sql string, op string, startPos int) int {
 	inQuote := false
 	escaped := false
-	for i := 0; i < len(sql); i++ {
+	for i := startPos; i < len(sql); i++ {
 		if sql[i] == '\'' && !escaped {
 			if inQuote && i+1 < len(sql) && sql[i+1] == '\'' {
 				i++

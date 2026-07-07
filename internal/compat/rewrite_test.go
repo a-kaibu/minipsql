@@ -333,3 +333,11 @@ func TestRewriteUnicodeLiterals(t *testing.T) {
 
 
 
+
+func TestSplitDollarQuoteSemicolon(t *testing.T) {
+	sql := "CREATE FUNCTION f() RETURNS int LANGUAGE SQL AS $$ SELECT 1; $$;\nSELECT f();"
+	stmts := SplitStatements(sql)
+	if len(stmts) != 2 {
+		t.Fatalf("expected 2 statements, got %d: %v", len(stmts), stmts)
+	}
+}

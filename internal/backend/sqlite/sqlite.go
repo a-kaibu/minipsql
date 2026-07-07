@@ -838,7 +838,7 @@ func initDatabase(ctx context.Context, db *sql.DB) error {
 	// Create dynamic views in main schema
 	views := []string{
 		`CREATE VIEW IF NOT EXISTS main.pg_class AS
-		SELECT 
+		SELECT
 			10000 + rowid AS oid,
 			name AS relname,
 			2200 AS relnamespace,
@@ -855,7 +855,7 @@ func initDatabase(ctx context.Context, db *sql.DB) error {
 			0 AS relhasindex,
 			0 AS relisshared,
 			'p' AS relpersistence,
-			'r' AS relkind,
+			CASE type WHEN 'view' THEN 'v' ELSE 'r' END AS relkind,
 			0 AS relnatts,
 			0 AS relchecks,
 			0 AS relhasrules,
@@ -872,7 +872,7 @@ func initDatabase(ctx context.Context, db *sql.DB) error {
 			NULL AS reloptions,
 			NULL AS relpartbound
 		FROM sqlite_schema
-		WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`,
+		WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'pg_%'`,
 
 		`CREATE VIEW IF NOT EXISTS main.pg_attribute AS
 		SELECT 

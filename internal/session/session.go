@@ -365,7 +365,7 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 		return &backend.CommandTag{Tag: "DO"}, true
 	case strings.HasPrefix(lower, "call "):
 		return &backend.CommandTag{Tag: "CALL"}, true
-	case strings.HasPrefix(lower, "explain "):
+	case strings.HasPrefix(lower, "explain ") || strings.HasPrefix(lower, "explain("):
 		return &backend.CommandTag{Tag: "EXPLAIN"}, true
 	case strings.HasPrefix(lower, "discard "):
 		return &backend.CommandTag{Tag: "DISCARD ALL"}, true
@@ -1265,13 +1265,15 @@ func extractFunctionBody(sql string) string {
 	}
 
 	// Try AS with dollar quoting: $$ body $$ or $tag$ body $tag$
-	if idx := strings.Index(lower, " as "); idx >= 0 {
-		rest := sql[idx+4:]
+	// Match " as " or " as\n" (newline between AS and dollar-quote)
+	if idx := strings.Index(lower, " as"); idx >= 0 && idx+3 < len(lower) && (lower[idx+3] == ' ' || lower[idx+3] == '\n' || lower[idx+3] == '\t' || lower[idx+3] == '\r') {
+		rest := sql[idx+3:]
 		rest = strings.TrimSpace(rest)
 		if strings.HasPrefix(rest, "$$") {
 			end := strings.Index(rest[2:], "$$")
 			if end >= 0 {
-				return strings.TrimSpace(rest[2 : end+2])
+				body := strings.TrimSpace(rest[2 : end+2])
+				return extractLastStatement(body)
 			}
 		}
 		// dollar quoting with tag: $tag$ ... $tag$
@@ -1282,7 +1284,8 @@ func extractFunctionBody(sql string) string {
 				bodyStart := end + 2
 				bodyEnd := strings.Index(rest[bodyStart:], tag)
 				if bodyEnd >= 0 {
-					return strings.TrimSpace(rest[bodyStart : bodyStart+bodyEnd])
+					body := strings.TrimSpace(rest[bodyStart : bodyStart+bodyEnd])
+					return extractLastStatement(body)
 				}
 			}
 		}
@@ -1290,13 +1293,14 @@ func extractFunctionBody(sql string) string {
 		if len(rest) > 0 && rest[0] == '\'' {
 			end := strings.Index(rest[1:], "'")
 			if end >= 0 {
-				return strings.TrimSpace(rest[1 : end+1])
+				body := strings.TrimSpace(rest[1 : end+1])
+				return extractLastStatement(body)
 			}
 		}
 	}
 
 	// RETURN expression (without AS): RETURNS type LANGUAGE sql RETURN expr
-	if idx := strings.Index(lower, " return "); idx >= 0 {
+	if idx := strings.LastIndex(lower, " return "); idx >= 0 {
 		afterReturn := strings.TrimSpace(sql[idx+len(" return "):])
 		// strip trailing semicolon
 		afterReturn = strings.TrimSuffix(strings.TrimSpace(afterReturn), ";")
@@ -1304,6 +1308,21 @@ func extractFunctionBody(sql string) string {
 	}
 
 	return ""
+}
+
+// extractLastStatement returns the last non-empty statement from a SQL body,
+// stripping trailing semicolons. Used for function bodies where we want the
+// final SELECT expression.
+func extractLastStatement(body string) string {
+	body = strings.TrimRight(strings.TrimSpace(body), ";")
+	stmts := strings.Split(body, ";")
+	for i := len(stmts) - 1; i >= 0; i-- {
+		s := strings.TrimSpace(stmts[i])
+		if s != "" {
+			return s
+		}
+	}
+	return body
 }
 
 func (s *Session) tryRoleCommand(ctx context.Context, sql string) (*backend.CommandTag, error) {

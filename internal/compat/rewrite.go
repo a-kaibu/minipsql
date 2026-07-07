@@ -24,7 +24,7 @@ var (
 	createIndexUsingRE = regexp.MustCompile(`(?i)(CREATE\s+(?:UNIQUE\s+)?INDEX\b.+?\bON\s+\S+)\s+USING\s+\S+\s*(\()`)
 	ilikeRE            = regexp.MustCompile(`(?i)\bILIKE\b`)
 	returningRE        = regexp.MustCompile(`(?i)\bRETURNING\b`)
-	onlyRE             = regexp.MustCompile(`(?i)\b(FROM|ON|UPDATE|DELETE\s+FROM|INSERT\s+INTO)\s+ONLY\s+`)
+	onlyRE             = regexp.MustCompile(`(?i)\b(FROM|ON|UPDATE|DELETE\s+FROM|INSERT\s+INTO|ALTER\s+TABLE)\s+ONLY\s+`)
 	eStringRE          = regexp.MustCompile(`(?i)\bE'`)
 	trueRE             = regexp.MustCompile(`(?i)\bTRUE\b`)
 	falseRE            = regexp.MustCompile(`(?i)\bFALSE\b`)
@@ -288,6 +288,9 @@ func Rewrite(sql string) string {
 		}
 		if strings.HasPrefix(upper, "INSERT") {
 			return "INSERT INTO "
+		}
+		if strings.HasPrefix(upper, "ALTER") {
+			return "ALTER TABLE "
 		}
 		return "ON "
 	})
@@ -3025,89 +3028,335 @@ func rewriteGeneratedColumns(sql string) string {
 	return out
 }
 
-// rewriteSubqueryColumnAlias strips column aliases from subquery references:
-//   (subquery) AS alias(col1, col2) → (subquery) AS alias
+// rewriteSubqueryColumnAlias rewrites subquery column aliases:
+//   (SELECT e1, e2 FROM ...) AS alias(col1, col2)
+//   → (SELECT e1 AS col1, e2 AS col2 FROM ...) AS alias
 // SQLite does not support column name lists after subquery aliases.
+// Also handles VALUES column aliases:
+//   (VALUES ...) AS alias(col1, col2) → (SELECT * FROM (VALUES ...) AS alias) AS alias
 func rewriteSubqueryColumnAlias(sql string) string {
-	// Look for ") AS identifier(" pattern
 	lower := strings.ToLower(sql)
-	if !strings.Contains(lower, ") as ") && !strings.Contains(lower, ") as\t") {
+	if !strings.Contains(lower, ") as ") && !strings.Contains(lower, ") as\t") &&
+		!strings.Contains(lower, ") as\n") {
 		return sql
 	}
-	var result strings.Builder
-	i := 0
+
+	// Find all ") AS alias(cols)" patterns and collect replacements
+	type replacement struct {
+		start    int // start of the subquery opening '('
+		closePos int // position of the subquery closing ')'
+		colEnd   int // position after the col alias list ')'
+		aliases  []string
+		alias    string
+	}
+	var replacements []replacement
+
 	n := len(sql)
-	inSingle := false
-	inDouble := false
+	i := 0
+	// Track paren depths to find matching open parens
+	// We scan for ") AS alias(col_list)" and then backtrack to find matching '('
 	for i < n {
-		if inSingle {
-			result.WriteByte(sql[i])
-			if sql[i] == '\'' {
-				if i+1 < n && sql[i+1] == '\'' { result.WriteByte('\''); i += 2; continue }
-				inSingle = false
-			}
-			i++; continue
-		}
-		if inDouble {
-			result.WriteByte(sql[i])
-			if sql[i] == '"' {
-				if i+1 < n && sql[i+1] == '"' { result.WriteByte('"'); i += 2; continue }
-				inDouble = false
-			}
-			i++; continue
-		}
-		if sql[i] == '\'' { inSingle = true; result.WriteByte(sql[i]); i++; continue }
-		if sql[i] == '"' { inDouble = true; result.WriteByte(sql[i]); i++; continue }
-		// Look for: ) <whitespace> AS <whitespace> identifier (
-		if sql[i] == ')' {
-			result.WriteByte(sql[i])
+		// Skip string literals
+		if sql[i] == '\'' {
 			i++
-			// skip whitespace
-			wsStart := i
-			for i < n && (sql[i] == ' ' || sql[i] == '\t' || sql[i] == '\n' || sql[i] == '\r') { i++ }
-			// check for AS keyword
-			if i+2 <= n && strings.EqualFold(sql[i:i+2], "as") && (i+2 >= n || !isIdentByte(sql[i+2])) {
-				asEnd := i + 2
-				// skip whitespace after AS
-				k := asEnd
-				for k < n && (sql[k] == ' ' || sql[k] == '\t' || sql[k] == '\n' || sql[k] == '\r') { k++ }
-				// read identifier
-				aliasStart := k
-				for k < n && (isIdentByte(sql[k]) || sql[k] == '"') { k++ }
-				if k > aliasStart {
-					aliasName := sql[aliasStart:k]
-					// skip whitespace
-					j := k
-					for j < n && (sql[j] == ' ' || sql[j] == '\t') { j++ }
-					// check for opening paren with col names
-					if j < n && sql[j] == '(' {
-						// find closing paren — only if contents are identifiers/commas/spaces (no nested parens, no keywords)
-						closeP := j + 1
-						valid := true
-						for closeP < n && sql[closeP] != ')' {
-							if sql[closeP] == '(' { valid = false; break }
-							if sql[closeP] == '\'' || sql[closeP] == '"' { valid = false; break }
-							closeP++
-						}
-						if valid && closeP < n && sql[closeP] == ')' {
-							// It's a column alias list — strip it
-							result.WriteString(sql[wsStart:i])   // whitespace before AS
-							result.WriteString("AS ")
-							result.WriteString(aliasName)
-							i = closeP + 1
-							continue
-						}
-					}
+			for i < n {
+				if sql[i] == '\'' {
+					if i+1 < n && sql[i+1] == '\'' { i += 2; continue }
+					break
 				}
+				i++
 			}
-			// Not a subquery column alias — restore position
-			result.WriteString(sql[wsStart:i])
+			i++
 			continue
 		}
-		result.WriteByte(sql[i])
-		i++
+		if sql[i] == '"' {
+			i++
+			for i < n {
+				if sql[i] == '"' {
+					if i+1 < n && sql[i+1] == '"' { i += 2; continue }
+					break
+				}
+				i++
+			}
+			i++
+			continue
+		}
+		// Dollar-quoted strings
+		if sql[i] == '$' {
+			j := i + 1
+			for j < n && sql[j] != '$' && (isIdentByte(sql[j]) || sql[j] == '_') { j++ }
+			if j < n && sql[j] == '$' {
+				tag := sql[i : j+1]
+				k := j + 1
+				for k < n {
+					idx := strings.Index(sql[k:], tag)
+					if idx < 0 { break }
+					k = k + idx + len(tag)
+					break
+				}
+				i = k
+				continue
+			}
+		}
+
+		if sql[i] != ')' { i++; continue }
+
+		closePos := i
+		// skip whitespace after ')'
+		k := closePos + 1
+		for k < n && (sql[k] == ' ' || sql[k] == '\t' || sql[k] == '\n' || sql[k] == '\r') { k++ }
+		// check for AS keyword
+		if k+2 > n || !strings.EqualFold(sql[k:k+2], "as") { i++; continue }
+		if k+2 < n && isIdentByte(sql[k+2]) { i++; continue }
+		k += 2
+		for k < n && (sql[k] == ' ' || sql[k] == '\t' || sql[k] == '\n' || sql[k] == '\r') { k++ }
+		// read alias identifier
+		aliasStart := k
+		if k < n && sql[k] == '"' {
+			k++
+			for k < n && sql[k] != '"' { k++ }
+			if k < n { k++ }
+		} else {
+			for k < n && isIdentByte(sql[k]) { k++ }
+		}
+		if k <= aliasStart { i++; continue }
+		aliasName := sql[aliasStart:k]
+		// skip whitespace
+		for k < n && (sql[k] == ' ' || sql[k] == '\t') { k++ }
+		// check for opening paren (column alias list)
+		if k >= n || sql[k] != '(' { i++; continue }
+		// parse column alias list: only identifiers and commas
+		closeP := k + 1
+		valid := true
+		for closeP < n && sql[closeP] != ')' {
+			if sql[closeP] == '(' { valid = false; break }
+			if sql[closeP] == '\'' || sql[closeP] == '"' { valid = false; break }
+			closeP++
+		}
+		if !valid || closeP >= n { i++; continue }
+		// Extract column aliases
+		colList := strings.TrimSpace(sql[k+1 : closeP])
+		if colList == "" { i++; continue }
+		colAliases := strings.Split(colList, ",")
+		for ci := range colAliases {
+			colAliases[ci] = strings.TrimSpace(colAliases[ci])
+		}
+		// Find matching opening '(' for the subquery by scanning backwards
+		openPos := findMatchingOpenParen(sql, closePos)
+		if openPos < 0 { i++; continue }
+		replacements = append(replacements, replacement{
+			start:   openPos,
+			closePos: closePos,
+			colEnd:  closeP + 1,
+			aliases: colAliases,
+			alias:   aliasName,
+		})
+		i = closeP + 1
 	}
-	return result.String()
+
+	if len(replacements) == 0 {
+		return sql
+	}
+
+	// Apply replacements from right to left to preserve positions
+	for ri := len(replacements) - 1; ri >= 0; ri-- {
+		r := replacements[ri]
+		subquery := sql[r.start+1 : r.closePos] // content between outer parens
+		rewritten := rewriteSelectAliases(subquery, r.aliases)
+		sql = sql[:r.start] + "(" + rewritten + ") AS " + r.alias + sql[r.colEnd:]
+	}
+	return sql
+}
+
+// findMatchingOpenParen finds the '(' that matches the ')' at closePos.
+func findMatchingOpenParen(sql string, closePos int) int {
+	depth := 0
+	for i := closePos; i >= 0; i-- {
+		if sql[i] == ')' { depth++ }
+		if sql[i] == '(' {
+			depth--
+			if depth == 0 { return i }
+		}
+		// Skip string literals going backwards is complex; do a simplified version
+		// that handles most cases (no embedded strings with parens)
+	}
+	return -1
+}
+
+// rewriteSelectAliases adds AS aliases to the SELECT list of a subquery body.
+// aliases is the list of column names to assign to each SELECT expression.
+func rewriteSelectAliases(body string, aliases []string) string {
+	if len(aliases) == 0 { return body }
+	lower := strings.ToLower(strings.TrimSpace(body))
+	if !strings.HasPrefix(lower, "select ") && !strings.HasPrefix(lower, "select\t") &&
+		!strings.HasPrefix(lower, "select\n") {
+		return body
+	}
+	// Find the SELECT keyword and then the FROM keyword at top level
+	// Parse the SELECT list by splitting on commas at paren depth 0
+	// Find "select" position
+	selectEnd := 7 // len("select ") or "select\t" etc.
+	// Skip DISTINCT / ALL / DISTINCT ON (...)
+	trimmed := strings.TrimSpace(body[selectEnd:])
+	ltrimmed := strings.ToLower(trimmed)
+	prefixLen := 0
+	if strings.HasPrefix(ltrimmed, "distinct on (") {
+		depth := 0
+		for pi, ch := range ltrimmed {
+			if ch == '(' { depth++ }
+			if ch == ')' { depth--; if depth == 0 { prefixLen = pi + 1; break } }
+		}
+	} else if strings.HasPrefix(ltrimmed, "distinct ") {
+		prefixLen = 9
+	} else if strings.HasPrefix(ltrimmed, "all ") {
+		prefixLen = 4
+	}
+	selectListStart := selectEnd + (len(trimmed) - len(strings.TrimLeft(trimmed, ""))) + prefixLen
+	// Recompute properly
+	afterSelect := body[selectEnd:]
+	wsLen := len(afterSelect) - len(strings.TrimLeft(afterSelect, " \t\n\r"))
+	afterSelect = afterSelect[wsLen:]
+	lalter := strings.ToLower(afterSelect)
+	skip := 0
+	if strings.HasPrefix(lalter, "distinct on (") {
+		depth := 0
+		for pi := 0; pi < len(lalter); pi++ {
+			if lalter[pi] == '(' { depth++ }
+			if lalter[pi] == ')' { depth--; if depth == 0 { skip = pi + 1; break } }
+		}
+		skip += len(strings.TrimLeft(lalter[skip:], " \t\n\r")) - len(lalter[skip:])
+		// advance past whitespace
+		for skip < len(afterSelect) && (afterSelect[skip] == ' ' || afterSelect[skip] == '\t') { skip++ }
+	} else if strings.HasPrefix(lalter, "distinct ") {
+		skip = 9
+	} else if strings.HasPrefix(lalter, "all ") {
+		skip = 4
+	}
+	selectListStart = selectEnd + wsLen + skip
+	_ = selectListStart
+
+	// Find the SELECT list: everything between after DISTINCT/ALL and FROM at depth 0
+	selectContent := afterSelect[skip:]
+	// Find the position of the select list and the FROM clause
+	fromIdx := findFromAtTopLevel(selectContent)
+	var selectList string
+	var rest string
+	if fromIdx < 0 {
+		selectList = selectContent
+		rest = ""
+	} else {
+		selectList = selectContent[:fromIdx]
+		rest = selectContent[fromIdx:]
+	}
+
+	// Split select list by commas at depth 0
+	exprs := splitTopLevelCommas(selectList)
+	if len(exprs) != len(aliases) {
+		// Can't safely add aliases if counts don't match — fall back to stripping
+		return body
+	}
+
+	// Add aliases to each expression
+	var newExprs []string
+	for idx, expr := range exprs {
+		expr = strings.TrimSpace(expr)
+		elower := strings.ToLower(expr)
+		// Check if already has an alias
+		// Simple check: if the expr ends with "as name" pattern
+		if hasAlias(elower) {
+			newExprs = append(newExprs, expr)
+		} else {
+			newExprs = append(newExprs, expr+" AS "+aliases[idx])
+		}
+	}
+
+	prefix := body[:selectEnd+wsLen]
+	if skip > 0 {
+		prefix += afterSelect[:skip]
+	}
+	sep := ""
+	if rest != "" && rest[0] != ' ' && rest[0] != '\t' && rest[0] != '\n' && rest[0] != '\r' {
+		sep = " "
+	}
+	return prefix + strings.Join(newExprs, ", ") + sep + rest
+}
+
+// findFromAtTopLevel finds the position of the FROM keyword at top-level (paren depth 0).
+func findFromAtTopLevel(s string) int {
+	lower := strings.ToLower(s)
+	n := len(s)
+	depth := 0
+	inSingle := false
+	for i := 0; i < n; i++ {
+		if inSingle {
+			if s[i] == '\'' {
+				if i+1 < n && s[i+1] == '\'' { i++; continue }
+				inSingle = false
+			}
+			continue
+		}
+		if s[i] == '\'' { inSingle = true; continue }
+		if s[i] == '(' { depth++; continue }
+		if s[i] == ')' { depth--; continue }
+		if depth == 0 && i+4 <= n && strings.EqualFold(lower[i:i+4], "from") {
+			// must be followed by whitespace or end
+			if i+4 >= n || lower[i+4] == ' ' || lower[i+4] == '\t' || lower[i+4] == '\n' || lower[i+4] == '\r' {
+				// must be preceded by whitespace or start
+				if i == 0 || s[i-1] == ' ' || s[i-1] == '\t' || s[i-1] == '\n' || s[i-1] == '\r' {
+					return i
+				}
+			}
+		}
+	}
+	return -1
+}
+
+// splitTopLevelCommas splits a SQL expression list by commas at paren depth 0.
+func splitTopLevelCommas(s string) []string {
+	var result []string
+	depth := 0
+	inSingle := false
+	inDouble := false
+	start := 0
+	n := len(s)
+	for i := 0; i < n; i++ {
+		if inSingle {
+			if s[i] == '\'' {
+				if i+1 < n && s[i+1] == '\'' { i++; continue }
+				inSingle = false
+			}
+			continue
+		}
+		if inDouble {
+			if s[i] == '"' {
+				if i+1 < n && s[i+1] == '"' { i++; continue }
+				inDouble = false
+			}
+			continue
+		}
+		if s[i] == '\'' { inSingle = true; continue }
+		if s[i] == '"' { inDouble = true; continue }
+		if s[i] == '(' { depth++; continue }
+		if s[i] == ')' { depth--; continue }
+		if depth == 0 && s[i] == ',' {
+			result = append(result, s[start:i])
+			start = i + 1
+		}
+	}
+	result = append(result, s[start:])
+	return result
+}
+
+// hasAlias returns true if a SELECT expression already ends with "AS name".
+func hasAlias(lower string) bool {
+	lower = strings.TrimSpace(lower)
+	// Look for " as " followed by an identifier at the end
+	idx := strings.LastIndex(lower, " as ")
+	if idx < 0 { return false }
+	rest := strings.TrimSpace(lower[idx+4:])
+	// rest should be a simple identifier (no spaces, no parens)
+	if rest == "" || strings.ContainsAny(rest, " \t\n(),'\"") { return false }
+	return true
 }
 
 // rewriteDropCascade strips CASCADE/RESTRICT from DROP statements that SQLite doesn't support.

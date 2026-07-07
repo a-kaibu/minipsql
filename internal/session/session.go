@@ -628,6 +628,10 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 	case strings.HasPrefix(lower, "merge ") || strings.HasPrefix(lower, "merge\n") || strings.HasPrefix(lower, "merge\t"):
 		return &backend.CommandTag{Tag: "MERGE 0"}, true
 
+	// Writes to pg_catalog views (pg_class, pg_attribute, etc.) are no-ops since these are read-only views.
+	case isPGCatalogWrite(lower):
+		return &backend.CommandTag{Tag: "UPDATE 0"}, true
+
 	// Replication features — not supported by SQLite backend, silently no-op
 	case strings.HasPrefix(lower, "create publication ") || lower == "create publication":
 		return &backend.CommandTag{Tag: "CREATE PUBLICATION"}, true
@@ -678,6 +682,24 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 	}
 
 	return nil, false
+}
+
+// isPGCatalogWrite returns true if the SQL is a write to a pg_catalog view (which are read-only in minipsql).
+func isPGCatalogWrite(lower string) bool {
+	// Normalize whitespace for matching (handle multi-line SQL)
+	normalized := strings.Join(strings.Fields(lower), " ")
+	for _, prefix := range []string{
+		"update pg_class ", "update pg_attribute ", "update pg_proc ",
+		"update pg_type ", "update pg_namespace ", "update pg_index ",
+		"update pg_statistic ", "update pg_stat_",
+		"insert into pg_class ", "insert into pg_attribute ", "insert into pg_proc ",
+		"delete from pg_class ", "delete from pg_attribute ",
+	} {
+		if strings.HasPrefix(normalized, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // tryAlterTableNoop returns a no-op tag for ALTER TABLE subcommands that SQLite doesn't support.

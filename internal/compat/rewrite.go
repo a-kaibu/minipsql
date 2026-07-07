@@ -341,6 +341,7 @@ func Rewrite(sql string) string {
 	out = rewriteArrayConcatStrip(out)
 	out = rewriteArraySubquery(out)
 	out = rewriteArrayIndex(out)
+	out = rewriteGeometricOperators(out)
 	out = rewriteKeywords(out)
 	return out
 }
@@ -788,6 +789,7 @@ func rewritePGCast(sql string) string {
 		if idx := strings.Index(typeName, "("); idx >= 0 {
 			typeName = typeName[:idx]
 		}
+		origTypeName := strings.ToLower(strings.TrimSpace(typeName))
 		typeName = mapPGType(typeName)
 		beforeCast := strings.TrimRightFunc(sql[:loc[0]], unicode.IsSpace)
 		expr := extractCastExpr(beforeCast)
@@ -795,6 +797,9 @@ func rewritePGCast(sql string) string {
 		suffix := trailing + sql[loc[1]:]
 		if expr == "" {
 			sql = prefix + suffix
+		} else if origTypeName == "regclass" {
+			// Rewrite 'tablename'::regclass to look up oid in pg_class
+			sql = prefix + "(SELECT oid FROM pg_class WHERE relname = " + expr + ")" + suffix
 		} else {
 			sql = prefix + "CAST(" + expr + " AS " + typeName + ")" + suffix
 		}
@@ -4542,6 +4547,21 @@ func rewriteAlterTableMultiAction(sql string) string {
 		}
 	}
 	return strings.Join(stmts, "; ")
+}
+
+var (
+	// Geometric operators not supported by SQLite — rewrite to FALSE (0)
+	// ?# = path/lseg/box intersects
+	geomIntersectsRE = regexp.MustCompile(`(?i)([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\?\#\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)`)
+)
+
+// rewriteGeometricOperators rewrites PostgreSQL geometric operators to SQLite-compatible equivalents.
+// These operators are not supported by SQLite and would cause syntax errors.
+func rewriteGeometricOperators(sql string) string {
+	if !strings.Contains(sql, "?#") {
+		return sql
+	}
+	return geomIntersectsRE.ReplaceAllString(sql, "FALSE")
 }
 
 

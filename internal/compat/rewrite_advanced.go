@@ -718,7 +718,7 @@ func parseGenerateSeriesAlias(trimmed string) (alias string, colName string, con
 			pos++
 		}
 	}
-	setOps := []string{"WHERE", "ORDER", "GROUP", "LIMIT", "UNION", "EXCEPT", "INTERSECT", "HAVING", "ON", "JOIN", "CROSS", "INNER", "LEFT", "RIGHT", "FULL", "NATURAL"}
+	setOps := []string{"WHERE", "ORDER", "GROUP", "LIMIT", "UNION", "EXCEPT", "INTERSECT", "HAVING", "ON", "JOIN", "CROSS", "INNER", "LEFT", "RIGHT", "FULL", "NATURAL", "FROM", "FETCH"}
 	checkKeyword := func(s string) bool {
 		for _, kw := range setOps {
 			if startsWithKeyword(s, kw) {

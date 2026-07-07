@@ -58,7 +58,7 @@ var (
 	dropCascadeRE       = regexp.MustCompile(`(?i)^(\s*DROP\s+(?:VIEW|INDEX|SCHEMA|SEQUENCE|FUNCTION|PROCEDURE|AGGREGATE|TYPE|DOMAIN|OPERATOR|RULE|TRIGGER|CAST|COLLATION|CONVERSION|STATISTICS|LANGUAGE|POLICY|EXTENSION|ACCESS\s+METHOD|OPERATOR\s+CLASS|OPERATOR\s+FAMILY|FOREIGN\s+(?:TABLE|DATA\s+WRAPPER|SERVER))\s+(?:IF\s+EXISTS\s+)?(?:[A-Za-z0-9_".,\s]+?))(\s+(?:CASCADE|RESTRICT))(\s*;?\s*)$`)
 	pgCatalogOperatorRE  = regexp.MustCompile(`(?i)\bOPERATOR\s*\(\s*(?:pg_catalog\s*\.\s*)?(~\*?|=|<>|!=|<|>|<=|>=|\|\|)\s*\)`)
 	pgCatalogCollateRE   = regexp.MustCompile(`(?i)\s+COLLATE\s+(?:pg_catalog\.[A-Za-z0-9_]+|"pg_catalog"\.[A-Za-z0-9_]+|[A-Za-z0-9_".-]+\.[A-Za-z0-9_"]+)`)
-	collationForRE       = regexp.MustCompile(`(?i)\bCOLLATION\s+FOR\s*\([^)]*\)`)
+	collationForRE       = regexp.MustCompile(`(?i)\bCOLLATION\s+FOR\s*\(`)
 	castCollateRE        = regexp.MustCompile(`(?i)(CAST\s*\([^)]+\s+AS\s+[A-Za-z0-9_\s]+)\s+COLLATE\s+(?:"[^"]*"|[A-Za-z0-9_]+)\s*(\))`)
 	partitionByClauseRE = regexp.MustCompile(`(?i)\s+PARTITION\s+BY\s+(?:RANGE|LIST|HASH)\s*\(`)
 	partitionOfRE       = regexp.MustCompile(`(?i)^\s*CREATE\s+TABLE\s+\S+\s+PARTITION\s+OF\s+`)
@@ -130,7 +130,7 @@ func Rewrite(sql string) string {
 	out = rewriteLateral(out)
 	out = rewriteTablesample(out)
 	out = rewriteExtract(out)
-	out = collationForRE.ReplaceAllString(out, "NULL")
+	out = rewriteCollationFor(out)
 	out = castCollateRE.ReplaceAllString(out, "$1$2")
 	out = pgCatalogCollateRE.ReplaceAllString(out, "")
 	out = rewriteSchemaPrefix(out)
@@ -1072,6 +1072,24 @@ func rewriteDeleteAlias(sql string) string {
 		startIdx = matchStart + len(rewrittenMatch) + len(rest)
 	}
 	return result
+}
+
+// rewriteCollationFor replaces COLLATION FOR (...) with NULL, handling nested parens.
+func rewriteCollationFor(sql string) string {
+	for {
+		loc := collationForRE.FindStringIndex(sql)
+		if loc == nil {
+			break
+		}
+		// loc[1]-1 is the position of '(' (the regex ends with \()
+		openParen := loc[1] - 1
+		closeParen := findMatchingParen(sql, openParen)
+		if closeParen < 0 {
+			break
+		}
+		sql = sql[:loc[0]] + "NULL" + sql[closeParen+1:]
+	}
+	return sql
 }
 
 func findMatchingParen(sql string, open int) int {

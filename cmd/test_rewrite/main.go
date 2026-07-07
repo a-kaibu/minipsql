@@ -7,7 +7,8 @@ import (
 
 func main() {
 	tests := []string{
-		`WHERE substring(ctid::text FROM ',(\d+)\)')::integer > 10 OR substring(ctid::text FROM '\((\d+),')::integer > 2`,
+		"SELECT aggfnoid FROM pg_aggregate WHERE aggfnoid = 'myavg'::REGPROC",
+		"SELECT oid FROM pg_type WHERE typname = 'text'::regtype",
 	}
 	for _, t := range tests {
 		result := compat.Rewrite(t)

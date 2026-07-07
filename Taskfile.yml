@@ -68,7 +68,7 @@ tasks:
         status=0
         ./{{.MINIPSQL_BIN}} serve --host 0.0.0.0 --port {{.MINIPSQL_PORT}} &
         server_pid=$!
-        trap 'kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true' EXIT
+        trap 'kill -9 "$server_pid" 2>/dev/null || true' EXIT
         docker compose run --rm -e REGRESS_FILTER="$REGRESS_FILTER" postgres-regress || status=$?
         exit $status
 
@@ -194,7 +194,7 @@ tasks:
         status=0
         ./{{.MINIPSQL_BIN}} serve --host 0.0.0.0 --port {{.MINIPSQL_PORT}} &
         server_pid=$!
-        trap 'kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true' EXIT
+        trap 'kill -9 "$server_pid" 2>/dev/null || true' EXIT
         docker compose run --rm sqlancer > reports/sqlancer/sqlancer.stdout 2> reports/sqlancer/sqlancer.stderr || status=$?
         exit $status
 

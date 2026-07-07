@@ -60,9 +60,9 @@ func rewriteRegexOp(sql string, op string, negate bool, icase bool) string {
 		}
 		var replacement string
 		if negate {
-			replacement = fmt.Sprintf("NOT regexp_match('%s', %s, %s)", pattern, lhs, flags)
+			replacement = fmt.Sprintf("NOT minipsql_regexp_match('%s', %s, %s)", pattern, lhs, flags)
 		} else {
-			replacement = fmt.Sprintf("regexp_match('%s', %s, %s)", pattern, lhs, flags)
+			replacement = fmt.Sprintf("minipsql_regexp_match('%s', %s, %s)", pattern, lhs, flags)
 		}
 
 		sql = sql[:lhsStart] + replacement + sql[rhsEnd:]
@@ -155,82 +155,113 @@ func extractExprBefore(sql string, end int) string {
 }
 
 func rewriteSimilarTo(sql string) string {
-	result := sql
-	upper := strings.ToUpper(sql)
+	lower := strings.ToLower(sql)
 	for {
-		idx := indexOutsideQuotes(upper, "SIMILAR TO")
-		if idx < 0 {
+		idx := indexOutsideQuotes(lower, "similar to")
+		if idx == -1 {
 			break
 		}
-
+		
 		exprEnd := idx
-		for exprEnd > 0 && result[exprEnd-1] == ' ' {
+		for exprEnd > 0 && sql[exprEnd-1] == ' ' {
 			exprEnd--
 		}
-		lhs := extractExprBefore(result, exprEnd)
+		lhs := extractExprBefore(sql, exprEnd)
 		lhsStart := exprEnd - len(lhs)
-
-		patStart := idx + len("SIMILAR TO")
-		for patStart < len(result) && result[patStart] == ' ' {
-			patStart++
-		}
-		if patStart >= len(result) || result[patStart] != '\'' {
-			break
-		}
-		patEnd := patStart + 1
-		for patEnd < len(result) {
-			if result[patEnd] == '\'' {
-				if patEnd+1 < len(result) && result[patEnd+1] == '\'' {
-					patEnd += 2
-					continue
+		
+		patStart := idx + len("similar to")
+		escapeIdx := -1
+		endIdx := len(sql)
+		
+		depth := 0
+		inSingle := false
+		inDouble := false
+		
+		for j := patStart; j < len(sql); j++ {
+			if inSingle {
+				if sql[j] == '\'' {
+					if j+1 < len(sql) && sql[j+1] == '\'' {
+						j++
+						continue
+					}
+					inSingle = false
 				}
-				break
+				continue
 			}
-			if result[patEnd] == '\\' {
-				patEnd++
+			if inDouble {
+				if sql[j] == '"' {
+					if j+1 < len(sql) && sql[j+1] == '"' {
+						j++
+						continue
+					}
+					inDouble = false
+				}
+				continue
 			}
-			patEnd++
+			
+			switch sql[j] {
+			case '\'':
+				inSingle = true
+			case '"':
+				inDouble = true
+			case '(':
+				depth++
+			case ')':
+				if depth == 0 {
+					endIdx = j
+					goto done
+				}
+				depth--
+			case ',', ';':
+				if depth == 0 {
+					endIdx = j
+					goto done
+				}
+			}
+			
+			if depth == 0 && j+6 < len(sql) && strings.ToLower(sql[j:j+6]) == "escape" {
+				if (j == 0 || isSpaceOrOp(sql[j-1])) && (j+6 == len(sql) || isSpaceOrOp(sql[j+6])) {
+					escapeIdx = j
+				}
+			}
+			
+			if depth == 0 {
+				for _, kw := range []string{"and", "or", "where", "order", "group", "limit", "union", "intersect", "except", "as"} {
+					kwLen := len(kw)
+					if j+kwLen <= len(sql) && strings.ToLower(sql[j:j+kwLen]) == kw {
+						if (j == 0 || isSpaceOrOp(sql[j-1])) && (j+kwLen == len(sql) || isSpaceOrOp(sql[j+kwLen])) {
+							endIdx = j
+							goto done
+						}
+					}
+				}
+			}
 		}
-		if patEnd >= len(result) {
-			break
+	done:
+		
+		var patExpr, escExpr string
+		var actualEnd int
+		if escapeIdx != -1 && escapeIdx < endIdx {
+			patExpr = strings.TrimSpace(sql[patStart:escapeIdx])
+			escExpr = strings.TrimSpace(sql[escapeIdx+len("escape"):endIdx])
+			actualEnd = endIdx
+		} else {
+			patExpr = strings.TrimSpace(sql[patStart:endIdx])
+			escExpr = "'\\'"
+			actualEnd = endIdx
 		}
-		patEnd++
-		pattern := result[patStart+1 : patEnd-1]
-
-		regexPat := similarToRegex(pattern)
-		replacement := fmt.Sprintf("regexp_match('%s', %s, '')", regexPat, lhs)
-
-		result = result[:lhsStart] + replacement + result[patEnd:]
-		upper = strings.ToUpper(result)
+		
+		rewritten := "minipsql_similar_to(" + lhs + ", " + patExpr + ", " + escExpr + ")"
+		sql = sql[:lhsStart] + rewritten + sql[actualEnd:]
+		lower = strings.ToLower(sql)
 	}
-	return result
+	return sql
 }
 
-func similarToRegex(pattern string) string {
-	var b strings.Builder
-	b.WriteString("^")
-	for i := 0; i < len(pattern); i++ {
-		switch pattern[i] {
-		case '%':
-			b.WriteString(".*")
-		case '_':
-			b.WriteString(".")
-		case '(':
-			b.WriteString("(")
-		case ')':
-			b.WriteString(")")
-		case '|':
-			b.WriteString("|")
-		case '.', '^', '$', '+', '?', '{', '}', '[', ']', '\\', '*':
-			b.WriteByte('\\')
-			b.WriteByte(pattern[i])
-		default:
-			b.WriteByte(pattern[i])
-		}
-	}
-	b.WriteString("$")
-	return b.String()
+func isSpaceOrOp(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '(' || c == ')' || c == ',' || c == ';' || c == '=' || c == '<' || c == '>' || c == '!'
 }
+
 
 func rewriteNullsOrder(sql string) string {
 	upper := strings.ToUpper(sql)

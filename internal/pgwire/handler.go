@@ -57,6 +57,9 @@ func (h *Handler) ServeConn(ctx context.Context, conn net.Conn) {
 	defer h.Catalog.Disconnect(ctx, dbname)
 
 	s := session.New(randInt32(), randInt32(), dbname, params["user"], b, h.Catalog)
+	defer func() {
+		_ = s.Backend.Rollback(ctx)
+	}()
 	writeAuthOK(conn)
 	for k, v := range s.Params {
 		writeParameterStatus(conn, k, v)

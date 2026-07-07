@@ -77,7 +77,7 @@ func TestRewriteTypedLiteralsAndCreateIndexUsing(t *testing.T) {
 		`INSERT INTO line_tbl VALUES (line(point '(3,1)', point '(3,2)'))`:              `INSERT INTO line_tbl VALUES (line('(3,1)', '(3,2)'))`,
 		`CREATE INDEX macaddr_data_btree ON macaddr_data USING btree (b)`:               `CREATE INDEX macaddr_data_btree ON macaddr_data (b)`,
 		`SELECT '[{"attributes": [], "dependency": 2, "degree": 1}]' ::pg_dependencies`: `SELECT CAST('[{"attributes": [], "dependency": 2, "degree": 1}]' AS text)`,
-		`SELECT b::macaddr <> '08:00:2b:01:02:04'::macaddr FROM macaddr8_data`:          `SELECT CAST(b AS text)<> CAST('08:00:2b:01:02:04' AS text) FROM macaddr8_data`,
+		`SELECT b::macaddr <> '08:00:2b:01:02:04'::macaddr FROM macaddr8_data`:          `SELECT CAST(b AS text) <> CAST('08:00:2b:01:02:04' AS text) FROM macaddr8_data`,
 		`SELECT (i || '/' || j)::pg_lsn f FROM t ORDER BY f`:                            `SELECT CAST((i || '/' || j) AS text) f FROM t ORDER BY f`,
 	}
 	for sql, want := range cases {
@@ -195,3 +195,134 @@ func TestRewriteTypedLiterals(t *testing.T) {
 		})
 	}
 }
+
+func TestRewriteDollarQuotes(t *testing.T) {
+	cases := map[string]string{
+		"SELECT $$hello$$":                         "SELECT 'hello'",
+		"SELECT $tag$hello 'world'$tag$":           "SELECT 'hello ''world'''",
+		"SELECT $re$(bar)(beque)$re$":               "SELECT '(bar)(beque)'",
+		"SELECT $a-b$test$a-b$":                     "SELECT 'test'",
+	}
+	for sql, want := range cases {
+		t.Run(sql, func(t *testing.T) {
+			if got := Rewrite(sql); got != want {
+				t.Fatalf("Rewrite() = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestRewriteRegexFunctions(t *testing.T) {
+	cases := map[string]string{
+		"SELECT foo FROM regexp_split_to_table('the quick', '\\s+') AS foo": 
+			"SELECT foo FROM (SELECT value AS foo FROM json_each(minipsql_regexp_split_to_json('the quick', '\\s+'))) AS foo",
+		
+		"SELECT regexp_matches('foobarbequebaz', '(bar)(beque)')":
+			"SELECT value FROM json_each(minipsql_regexp_matches_to_json('foobarbequebaz', '(bar)(beque)'))",
+			
+		"SELECT regexp_matches('foo', 'bar', 'g');":
+			"SELECT value FROM json_each(minipsql_regexp_matches_to_json('foo', 'bar', 'g'));",
+	}
+	for sql, want := range cases {
+		t.Run(sql, func(t *testing.T) {
+			if got := Rewrite(sql); got != want {
+				t.Fatalf("Rewrite() = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestRewriteOverlay(t *testing.T) {
+	cases := map[string]string{
+		"SELECT OVERLAY('abcdef' PLACING '45' FROM 4)": 
+			"SELECT minipsql_overlay('abcdef', '45', 4)",
+		
+		"SELECT OVERLAY('yabadoo' PLACING 'daba' FROM 5 FOR 0)":
+			"SELECT minipsql_overlay('yabadoo', 'daba', 5, 0)",
+	}
+	for sql, want := range cases {
+		t.Run(sql, func(t *testing.T) {
+			if got := Rewrite(sql); got != want {
+				t.Fatalf("Rewrite() = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestRewriteStringContinuation(t *testing.T) {
+	cases := map[string]string{
+		"SELECT 'first line'\n' - next line'\n\t' - third line'":
+			"SELECT 'first line - next line - third line'",
+	}
+	for sql, want := range cases {
+		t.Run(sql, func(t *testing.T) {
+			if got := Rewrite(sql); got != want {
+				t.Fatalf("Rewrite() = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestRewriteToBinOctHex(t *testing.T) {
+	cases := map[string]string{
+		"SELECT to_bin(-1234)":                  "SELECT minipsql_to_bin_int(-1234)",
+		"SELECT to_bin(-1234::bigint)":          "SELECT minipsql_to_bin_bigint(-CAST(1234 AS integer))",
+		"SELECT to_oct(45::int8)":               "SELECT minipsql_to_oct_bigint(CAST(45 AS integer))",
+		"SELECT to_hex(20)":                     "SELECT minipsql_to_hex_int(20)",
+	}
+	for sql, want := range cases {
+		t.Run(sql, func(t *testing.T) {
+			if got := Rewrite(sql); got != want {
+				t.Fatalf("Rewrite() = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestRewriteSubstringAndTrim(t *testing.T) {
+	cases := map[string]string{
+		"SELECT SUBSTRING('1234567890'::bytea FROM 3)":               "SELECT substr(CAST('1234567890' AS blob), 3)",
+		"SELECT SUBSTRING('1234567890'::bytea FROM 4 FOR 3)":         "SELECT substr(CAST('1234567890' AS blob), 4, 3)",
+		"SELECT trim(leading E'\\\\000'::bytea from E'\\\\000'::bytea)": "SELECT ltrim(CAST('\\\\000' AS blob), CAST('\\\\000' AS blob))",
+		"SELECT trim(trailing E'\\\\000'::bytea from E'\\\\000'::bytea)": "SELECT rtrim(CAST('\\\\000' AS blob), CAST('\\\\000' AS blob))",
+		"SELECT trim(E'\\\\000'::bytea from E'\\\\000'::bytea)":         "SELECT btrim(CAST('\\\\000' AS blob), CAST('\\\\000' AS blob))",
+		"SELECT SUBSTRING('abc', 1, 2)":                              "SELECT substr('abc', 1, 2)",
+		"SELECT trim('abc', 'a')":                                    "SELECT btrim('abc', 'a')",
+		"SELECT encode(overlay(E'Th\\\\000omas'::bytea placing E'Th\\\\001omas'::bytea from 2),'escape')": "SELECT encode(minipsql_overlay(CAST('Th\\\\000omas' AS blob), CAST('Th\\\\001omas' AS blob), 2),'escape')",
+	}
+	for sql, want := range cases {
+		t.Run(sql, func(t *testing.T) {
+			if got := Rewrite(sql); got != want {
+				t.Fatalf("Rewrite() = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestRewriteUnicodeLiterals(t *testing.T) {
+	cases := map[string]string{
+		"SELECT U&'d\\0061t\\+000061'":                      "SELECT 'data'",
+		"SELECT U&'d!0061t\\+000061' UESCAPE '!'":          "SELECT 'dat\\+000061'",
+		"SELECT U&'a\\\\b' AS \"a\\b\"":                    "SELECT 'a\\b' AS \"a\\b\"",
+		"SELECT U&'wrong: \\061'":                          "SELECT minipsql_error('invalid Unicode escape', '22025', 'Unicode escapes must be \\XXXX or \\+XXXXXX.')",
+		"SELECT U&'wrong: +0061' UESCAPE +":                "SELECT minipsql_error('UESCAPE must be followed by a simple string literal at or near \"+\"', '42601', '')",
+		"SELECT U&'wrong: +0061' UESCAPE '+'":              "SELECT minipsql_error('invalid Unicode escape character', '22025', '')",
+		"SELECT CAST(name 'namefield' AS text)":            "SELECT CAST(CAST('namefield' AS text) AS text)",
+		"SELECT SUBSTRING('abcdefg' SIMILAR 'a#\"(b_d)#\"%' ESCAPE '#')": "SELECT minipsql_similar_substring('abcdefg', 'a#\"(b_d)#\"%', '#')",
+		"SELECT SUBSTRING('abcdefg' FROM 'a#\"(b_d)#\"%' FOR '#')":       "SELECT minipsql_similar_substring('abcdefg', 'a#\"(b_d)#\"%', '#')",
+		"SELECT 'abcdefg' SIMILAR TO '_bcd#%' ESCAPE '#'":                "SELECT minipsql_similar_to('abcdefg', '_bcd#%', '#')",
+		"SELECT 'abcdefg' SIMILAR TO '_bcd%'":                            "SELECT minipsql_similar_to('abcdefg', '_bcd%', '\\')",
+	}
+	for sql, want := range cases {
+		t.Run(sql, func(t *testing.T) {
+			if got := Rewrite(sql); got != want {
+				t.Fatalf("Rewrite() = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+
+
+
+

@@ -129,6 +129,7 @@ var idxCounter atomic.Int64
 // (not on multi-statement strings). Called by session after splitting.
 func RewritePerStatement(sql string) string {
 	sql = rewriteAlterAddColumnDefaultExpr(sql)
+	sql = rewriteCreateTableDefaultExpr(sql)
 	return sql
 }
 
@@ -150,6 +151,11 @@ func Rewrite(sql string) string {
 	out = rewriteFetchFirst(out)
 	out = rewriteLateral(out)
 	out = rewriteTablesample(out)
+	// SQLite does not support EXCEPT ALL or INTERSECT ALL; strip the ALL modifier.
+	out = regexp.MustCompile(`(?i)\b(EXCEPT|INTERSECT)\s+ALL\b`).ReplaceAllString(out, "$1")
+	// PostgreSQL allows SELECT FROM table with no column list (returns zero-column rows).
+	// SQLite requires at least one column; rewrite to SELECT NULL FROM.
+	out = regexp.MustCompile(`(?i)\bSELECT\s+(FROM\b)`).ReplaceAllString(out, "SELECT NULL $1")
 	// Strip WITH RECURSIVE SEARCH/CYCLE clauses (SQL:1999 standard, not supported by SQLite)
 	out = regexp.MustCompile(`(?i)\)\s*SEARCH\s+(?:DEPTH|BREADTH)\s+FIRST\s+BY\s+[^)]+?\s+SET\s+\w+`).ReplaceAllString(out, ")")
 	out = regexp.MustCompile(`(?i)\)\s*CYCLE\s+[^)]+?\s+SET\s+\w+\s+(?:TO\s+[^\s]+\s+DEFAULT\s+[^\s]+\s+)?USING\s+\w+`).ReplaceAllString(out, ")")
@@ -863,6 +869,30 @@ func extractCastExpr(sql string) string {
 		return ""
 	}
 	i := len(sql) - 1
+	// Handle array subscript: expr[n] or expr[n:m] — scan back past balanced ]
+	if sql[i] == ']' {
+		depth := 1
+		i--
+		for i >= 0 && depth > 0 {
+			if sql[i] == ']' {
+				depth++
+			} else if sql[i] == '[' {
+				depth--
+			}
+			i--
+		}
+		i++
+		// Now scan back the identifier/expr before '['
+		for i > 0 {
+			b := sql[i-1]
+			if isIdentByte(b) || b == '.' {
+				i--
+				continue
+			}
+			break
+		}
+		return sql[i:]
+	}
 	if sql[i] == '\'' {
 		i--
 		for i >= 0 {
@@ -3242,6 +3272,56 @@ func stripNonConstantDefaults(colDefs string) string {
 	return result.String()
 }
 
+// readAlterColumnDefaultValue reads the DEFAULT value in an ALTER TABLE ADD COLUMN context,
+// stopping at SQL constraint keywords (CHECK, NOT, CONSTRAINT, UNIQUE, REFERENCES) or end of string.
+func readAlterColumnDefaultValue(s string, j int) (string, int) {
+	start := j
+	depth := 0
+	inStr := false
+	for j < len(s) {
+		ch := s[j]
+		if inStr {
+			if ch == '\'' {
+				inStr = false
+			}
+			j++
+			continue
+		}
+		if ch == '\'' {
+			inStr = true
+			j++
+			continue
+		}
+		if ch == '(' {
+			depth++
+			j++
+			continue
+		}
+		if ch == ')' {
+			if depth == 0 {
+				break
+			}
+			depth--
+			j++
+			continue
+		}
+		if depth == 0 {
+			if ch == ',' || ch == ';' {
+				break
+			}
+			// Stop at constraint keywords that follow the DEFAULT value
+			rest := strings.ToUpper(s[j:])
+			for _, kw := range []string{"CHECK ", "CHECK(", "NOT NULL", "CONSTRAINT ", "UNIQUE", "REFERENCES ", "PRIMARY KEY", "DEFERRABLE"} {
+				if strings.HasPrefix(rest, kw) {
+					return strings.TrimSpace(s[start:j]), j
+				}
+			}
+		}
+		j++
+	}
+	return strings.TrimSpace(s[start:j]), j
+}
+
 // readDefaultValue reads the default value starting at position j in s,
 // returns the value string and the end position.
 func readDefaultValue(s string, j int) (string, int) {
@@ -3344,13 +3424,18 @@ func rewriteAlterAddColumnDefaultExpr(sql string) string {
 	}
 	defIdx += addIdx // absolute position of " default "
 	defValStart := defIdx + len(" default ")
-	defVal := strings.TrimSpace(sql[defValStart:])
+	// Read the default value, stopping at constraint keywords (CHECK, NOT, NULL, UNIQUE, REFERENCES)
+	defVal, _ := readAlterColumnDefaultValue(sql, defValStart)
 
 	// Check if defVal is a simple constant
 	if isSimpleLiteralDefault(defVal) {
 		return sql
 	}
-	// Strip the DEFAULT clause
+	// Strip the DEFAULT clause (but keep any trailing constraint keywords)
+	suffix := strings.TrimSpace(sql[defValStart+len(defVal):])
+	if suffix != "" {
+		return strings.TrimRight(sql[:defIdx], " \t") + " " + suffix
+	}
 	return strings.TrimRight(sql[:defIdx], " \t")
 }
 
@@ -3894,24 +3979,37 @@ func rewriteBareOffset(sql string) string {
 					j++
 				}
 				numStart := j
+				isParenExpr := j < n && sql[j] == '('
 				for j < n && sql[j] >= '0' && sql[j] <= '9' {
 					j++
 				}
-				if j > numStart {
-					numStr := sql[numStart:j]
-					// Skip optional ROWS/ROW
+				if j > numStart || isParenExpr {
+					var numStr string
 					k := j
-					for k < n && (sql[k] == ' ' || sql[k] == '\t') {
-						k++
-					}
-					if k+4 <= n && strings.ToLower(sql[k:k+4]) == "rows" {
-						k += 4
-					} else if k+3 <= n && strings.ToLower(sql[k:k+3]) == "row" {
-						k += 3
+					if isParenExpr {
+						// Read balanced parenthesized expression for OFFSET
+						depth2 := 1
+						k = numStart + 1
+						for k < n && depth2 > 0 {
+							if sql[k] == '(' { depth2++ }
+							if sql[k] == ')' { depth2-- }
+							k++
+						}
+						numStr = sql[numStart:k]
 					} else {
-						k = j
+						numStr = sql[numStart:j]
+						// Skip optional ROWS/ROW
+						for k < n && (sql[k] == ' ' || sql[k] == '\t') {
+							k++
+						}
+						if k+4 <= n && strings.ToLower(sql[k:k+4]) == "rows" {
+							k += 4
+						} else if k+3 <= n && strings.ToLower(sql[k:k+3]) == "row" {
+							k += 3
+						} else {
+							k = j
+						}
 					}
-					// Check what's after: if it's ) ; or end of clause, no LIMIT
 					// Check if LIMIT exists before OFFSET in same "scope" (search backwards)
 					scopeStart := findScopeStart(sql, i)
 					scopeText := strings.ToLower(sql[scopeStart:i])

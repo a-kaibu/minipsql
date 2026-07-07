@@ -35,7 +35,7 @@ var (
 	anonymousIndexRE   = regexp.MustCompile(`(?i)\bCREATE\s+(UNIQUE\s+)?INDEX\s+ON\s+([A-Za-z0-9_\".]+)\b`)
 	circleColRE        = regexp.MustCompile(`(?i)\b\w+\s+circle\b`)
 	asNullRE           = regexp.MustCompile(`(?i)\bAS\s+null\b`)
-	tableColumnAliasRE = regexp.MustCompile(`(?i)\b(int2_tbl|int4_tbl|int8_tbl)\b\s*\)?\s*(?:AS\s+)?([A-Za-z0-9_]+)\s*\(\s*([A-Za-z0-9_, ]+)\s*\)`)
+	tableColumnAliasRE = regexp.MustCompile(`(?i)\bFROM\s+(int2_tbl|int4_tbl|int8_tbl)\b\s+(?:AS\s+)?([A-Za-z0-9_]+)\s*\(\s*([A-Za-z0-9_, ]+)\s*\)`)
 	tableKeywordRE     = regexp.MustCompile(`(?i)(^|[^a-zA-Z0-9_.])(?:([a-zA-Z0-9_]+)\s+)?\bTABLE\s+([A-Za-z0-9_]+)\b`)
 	arrayConstructorRE = regexp.MustCompile(`(?is)\bARRAY\s*\[(.*?)\]`)
 	usingLessRE         = regexp.MustCompile(`(?i)\busing\s+<`)
@@ -2522,27 +2522,16 @@ func rewriteTableColumnAlias(sql string) string {
 		tableName := sub[1]
 		aliasName := sub[2]
 		colsStr := sub[3]
-		
+
 		colParts := strings.Split(colsStr, ",")
 		numCols := len(colParts)
-		
-		hasCloseParen := strings.Contains(m[:strings.Index(strings.ToLower(m), aliasName)], ")")
-		
-		if numCols != 1 {
-			msg := fmt.Sprintf("table %q has 1 columns available but %d columns specified", aliasName, numCols)
-			ret := fmt.Sprintf("(SELECT minipsql_error('%s', '42601', '') FROM %s) %s", msg, tableName, aliasName)
-			if hasCloseParen {
-				ret += ")"
-			}
-			return ret
+
+		if numCols == 1 {
+			colName := strings.TrimSpace(colParts[0])
+			return fmt.Sprintf("FROM (SELECT f1 AS %s FROM %s) %s", colName, tableName, aliasName)
 		}
-		
-		colName := strings.TrimSpace(colParts[0])
-		ret := fmt.Sprintf("(SELECT f1 AS %s FROM %s) %s", colName, tableName, aliasName)
-		if hasCloseParen {
-			ret += ")"
-		}
-		return ret
+		// Strip column alias list — just use table alias without column renaming
+		return fmt.Sprintf("FROM %s %s", tableName, aliasName)
 	})
 }
 

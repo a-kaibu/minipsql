@@ -7,8 +7,9 @@ import (
 
 func main() {
 	tests := []string{
-		`SELECT x, y FROM (SELECT 10*cosd(a), 10*sind(a) FROM generate_series(0, 360, 90) AS t(a)) AS t(x,y)`,
-		`SELECT * FROM (SELECT 1 AS a, 2 AS b) AS sub(x, y)`,
+		`select * from int8_tbl limit (case when random() < 0.5 then null::bigint end)`,
+		`select * from int8_tbl offset (case when random() < 0.5 then null::bigint end)`,
+		`select unique1, unique2, generate_series(1,10) from tenk1 order by unique2 limit 7`,
 	}
 	for _, t := range tests {
 		result := compat.Rewrite(t)

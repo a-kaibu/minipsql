@@ -54,6 +54,9 @@ func Rewrite(sql string) string {
 	out = rewriteUnloggedTable(out)
 	out = rewriteSelectInto(out)
 	out = rewriteIndexConcurrently(out)
+	out = rewriteFetchFirst(out)
+	out = rewriteLateral(out)
+	out = rewriteTablesample(out)
 	out = rewriteUnicodeLiterals(out)
 	out = rewriteValuesAlias(out)
 	out = tableKeywordRE.ReplaceAllStringFunc(out, func(m string) string {
@@ -134,6 +137,17 @@ func Rewrite(sql string) string {
 }
 
 var (
+	// FETCH FIRST n ROWS ONLY / FETCH NEXT n ROWS ONLY
+	fetchFirstRE = regexp.MustCompile(`(?i)\bFETCH\s+(?:FIRST|NEXT)\s+(\d+)\s+ROWS?\s+(?:ONLY|WITH\s+TIES)\b`)
+	// FETCH FIRST ROWS ONLY (no count = 1)
+	fetchFirstNoCountRE = regexp.MustCompile(`(?i)\bFETCH\s+(?:FIRST|NEXT)\s+ROWS?\s+ONLY\b`)
+	// OFFSET n ROWS
+	offsetRowsRE = regexp.MustCompile(`(?i)\bOFFSET\s+(\d+)\s+ROWS\b`)
+	// LATERAL keyword before subqueries/functions
+	lateralRE = regexp.MustCompile(`(?i)\bLATERAL\s+`)
+	// TABLESAMPLE clause
+	tablesampleRE = regexp.MustCompile(`(?i)\bTABLESAMPLE\s+\w+\s*\([^)]*\)`)
+
 	createOrReplaceViewRE = regexp.MustCompile(`(?i)^\s*CREATE\s+OR\s+REPLACE\s+(TEMP(?:ORARY)?\s+)?VIEW\s+`)
 	createUnloggedTableRE = regexp.MustCompile(`(?i)\bCREATE\s+UNLOGGED\s+TABLE\b`)
 	selectIntoRE          = regexp.MustCompile(`(?i)^\s*SELECT\s+(.+?)\s+INTO\s+(?:TEMP(?:ORARY)?\s+)?(?:TABLE\s+)?([A-Za-z0-9_".]+)\s+FROM\s+`)
@@ -176,6 +190,24 @@ func rewriteSelectInto(sql string) string {
 	tableName := sql[m[4]:m[5]]
 	fromPos := m[1]
 	return "CREATE TABLE " + tableName + " AS SELECT " + selectList + " FROM " + sql[fromPos:]
+}
+
+// rewriteFetchFirst rewrites SQL:2008 FETCH FIRST/NEXT syntax to LIMIT/OFFSET.
+func rewriteFetchFirst(sql string) string {
+	out := fetchFirstNoCountRE.ReplaceAllString(sql, "LIMIT 1")
+	out = fetchFirstRE.ReplaceAllString(out, "LIMIT $1")
+	out = offsetRowsRE.ReplaceAllString(out, "OFFSET $1")
+	return out
+}
+
+// rewriteLateral strips the LATERAL keyword (SQLite evaluates correlated subqueries natively).
+func rewriteLateral(sql string) string {
+	return lateralRE.ReplaceAllString(sql, "")
+}
+
+// rewriteTablesample strips TABLESAMPLE clauses (not supported in SQLite).
+func rewriteTablesample(sql string) string {
+	return tablesampleRE.ReplaceAllString(sql, "")
 }
 
 // rewriteIndexConcurrently strips CONCURRENTLY from CREATE/DROP INDEX.

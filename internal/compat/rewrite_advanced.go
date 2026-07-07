@@ -398,6 +398,14 @@ func isSpaceOrOp(c byte) bool {
 
 func rewriteNullsOrder(sql string) string {
 	upper := strings.ToUpper(sql)
+
+	// In DDL (CREATE INDEX / CREATE UNIQUE INDEX), SQLite doesn't support NULLS FIRST/LAST
+	// in the column list — just strip them.
+	trimmedUpper := strings.TrimSpace(upper)
+	if strings.HasPrefix(trimmedUpper, "CREATE") && strings.Contains(trimmedUpper, "INDEX") {
+		return regexp.MustCompile(`(?i)\s+NULLS\s+(?:FIRST|LAST)\b`).ReplaceAllString(sql, "")
+	}
+
 	orderIdx := lastIndexOutsideQuotes(upper, "ORDER BY")
 	if orderIdx < 0 {
 		return sql

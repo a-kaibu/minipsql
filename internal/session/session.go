@@ -172,22 +172,7 @@ func checkUnsupportedDDL(sql string) error {
 		{"create procedure", "CREATE PROCEDURE is not supported"},
 		{"create or replace procedure", "CREATE PROCEDURE is not supported"},
 		{"create aggregate", "CREATE AGGREGATE is not supported"},
-		{"create type", "CREATE TYPE is not supported"},
-		{"alter type", "ALTER TYPE is not supported"},
-		{"create extension", "CREATE EXTENSION is not supported"},
-		{"create rule", "CREATE RULE is not supported"},
-		{"create trigger", "CREATE TRIGGER is not supported"},
-		{"create foreign", "CREATE FOREIGN is not supported"},
-		{"alter foreign", "ALTER FOREIGN is not supported"},
 		{"alter domain", "ALTER DOMAIN is not supported"},
-		{"create conversion", "CREATE CONVERSION is not supported"},
-		{"create statistics", "CREATE STATISTICS is not supported"},
-		{"create language", "CREATE LANGUAGE is not supported"},
-		{"create cast", "CREATE CAST is not supported"},
-		{"create collation", "CREATE COLLATION is not supported"},
-		{"create access method", "CREATE ACCESS METHOD is not supported"},
-		{"create event trigger", "CREATE EVENT TRIGGER is not supported"},
-		{"create policy", "CREATE POLICY is not supported"},
 		{"alter policy", "ALTER POLICY is not supported"},
 	}
 
@@ -404,6 +389,76 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 		return &backend.CommandTag{Tag: "ALTER OPERATOR"}, true
 	case strings.HasPrefix(lower, "drop operator class ") || strings.HasPrefix(lower, "drop operator family "):
 		return &backend.CommandTag{Tag: "DROP OPERATOR"}, true
+	case strings.HasPrefix(lower, "create type ") || lower == "create type":
+		return &backend.CommandTag{Tag: "CREATE TYPE"}, true
+	case strings.HasPrefix(lower, "alter type "):
+		return &backend.CommandTag{Tag: "ALTER TYPE"}, true
+	case strings.HasPrefix(lower, "create statistics "):
+		return &backend.CommandTag{Tag: "CREATE STATISTICS"}, true
+	case strings.HasPrefix(lower, "alter statistics "):
+		return &backend.CommandTag{Tag: "ALTER STATISTICS"}, true
+	case strings.HasPrefix(lower, "drop statistics ") || lower == "drop statistics":
+		return &backend.CommandTag{Tag: "DROP STATISTICS"}, true
+	case strings.HasPrefix(lower, "create text search "):
+		return &backend.CommandTag{Tag: "CREATE TEXT SEARCH"}, true
+	case strings.HasPrefix(lower, "alter text search "):
+		return &backend.CommandTag{Tag: "ALTER TEXT SEARCH"}, true
+	case strings.HasPrefix(lower, "drop text search "):
+		return &backend.CommandTag{Tag: "DROP TEXT SEARCH"}, true
+	case strings.HasPrefix(lower, "create extension ") || lower == "create extension":
+		return &backend.CommandTag{Tag: "CREATE EXTENSION"}, true
+	case strings.HasPrefix(lower, "alter extension "):
+		return &backend.CommandTag{Tag: "ALTER EXTENSION"}, true
+	case strings.HasPrefix(lower, "create rule "):
+		return &backend.CommandTag{Tag: "CREATE RULE"}, true
+	case strings.HasPrefix(lower, "create cast "):
+		return &backend.CommandTag{Tag: "CREATE CAST"}, true
+	case strings.HasPrefix(lower, "create aggregate "):
+		return &backend.CommandTag{Tag: "CREATE AGGREGATE"}, true
+	case strings.HasPrefix(lower, "alter aggregate "):
+		return &backend.CommandTag{Tag: "ALTER AGGREGATE"}, true
+	case strings.HasPrefix(lower, "drop aggregate ") || lower == "drop aggregate":
+		return &backend.CommandTag{Tag: "DROP AGGREGATE"}, true
+	case strings.HasPrefix(lower, "create trigger "):
+		return &backend.CommandTag{Tag: "CREATE TRIGGER"}, true
+	case strings.HasPrefix(lower, "alter trigger "):
+		return &backend.CommandTag{Tag: "ALTER TRIGGER"}, true
+	case strings.HasPrefix(lower, "drop trigger ") || lower == "drop trigger":
+		return &backend.CommandTag{Tag: "DROP TRIGGER"}, true
+	case strings.HasPrefix(lower, "create foreign table ") || strings.HasPrefix(lower, "create foreign data ") || strings.HasPrefix(lower, "create foreign server ") || strings.HasPrefix(lower, "create server ") || strings.HasPrefix(lower, "create user mapping "):
+		return &backend.CommandTag{Tag: "CREATE FOREIGN"}, true
+	case strings.HasPrefix(lower, "alter foreign table ") || strings.HasPrefix(lower, "alter foreign data ") || strings.HasPrefix(lower, "alter foreign server ") || strings.HasPrefix(lower, "alter server ") || strings.HasPrefix(lower, "alter user mapping "):
+		return &backend.CommandTag{Tag: "ALTER FOREIGN"}, true
+	case strings.HasPrefix(lower, "create policy "):
+		return &backend.CommandTag{Tag: "CREATE POLICY"}, true
+	case strings.HasPrefix(lower, "create collation "):
+		return &backend.CommandTag{Tag: "CREATE COLLATION"}, true
+	case strings.HasPrefix(lower, "create access method "):
+		return &backend.CommandTag{Tag: "CREATE ACCESS METHOD"}, true
+	case strings.HasPrefix(lower, "create event trigger "):
+		return &backend.CommandTag{Tag: "CREATE EVENT TRIGGER"}, true
+	case strings.HasPrefix(lower, "create conversion "):
+		return &backend.CommandTag{Tag: "CREATE CONVERSION"}, true
+	case strings.HasPrefix(lower, "create language ") || lower == "create language":
+		return &backend.CommandTag{Tag: "CREATE LANGUAGE"}, true
+	case strings.HasPrefix(lower, "drop rule ") || lower == "drop rule":
+		return &backend.CommandTag{Tag: "DROP RULE"}, true
+	case strings.HasPrefix(lower, "drop cast ") || lower == "drop cast":
+		return &backend.CommandTag{Tag: "DROP CAST"}, true
+	case strings.HasPrefix(lower, "drop collation ") || lower == "drop collation":
+		return &backend.CommandTag{Tag: "DROP COLLATION"}, true
+	case strings.HasPrefix(lower, "drop access method ") || lower == "drop access method":
+		return &backend.CommandTag{Tag: "DROP ACCESS METHOD"}, true
+	case strings.HasPrefix(lower, "drop event trigger ") || lower == "drop event trigger":
+		return &backend.CommandTag{Tag: "DROP EVENT TRIGGER"}, true
+	case strings.HasPrefix(lower, "drop policy ") || lower == "drop policy":
+		return &backend.CommandTag{Tag: "DROP POLICY"}, true
+	case strings.HasPrefix(lower, "drop conversion ") || lower == "drop conversion":
+		return &backend.CommandTag{Tag: "DROP CONVERSION"}, true
+	case strings.HasPrefix(lower, "drop language ") || lower == "drop language":
+		return &backend.CommandTag{Tag: "DROP LANGUAGE"}, true
+	case strings.HasPrefix(lower, "drop extension ") || lower == "drop extension":
+		return &backend.CommandTag{Tag: "DROP EXTENSION"}, true
 	}
 
 	// ALTER TABLE with unsupported subcommands → no-op

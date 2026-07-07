@@ -506,7 +506,139 @@ func init() {
 		h := sha256.Sum256([]byte(valueString(args[0])))
 		return hex.EncodeToString(h[:]), nil
 	})
+
+	// Statistical aggregate functions: var_pop, var_samp, stddev_pop, stddev_samp, any_value
+	sqlite.MustRegisterFunction("var_pop", &sqlite.FunctionImpl{
+		NArgs: 1,
+		MakeAggregate: func(_ sqlite.FunctionContext) (sqlite.AggregateFunction, error) {
+			return &varAgg{pop: true}, nil
+		},
+	})
+	sqlite.MustRegisterFunction("var_samp", &sqlite.FunctionImpl{
+		NArgs: 1,
+		MakeAggregate: func(_ sqlite.FunctionContext) (sqlite.AggregateFunction, error) {
+			return &varAgg{pop: false}, nil
+		},
+	})
+	sqlite.MustRegisterFunction("variance", &sqlite.FunctionImpl{
+		NArgs: 1,
+		MakeAggregate: func(_ sqlite.FunctionContext) (sqlite.AggregateFunction, error) {
+			return &varAgg{pop: false}, nil
+		},
+	})
+	sqlite.MustRegisterFunction("stddev_pop", &sqlite.FunctionImpl{
+		NArgs: 1,
+		MakeAggregate: func(_ sqlite.FunctionContext) (sqlite.AggregateFunction, error) {
+			return &stddevAgg{pop: true}, nil
+		},
+	})
+	sqlite.MustRegisterFunction("stddev_samp", &sqlite.FunctionImpl{
+		NArgs: 1,
+		MakeAggregate: func(_ sqlite.FunctionContext) (sqlite.AggregateFunction, error) {
+			return &stddevAgg{pop: false}, nil
+		},
+	})
+	sqlite.MustRegisterFunction("stddev", &sqlite.FunctionImpl{
+		NArgs: 1,
+		MakeAggregate: func(_ sqlite.FunctionContext) (sqlite.AggregateFunction, error) {
+			return &stddevAgg{pop: false}, nil
+		},
+	})
+	sqlite.MustRegisterFunction("any_value", &sqlite.FunctionImpl{
+		NArgs: 1,
+		MakeAggregate: func(_ sqlite.FunctionContext) (sqlite.AggregateFunction, error) {
+			return &anyValueAgg{}, nil
+		},
+	})
 }
+
+// varAgg implements var_pop and var_samp aggregate functions.
+type varAgg struct {
+	pop   bool
+	count int64
+	sum   float64
+	sumSq float64
+}
+
+func (a *varAgg) Step(_ *sqlite.FunctionContext, args []driver.Value) error {
+	if len(args) == 0 || args[0] == nil {
+		return nil
+	}
+	v := valueFloat64(args[0])
+	a.count++
+	a.sum += v
+	a.sumSq += v * v
+	return nil
+}
+
+func (a *varAgg) WindowInverse(_ *sqlite.FunctionContext, args []driver.Value) error {
+	if len(args) == 0 || args[0] == nil {
+		return nil
+	}
+	v := valueFloat64(args[0])
+	a.count--
+	a.sum -= v
+	a.sumSq -= v * v
+	return nil
+}
+
+func (a *varAgg) WindowValue(_ *sqlite.FunctionContext) (driver.Value, error) {
+	if a.count == 0 {
+		return nil, nil
+	}
+	if !a.pop && a.count < 2 {
+		return nil, nil
+	}
+	mean := a.sum / float64(a.count)
+	variance := a.sumSq/float64(a.count) - mean*mean
+	if !a.pop {
+		variance = variance * float64(a.count) / float64(a.count-1)
+	}
+	return variance, nil
+}
+
+func (a *varAgg) Final(_ *sqlite.FunctionContext) {}
+
+// stddevAgg implements stddev_pop and stddev_samp.
+type stddevAgg struct {
+	pop bool
+	varAgg
+}
+
+func (a *stddevAgg) WindowValue(ctx *sqlite.FunctionContext) (driver.Value, error) {
+	a.varAgg.pop = a.pop
+	v, err := a.varAgg.WindowValue(ctx)
+	if err != nil || v == nil {
+		return v, err
+	}
+	return math.Sqrt(v.(float64)), nil
+}
+
+func (a *stddevAgg) Final(_ *sqlite.FunctionContext) {}
+
+// anyValueAgg implements any_value — returns the first non-NULL value seen.
+type anyValueAgg struct {
+	val driver.Value
+	set bool
+}
+
+func (a *anyValueAgg) Step(_ *sqlite.FunctionContext, args []driver.Value) error {
+	if !a.set && len(args) > 0 && args[0] != nil {
+		a.val = args[0]
+		a.set = true
+	}
+	return nil
+}
+
+func (a *anyValueAgg) WindowInverse(_ *sqlite.FunctionContext, _ []driver.Value) error {
+	return nil
+}
+
+func (a *anyValueAgg) WindowValue(_ *sqlite.FunctionContext) (driver.Value, error) {
+	return a.val, nil
+}
+
+func (a *anyValueAgg) Final(_ *sqlite.FunctionContext) {}
 
 func asciiFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
 	if len(args) != 1 {

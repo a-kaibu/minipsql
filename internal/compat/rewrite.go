@@ -93,6 +93,15 @@ var (
 	namedArgRE         = regexp.MustCompile(`(?i)\b[A-Za-z_][A-Za-z0-9_]*\s*=>\s*`)
 	forPortionOfRE     = regexp.MustCompile(`(?i)\s+FOR\s+PORTION\s+OF\s+\S+\s+FROM\s+\S+\s+TO\s+\S+`)
 	bitLiteralRE       = regexp.MustCompile(`(?i)\bB'([01]*)'`)
+	variadicRE         = regexp.MustCompile(`(?i)\bVARIADIC\s+`)
+	// localtime / localtimestamp — PG-specific aliases for current_time/current_timestamp
+	localtimestampPrecRE = regexp.MustCompile(`(?i)\blocaltimestamp\s*\(\s*\d+\s*\)`)
+	localtimePrecRE      = regexp.MustCompile(`(?i)\blocaltime\s*\(\s*\d+\s*\)`)
+	localtimestampRE     = regexp.MustCompile(`(?i)\blocaltimestamp\b`)
+	localtimeRE          = regexp.MustCompile(`(?i)\blocaltime\b`)
+	// current_time(n) / current_timestamp(n) — precision versions not supported by SQLite
+	currentTimePrecRE      = regexp.MustCompile(`(?i)\bcurrent_time\s*\(\s*\d+\s*\)`)
+	currentTimestampPrecRE = regexp.MustCompile(`(?i)\bcurrent_timestamp\s*\(\s*\d+\s*\)`)
 )
 
 var idxCounter atomic.Int64
@@ -154,6 +163,7 @@ func Rewrite(sql string) string {
 	out = anyArrayRE.ReplaceAllString(out, "IN ($1)")
 	out = namedArgRE.ReplaceAllString(out, "")
 	out = forPortionOfRE.ReplaceAllString(out, "")
+	out = variadicRE.ReplaceAllString(out, "")
 	out = rewriteCollateClause(out)
 	out = rewriteColumnCompression(out)
 	out = rewriteWithOids(out)
@@ -194,6 +204,12 @@ func Rewrite(sql string) string {
 	out = serialRE.ReplaceAllString(out, "integer")
 	out = boolRE.ReplaceAllString(out, "integer")
 	out = nowRE.ReplaceAllString(out, "datetime('now')")
+	out = localtimestampPrecRE.ReplaceAllString(out, "datetime('now')")
+	out = localtimePrecRE.ReplaceAllString(out, "time('now')")
+	out = localtimestampRE.ReplaceAllString(out, "datetime('now')")
+	out = localtimeRE.ReplaceAllString(out, "time('now')")
+	out = currentTimestampPrecRE.ReplaceAllString(out, "current_timestamp")
+	out = currentTimePrecRE.ReplaceAllString(out, "current_time")
 	out = quotedCharRE.ReplaceAllString(out, "::text")
 	out = rewriteBitHexLiterals(out)
 	out = rewritePGCast(out)

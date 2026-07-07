@@ -342,6 +342,44 @@ func init() {
 	sqlite.MustRegisterDeterministicScalarFunction("enum_range", -1, func(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
 		return nil, nil
 	})
+	// PG type cast functions: float8(x), float4(x), int8(x), int4(x), int2(x)
+	castToFloat := func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+		if args[0] == nil {
+			return nil, nil
+		}
+		switch v := args[0].(type) {
+		case float64:
+			return v, nil
+		case int64:
+			return float64(v), nil
+		default:
+			f, err := strconv.ParseFloat(fmt.Sprint(v), 64)
+			if err != nil {
+				return nil, nil
+			}
+			return f, nil
+		}
+	}
+	sqlite.MustRegisterDeterministicScalarFunction("float8", 1, castToFloat)
+	sqlite.MustRegisterDeterministicScalarFunction("float4", 1, castToFloat)
+	sqlite.MustRegisterDeterministicScalarFunction("int8", 1, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+		if args[0] == nil {
+			return nil, nil
+		}
+		return valueInt64(args[0]), nil
+	})
+	sqlite.MustRegisterDeterministicScalarFunction("int4", 1, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+		if args[0] == nil {
+			return nil, nil
+		}
+		return valueInt64(args[0]), nil
+	})
+	sqlite.MustRegisterDeterministicScalarFunction("int2", 1, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+		if args[0] == nil {
+			return nil, nil
+		}
+		return valueInt64(args[0]), nil
+	})
 }
 
 func asciiFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {

@@ -52,6 +52,7 @@ var (
 	withOrdinalityRE   = regexp.MustCompile(`(?i)\bWITH\s+ORDINALITY\b`)
 	bareOffsetRE       = regexp.MustCompile(`(?i)\bOFFSET\s+(\d+)(?:\s+ROWS?)?(?:\s*[;)\s]|$)`)
 	offsetBeforeLimitRE = regexp.MustCompile(`(?i)\bOFFSET\s+(\S+)\s+LIMIT\s+(\S+)`)
+	dropCascadeRE       = regexp.MustCompile(`(?i)^(\s*DROP\s+(?:VIEW|INDEX|SCHEMA|SEQUENCE|FUNCTION|PROCEDURE|AGGREGATE|TYPE|DOMAIN|OPERATOR|RULE|TRIGGER|CAST|COLLATION|CONVERSION|STATISTICS|LANGUAGE|POLICY|EXTENSION|ACCESS\s+METHOD|OPERATOR\s+CLASS|OPERATOR\s+FAMILY|FOREIGN\s+(?:TABLE|DATA\s+WRAPPER|SERVER))\s+(?:IF\s+EXISTS\s+)?(?:[A-Za-z0-9_".,\s]+?))(\s+(?:CASCADE|RESTRICT))(\s*;?\s*)$`)
 	partitionByClauseRE = regexp.MustCompile(`(?i)\s+PARTITION\s+BY\s+(?:RANGE|LIST|HASH)\s*\([^)]*\)`)
 	partitionOfRE       = regexp.MustCompile(`(?i)^\s*CREATE\s+TABLE\s+\S+\s+PARTITION\s+OF\s+`)
 	attachPartitionRE   = regexp.MustCompile(`(?i)\bATTACH\s+PARTITION\b`)
@@ -89,6 +90,7 @@ func Rewrite(sql string) string {
 	out = rewriteCreateTableWithNoData(out)
 	out = rewriteCreateTableColList(out)
 	out = rewriteWithOrdinality(out)
+	out = rewriteDropCascade(out)
 	out = rewritePartitionBy(out)
 	out = rewriteOffsetBeforeLimit(out)
 	out = rewriteBareOffset(out)
@@ -2351,6 +2353,15 @@ func rewriteWithOrdinality(sql string) string {
 	return withOrdinalityRE.ReplaceAllString(sql, "")
 }
 
+// rewriteDropCascade strips CASCADE/RESTRICT from DROP statements that SQLite doesn't support.
+func rewriteDropCascade(sql string) string {
+	lower := strings.ToLower(sql)
+	if !strings.Contains(lower, "cascade") && !strings.Contains(lower, "restrict") {
+		return sql
+	}
+	return dropCascadeRE.ReplaceAllString(sql, "$1$3")
+}
+
 // rewritePartitionBy strips PARTITION BY clauses from CREATE TABLE (SQLite has no partitioning).
 // CREATE TABLE ... PARTITION OF ... (partition child tables) become regular CREATE TABLE.
 func rewritePartitionBy(sql string) string {
@@ -2650,18 +2661,18 @@ func rewriteDropMultiTable(sql string) string {
 	}
 	prefix := sub[1]   // "DROP TABLE " or "DROP TABLE IF EXISTS "
 	tableList := sub[2]
-	// suffix := sub[3] // cascade/restrict - we ignore for now
+	// sub[3] is cascade/restrict - we ignore it (strip it)
 
 	tables := strings.Split(tableList, ",")
-	if len(tables) <= 1 {
-		return sql
-	}
 	stmts := make([]string, 0, len(tables))
 	for _, t := range tables {
 		t = strings.TrimSpace(t)
 		if t != "" {
 			stmts = append(stmts, prefix+t)
 		}
+	}
+	if len(stmts) == 0 {
+		return sql
 	}
 	return strings.Join(stmts, "; ")
 }

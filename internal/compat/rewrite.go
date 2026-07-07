@@ -37,7 +37,7 @@ var (
 	asNullRE           = regexp.MustCompile(`(?i)\bAS\s+null\b`)
 	tableColumnAliasRE = regexp.MustCompile(`(?i)\b(int2_tbl|int4_tbl|int8_tbl)\b\s*\)?\s*(?:AS\s+)?([A-Za-z0-9_]+)\s*\(\s*([A-Za-z0-9_, ]+)\s*\)`)
 	tableKeywordRE     = regexp.MustCompile(`(?i)(^|[^a-zA-Z0-9_.])(?:([a-zA-Z0-9_]+)\s+)?\bTABLE\s+([A-Za-z0-9_]+)\b`)
-	arrayConstructorRE = regexp.MustCompile(`(?i)\bARRAY\s*\[(.*?)\]`)
+	arrayConstructorRE = regexp.MustCompile(`(?is)\bARRAY\s*\[(.*?)\]`)
 	usingLessRE         = regexp.MustCompile(`(?i)\busing\s+<`)
 	usingGreaterRE      = regexp.MustCompile(`(?i)\busing\s+>`)
 	asteriskTableRE     = regexp.MustCompile(`(?i)\b([a-zA-Z0-9_]+)\*`)

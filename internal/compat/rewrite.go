@@ -124,6 +124,8 @@ var idxCounter atomic.Int64
 func Rewrite(sql string) string {
 	out := rewriteDistinctOn(sql)
 	out = rewriteTruncate(out)
+	// Strip RECURSIVE keyword from CREATE [OR REPLACE] RECURSIVE VIEW
+	out = regexp.MustCompile(`(?i)(CREATE\s+(?:OR\s+REPLACE\s+)?)RECURSIVE\s+(VIEW\s+)`).ReplaceAllString(out, "${1}${2}")
 	out = rewriteCreateOrReplaceView(out)
 	out = rewriteCreateMaterializedView(out)
 	out = rewriteDropMaterializedView(out)
@@ -135,6 +137,9 @@ func Rewrite(sql string) string {
 	out = rewriteFetchFirst(out)
 	out = rewriteLateral(out)
 	out = rewriteTablesample(out)
+	// Strip WITH RECURSIVE SEARCH/CYCLE clauses (SQL:1999 standard, not supported by SQLite)
+	out = regexp.MustCompile(`(?i)\)\s*SEARCH\s+(?:DEPTH|BREADTH)\s+FIRST\s+BY\s+[^)]+?\s+SET\s+\w+`).ReplaceAllString(out, ")")
+	out = regexp.MustCompile(`(?i)\)\s*CYCLE\s+[^)]+?\s+SET\s+\w+\s+(?:TO\s+[^\s]+\s+DEFAULT\s+[^\s]+\s+)?USING\s+\w+`).ReplaceAllString(out, ")")
 	out = rewriteExtract(out)
 	out = rewriteCollationFor(out)
 	out = castCollateRE.ReplaceAllString(out, "$1$2")

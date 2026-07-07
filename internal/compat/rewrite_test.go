@@ -312,6 +312,9 @@ func TestRewriteUnicodeLiterals(t *testing.T) {
 		"SELECT SUBSTRING('abcdefg' FROM 'a#\"(b_d)#\"%' FOR '#')":       "SELECT minipsql_similar_substring('abcdefg', 'a#\"(b_d)#\"%', '#')",
 		"SELECT 'abcdefg' SIMILAR TO '_bcd#%' ESCAPE '#'":                "SELECT minipsql_similar_to('abcdefg', '_bcd#%', '#')",
 		"SELECT 'abcdefg' SIMILAR TO '_bcd%'":                            "SELECT minipsql_similar_to('abcdefg', '_bcd%', '\\')",
+		"SELECT * FROM (VALUES (-2.5::float8), (1.5::float8)) t(x)":      "SELECT * FROM ((SELECT -CAST(2.5 AS real) AS x UNION ALL SELECT CAST(1.5 AS real)) t)",
+		"SELECT * FROM INT2_TBL AS f(a, b)":                              "SELECT * FROM (SELECT minipsql_error('table \"f\" has 1 columns available but 2 columns specified', '42601', '') FROM INT2_TBL) f",
+		"SELECT * FROM (TABLE int2_tbl) AS s(a, b)":                      "SELECT * FROM (SELECT * FROM (SELECT minipsql_error('table \"s\" has 1 columns available but 2 columns specified', '42601', '') FROM int2_tbl) s)",
 	}
 	for sql, want := range cases {
 		t.Run(sql, func(t *testing.T) {

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"math"
+	"math/big"
 	"math/bits"
 	"regexp"
 	"strconv"
@@ -90,6 +91,8 @@ func init() {
 	sqlite.MustRegisterDeterministicScalarFunction("minipsql_similar_to", 3, minipsqlSimilarToFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("booleq", 2, booleqFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("boolne", 2, boolneFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("gcd", 2, gcdFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("lcm", 2, lcmFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("right", 2, rightFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("rpad", -1, rpadFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("translate", 3, translateFunc)
@@ -2371,6 +2374,85 @@ func boolneFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, e
 	}
 	return int64(0), nil
 }
+
+func gcdFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 {
+		return nil, fmt.Errorf("gcd requires 2 arguments")
+	}
+	if args[0] == nil || args[1] == nil {
+		return nil, nil
+	}
+	a := valueInt(args[0])
+	b := valueInt(args[1])
+
+	isInt32 := (a >= -2147483648 && a <= 2147483647) && (b >= -2147483648 && b <= 2147483647)
+
+	var x, y big.Int
+	x.SetInt64(a)
+	y.SetInt64(b)
+	x.Abs(&x)
+	y.Abs(&y)
+	
+	var z big.Int
+	z.GCD(nil, nil, &x, &y)
+
+	if isInt32 {
+		if !z.IsInt64() || z.Int64() > 2147483647 {
+			return nil, &compat.PGError{Code: "22003", Message: "integer out of range"}
+		}
+	} else {
+		if !z.IsInt64() {
+			return nil, &compat.PGError{Code: "22003", Message: "bigint out of range"}
+		}
+	}
+
+	return z.Int64(), nil
+}
+
+func lcmFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 {
+		return nil, fmt.Errorf("lcm requires 2 arguments")
+	}
+	if args[0] == nil || args[1] == nil {
+		return nil, nil
+	}
+	a := valueInt(args[0])
+	b := valueInt(args[1])
+
+	isInt32 := (a >= -2147483648 && a <= 2147483647) && (b >= -2147483648 && b <= 2147483647)
+
+	var x, y big.Int
+	x.SetInt64(a)
+	y.SetInt64(b)
+	x.Abs(&x)
+	y.Abs(&y)
+
+	if x.Sign() == 0 || y.Sign() == 0 {
+		return int64(0), nil
+	}
+
+	var g big.Int
+	g.GCD(nil, nil, &x, &y)
+
+	var mul big.Int
+	mul.Mul(&x, &y)
+
+	var z big.Int
+	z.Div(&mul, &g)
+
+	if isInt32 {
+		if !z.IsInt64() || z.Int64() > 2147483647 {
+			return nil, &compat.PGError{Code: "22003", Message: "integer out of range"}
+		}
+	} else {
+		if !z.IsInt64() {
+			return nil, &compat.PGError{Code: "22003", Message: "bigint out of range"}
+		}
+	}
+
+	return z.Int64(), nil
+}
+
 
 
 

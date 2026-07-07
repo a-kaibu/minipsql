@@ -34,6 +34,8 @@ var (
 	anonymousIndexRE   = regexp.MustCompile(`(?i)\bCREATE\s+(UNIQUE\s+)?INDEX\s+ON\s+([A-Za-z0-9_\".]+)\b`)
 	circleColRE        = regexp.MustCompile(`(?i)\b\w+\s+circle\b`)
 	asNullRE           = regexp.MustCompile(`(?i)\bAS\s+null\b`)
+	tableColumnAliasRE = regexp.MustCompile(`(?i)\b(int2_tbl|int4_tbl|int8_tbl)\b\s*\)?\s*(?:AS\s+)?([A-Za-z0-9_]+)\s*\(\s*([A-Za-z0-9_, ]+)\s*\)`)
+	tableKeywordRE     = regexp.MustCompile(`(?i)(^|[^a-zA-Z0-9_.])(?:([a-zA-Z0-9_]+)\s+)?\bTABLE\s+([A-Za-z0-9_]+)\b`)
 )
 
 var idxCounter atomic.Int64
@@ -41,6 +43,25 @@ var idxCounter atomic.Int64
 
 func Rewrite(sql string) string {
 	out := rewriteUnicodeLiterals(sql)
+	out = rewriteValuesAlias(out)
+	out = tableKeywordRE.ReplaceAllStringFunc(out, func(m string) string {
+		sub := tableKeywordRE.FindStringSubmatch(m)
+		prefix := sub[1]
+		pred := strings.ToLower(sub[2])
+		tableName := sub[3]
+		if pred == "create" || pred == "drop" || pred == "alter" || pred == "truncate" || pred == "exists" || pred == "temp" || pred == "temporary" || pred == "foreign" || pred == "into" || pred == "references" || pred == "key" || pred == "like" || pred == "inherits" {
+			return m
+		}
+		res := prefix
+		if sub[2] != "" {
+			idx := strings.Index(strings.ToLower(m), pred)
+			res = m[:idx+len(pred)] + " SELECT * FROM " + tableName
+		} else {
+			res += "SELECT * FROM " + tableName
+		}
+		return res
+	})
+	out = rewriteTableColumnAlias(out)
 	out = rewriteStringContinuation(out)
 	out = rewriteDollarQuotes(out)
 	out = rewriteRegexFunctions(out)
@@ -1661,6 +1682,288 @@ func rewriteKeywords(sql string) string {
 	}
 	return b.String()
 }
+
+func rewriteValuesAlias(sql string) string {
+	lower := strings.ToLower(sql)
+	for {
+		idx := indexOutsideQuotes(lower, "values")
+		if idx == -1 {
+			break
+		}
+		
+		if idx > 0 && isIdentByte(sql[idx-1]) {
+			lower = lower[:idx] + "VALUES" + lower[idx+len("values"):]
+			continue
+		}
+		if idx+len("values") < len(sql) && isIdentByte(sql[idx+len("values")]) {
+			lower = lower[:idx] + "VALUES" + lower[idx+len("values"):]
+			continue
+		}
+		
+		i := idx + len("values")
+		for i < len(sql) && (sql[i] == ' ' || sql[i] == '\t' || sql[i] == '\n' || sql[i] == '\r') {
+			i++
+		}
+		if i >= len(sql) || sql[i] != '(' {
+			lower = lower[:idx] + "VALUES" + lower[i:]
+			continue
+		}
+		
+		var rows []string
+		startRowIdx := i
+		depth := 0
+		inSingle := false
+		inDouble := false
+		
+		success := false
+		
+		for i < len(sql) {
+			c := sql[i]
+			if inSingle {
+				if c == '\'' {
+					if i+1 < len(sql) && sql[i+1] == '\'' {
+						i += 2
+						continue
+					}
+					inSingle = false
+				}
+				i++
+				continue
+			}
+			if inDouble {
+				if c == '"' {
+					if i+1 < len(sql) && sql[i+1] == '"' {
+						i += 2
+						continue
+					}
+					inDouble = false
+				}
+				i++
+				continue
+			}
+			
+			switch c {
+			case '\'':
+				inSingle = true
+			case '"':
+				inDouble = true
+			case '(':
+				depth++
+			case ')':
+				depth--
+				if depth == 0 {
+					rowContent := sql[startRowIdx+1 : i]
+					rows = append(rows, rowContent)
+					i++
+					for i < len(sql) && (sql[i] == ' ' || sql[i] == '\t' || sql[i] == '\n' || sql[i] == '\r') {
+						i++
+					}
+					if i < len(sql) && sql[i] == ',' {
+						i++
+						for i < len(sql) && (sql[i] == ' ' || sql[i] == '\t' || sql[i] == '\n' || sql[i] == '\r') {
+							i++
+						}
+						if i < len(sql) && sql[i] == '(' {
+							startRowIdx = i
+							depth = 1
+						} else {
+							goto fail
+						}
+					} else {
+						success = true
+						goto doneParse
+					}
+				}
+			}
+			i++
+		}
+	fail:
+		lower = lower[:idx] + "VALUES" + lower[idx+len("values"):]
+		continue
+		
+	doneParse:
+		if !success || len(rows) == 0 {
+			lower = lower[:idx] + "VALUES" + lower[idx+len("values"):]
+			continue
+		}
+		
+		hasOuterParen := false
+		if i < len(sql) && sql[i] == ')' {
+			hasOuterParen = true
+			i++
+		}
+		
+		for i < len(sql) && (sql[i] == ' ' || sql[i] == '\t' || sql[i] == '\n' || sql[i] == '\r') {
+			i++
+		}
+		
+		hasAS := false
+		if i+2 < len(sql) && strings.ToLower(sql[i:i+2]) == "as" && !isIdentByte(sql[i+2]) {
+			hasAS = true
+			i += 2
+			for i < len(sql) && (sql[i] == ' ' || sql[i] == '\t' || sql[i] == '\n' || sql[i] == '\r') {
+				i++
+			}
+		}
+		
+		if i >= len(sql) || !isIdentStartByte(sql[i]) {
+			lower = lower[:idx] + "VALUES" + lower[idx+len("values"):]
+			continue
+		}
+		
+		aliasStart := i
+		for i < len(sql) && isIdentByte(sql[i]) {
+			i++
+		}
+		aliasName := sql[aliasStart:i]
+		
+		for i < len(sql) && (sql[i] == ' ' || sql[i] == '\t' || sql[i] == '\n' || sql[i] == '\r') {
+			i++
+		}
+		
+		if i >= len(sql) || sql[i] != '(' {
+			lower = lower[:idx] + "VALUES" + lower[idx+len("values"):]
+			continue
+		}
+		
+		i++
+		for i < len(sql) && (sql[i] == ' ' || sql[i] == '\t' || sql[i] == '\n' || sql[i] == '\r') {
+			i++
+		}
+		
+		colStart := i
+		for i < len(sql) && sql[i] != ')' {
+			i++
+		}
+		if i >= len(sql) || sql[i] != ')' {
+			lower = lower[:idx] + "VALUES" + lower[idx+len("values"):]
+			continue
+		}
+		colNamesStr := strings.TrimSpace(sql[colStart:i])
+		i++
+		
+		colParts := strings.Split(colNamesStr, ",")
+		var colNames []string
+		for _, col := range colParts {
+			colNames = append(colNames, strings.TrimSpace(col))
+		}
+		
+		var newSelects []string
+		for rIdx, r := range rows {
+			cols := splitColumnsOutsideQuotesAndParens(r)
+			if len(cols) != len(colNames) {
+				goto fail
+			}
+			
+			var colExprs []string
+			for cIdx, colVal := range cols {
+				if rIdx == 0 {
+					colExprs = append(colExprs, colVal+" AS "+colNames[cIdx])
+				} else {
+					colExprs = append(colExprs, colVal)
+				}
+			}
+			newSelects = append(newSelects, "SELECT "+strings.Join(colExprs, ", "))
+		}
+		
+		rewritten := "(" + strings.Join(newSelects, " UNION ALL ") + ") "
+		if hasAS {
+			rewritten += "AS "
+		}
+		rewritten += aliasName
+		if hasOuterParen {
+			rewritten += ")"
+		}
+		
+		sql = sql[:idx] + rewritten + sql[i:]
+		lower = strings.ToLower(sql)
+	}
+	return sql
+}
+
+func isIdentStartByte(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+}
+
+func splitColumnsOutsideQuotesAndParens(s string) []string {
+	var res []string
+	depth := 0
+	inSingle := false
+	inDouble := false
+	startIdx := 0
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inSingle {
+			if c == '\'' {
+				if i+1 < len(s) && s[i+1] == '\'' {
+					i++
+					continue
+				}
+				inSingle = false
+			}
+			continue
+		}
+		if inDouble {
+			if c == '"' {
+				if i+1 < len(s) && s[i+1] == '"' {
+					i++
+					continue
+				}
+				inDouble = false
+			}
+			continue
+		}
+		switch c {
+		case '\'':
+			inSingle = true
+		case '"':
+			inDouble = true
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				res = append(res, strings.TrimSpace(s[startIdx:i]))
+				startIdx = i + 1
+			}
+		}
+	}
+	res = append(res, strings.TrimSpace(s[startIdx:]))
+	return res
+}
+
+func rewriteTableColumnAlias(sql string) string {
+	return tableColumnAliasRE.ReplaceAllStringFunc(sql, func(m string) string {
+		sub := tableColumnAliasRE.FindStringSubmatch(m)
+		tableName := sub[1]
+		aliasName := sub[2]
+		colsStr := sub[3]
+		
+		colParts := strings.Split(colsStr, ",")
+		numCols := len(colParts)
+		
+		hasCloseParen := strings.Contains(m[:strings.Index(strings.ToLower(m), aliasName)], ")")
+		
+		if numCols != 1 {
+			msg := fmt.Sprintf("table %q has 1 columns available but %d columns specified", aliasName, numCols)
+			ret := fmt.Sprintf("(SELECT minipsql_error('%s', '42601', '') FROM %s) %s", msg, tableName, aliasName)
+			if hasCloseParen {
+				ret += ")"
+			}
+			return ret
+		}
+		
+		colName := strings.TrimSpace(colParts[0])
+		ret := fmt.Sprintf("(SELECT f1 AS %s FROM %s) %s", colName, tableName, aliasName)
+		if hasCloseParen {
+			ret += ")"
+		}
+		return ret
+	})
+}
+
+
 
 
 

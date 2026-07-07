@@ -142,10 +142,14 @@ func (s *Session) Execute(ctx context.Context, sql string, args []backend.Value)
 		return nil, tag, nil
 	}
 
-	// Rewrite SQL-language function calls to inline subqueries
-	// (skip for CREATE INDEX to avoid "subqueries prohibited in index expressions")
+	// Rewrite SQL-language function calls to inline subqueries.
+	// For CREATE INDEX, use scalar-only expansion (no subqueries) to avoid
+	// "subqueries prohibited in index expressions".
 	lowerTrim := strings.ToLower(strings.TrimSpace(sql))
-	if !strings.HasPrefix(lowerTrim, "create index") && !strings.HasPrefix(lowerTrim, "create unique index") {
+	isCreateIndex := strings.HasPrefix(lowerTrim, "create index") || strings.HasPrefix(lowerTrim, "create unique index")
+	if isCreateIndex {
+		sql = s.expandSQLFunctionsScalar(sql)
+	} else {
 		sql = s.expandSQLFunctions(sql)
 	}
 
@@ -991,17 +995,43 @@ func (s *Session) expandSQLFunctions(sql string) string {
 	if len(s.SQLFunctions) == 0 {
 		return sql
 	}
-	// For each registered SQL function, replace calls like funcname(arg1, arg2) with (SELECT body)
-	// We use a simple scan to find function calls.
 	lower := strings.ToLower(sql)
 	for name, fn := range s.SQLFunctions {
-		// Check if the name appears in the sql (case-insensitive)
 		idx := strings.Index(lower, name+"(")
 		if idx < 0 {
 			continue
 		}
-		// Expand all calls to this function
 		sql = expandFunctionCalls(sql, name, fn)
+		lower = strings.ToLower(sql)
+	}
+	return sql
+}
+
+// expandSQLFunctionsScalar is like expandSQLFunctions but strips the outer SELECT so the
+// result is a plain scalar expression (suitable for use in CREATE INDEX expressions).
+func (s *Session) expandSQLFunctionsScalar(sql string) string {
+	if len(s.SQLFunctions) == 0 {
+		return sql
+	}
+	lower := strings.ToLower(sql)
+	for name, fn := range s.SQLFunctions {
+		idx := strings.Index(lower, name+"(")
+		if idx < 0 {
+			continue
+		}
+		// Try to get a scalar body: strip "SELECT " prefix if present
+		body := fn.Body
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(body)), "select ") {
+			body = strings.TrimSpace(body[strings.Index(strings.ToLower(body), "select ")+7:])
+		}
+		// Create a temporary function with the scalar body for expansion
+		scalarFn := &SQLFunction{
+			Name:    fn.Name,
+			NArgs:   fn.NArgs,
+			Body:    body,
+			RetType: fn.RetType,
+		}
+		sql = expandFunctionCalls(sql, name, scalarFn)
 		lower = strings.ToLower(sql)
 	}
 	return sql

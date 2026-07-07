@@ -55,6 +55,8 @@ var (
 	dropCascadeRE       = regexp.MustCompile(`(?i)^(\s*DROP\s+(?:VIEW|INDEX|SCHEMA|SEQUENCE|FUNCTION|PROCEDURE|AGGREGATE|TYPE|DOMAIN|OPERATOR|RULE|TRIGGER|CAST|COLLATION|CONVERSION|STATISTICS|LANGUAGE|POLICY|EXTENSION|ACCESS\s+METHOD|OPERATOR\s+CLASS|OPERATOR\s+FAMILY|FOREIGN\s+(?:TABLE|DATA\s+WRAPPER|SERVER))\s+(?:IF\s+EXISTS\s+)?(?:[A-Za-z0-9_".,\s]+?))(\s+(?:CASCADE|RESTRICT))(\s*;?\s*)$`)
 	pgCatalogOperatorRE  = regexp.MustCompile(`(?i)\bOPERATOR\s*\(\s*(?:pg_catalog\s*\.\s*)?(~\*?|=|<>|!=|<|>|<=|>=|\|\|)\s*\)`)
 	pgCatalogCollateRE   = regexp.MustCompile(`(?i)\s+COLLATE\s+(?:pg_catalog\.[A-Za-z0-9_]+|"pg_catalog"\.[A-Za-z0-9_]+|[A-Za-z0-9_".-]+\.[A-Za-z0-9_"]+)`)
+	collationForRE       = regexp.MustCompile(`(?i)\bCOLLATION\s+FOR\s*\([^)]*\)`)
+	castCollateRE        = regexp.MustCompile(`(?i)(CAST\s*\([^)]+\s+AS\s+[A-Za-z0-9_\s]+)\s+COLLATE\s+(?:"[^"]*"|[A-Za-z0-9_]+)\s*(\))`)
 	partitionByClauseRE = regexp.MustCompile(`(?i)\s+PARTITION\s+BY\s+(?:RANGE|LIST|HASH)\s*\(`)
 	partitionOfRE       = regexp.MustCompile(`(?i)^\s*CREATE\s+TABLE\s+\S+\s+PARTITION\s+OF\s+`)
 	attachPartitionRE   = regexp.MustCompile(`(?i)\bATTACH\s+PARTITION\b`)
@@ -110,6 +112,8 @@ func Rewrite(sql string) string {
 	out = rewriteLateral(out)
 	out = rewriteTablesample(out)
 	out = rewriteExtract(out)
+	out = collationForRE.ReplaceAllString(out, "NULL")
+	out = castCollateRE.ReplaceAllString(out, "$1$2")
 	out = pgCatalogCollateRE.ReplaceAllString(out, "")
 	out = rewriteSchemaPrefix(out)
 	out = rewriteViewOptions(out)
@@ -243,12 +247,14 @@ var (
 	fetchFirstNoCountRE = regexp.MustCompile(`(?i)\bFETCH\s+(?:FIRST|NEXT)\s+ROWS?\s+(?:ONLY|WITH\s+TIES)\b`)
 	// FETCH FIRST (expr) ROWS ONLY/WITH TIES — parenthesized expression
 	fetchFirstExprRE = regexp.MustCompile(`(?i)\bFETCH\s+(?:FIRST|NEXT)\s+(\([^)]+\))\s+ROWS?\s+(?:ONLY|WITH\s+TIES)\b`)
+	// FETCH FIRST NULL ROWS ONLY/WITH TIES — NULL count means no limit
+	fetchFirstNullRE = regexp.MustCompile(`(?i)\bFETCH\s+(?:FIRST|NEXT)\s+NULL\s+ROWS?\s+(?:ONLY|WITH\s+TIES)\b`)
 	// OFFSET n ROWS
 	offsetRowsRE = regexp.MustCompile(`(?i)\bOFFSET\s+(\d+)\s+ROWS\b`)
 	// LATERAL keyword before subqueries/functions
 	lateralRE = regexp.MustCompile(`(?i)\bLATERAL\s+`)
 	// TABLESAMPLE clause
-	tablesampleRE = regexp.MustCompile(`(?i)\bTABLESAMPLE\s+\w+\s*\([^)]*\)`)
+	tablesampleRE = regexp.MustCompile(`(?i)\bTABLESAMPLE\s+\w+\s*\([^)]*\)(?:\s+REPEATABLE\s*\([^)]*\))?`)
 
 	createOrReplaceViewRE   = regexp.MustCompile(`(?i)^\s*CREATE\s+OR\s+REPLACE\s+(TEMP(?:ORARY)?\s+)?VIEW\s+`)
 	createViewRE            = regexp.MustCompile(`(?i)(^\s*CREATE\s+(?:TEMP(?:ORARY)?\s+)?VIEW\s+)(IF\s+NOT\s+EXISTS\s+|)([A-Za-z0-9_".]+)`)
@@ -376,7 +382,8 @@ func rewriteBitHexLiterals(sql string) string {
 
 // rewriteFetchFirst rewrites SQL:2008 FETCH FIRST/NEXT syntax to LIMIT/OFFSET.
 func rewriteFetchFirst(sql string) string {
-	out := fetchFirstExprRE.ReplaceAllString(sql, "LIMIT $1")
+	out := fetchFirstNullRE.ReplaceAllString(sql, "LIMIT -1")
+	out = fetchFirstExprRE.ReplaceAllString(out, "LIMIT $1")
 	out = fetchFirstNoCountRE.ReplaceAllString(out, "LIMIT 1")
 	out = fetchFirstRE.ReplaceAllString(out, "LIMIT $1")
 	out = offsetRowsRE.ReplaceAllString(out, "OFFSET $1")
@@ -630,7 +637,7 @@ func rewritePGCast(sql string) string {
 func splitCastTypeTrailingSQL(typeName string) (string, string) {
 	lower := strings.ToLower(typeName)
 	minIdx := -1
-	for _, keyword := range []string{" placing ", " for ", " leading ", " trailing ", " both ", " from ", " where ", " order ", " group ", " limit ", " union ", " intersect ", " except ", " and ", " or ", " is ", " as "} {
+	for _, keyword := range []string{" placing ", " for ", " leading ", " trailing ", " both ", " from ", " where ", " order ", " group ", " limit ", " union ", " intersect ", " except ", " and ", " or ", " is ", " as ", " collate "} {
 		if idx := strings.Index(lower, keyword); idx >= 0 {
 			if minIdx == -1 || idx < minIdx {
 				minIdx = idx

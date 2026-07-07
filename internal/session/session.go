@@ -130,6 +130,10 @@ func (s *Session) Execute(ctx context.Context, sql string, args []backend.Value)
 		return nil, tag, nil
 	}
 
+	if tag, ok := tryUnsupportedDDLNoop(sql); ok {
+		return nil, tag, nil
+	}
+
 	if tag, err := tryHandleCreateFunction(sql); err != nil || tag != nil {
 		return nil, tag, err
 	}
@@ -211,6 +215,46 @@ func checkUnsupportedDDL(sql string) error {
 	}
 
 	return nil
+}
+
+// tryUnsupportedDDLNoop returns a no-op tag for DROP ... IF EXISTS of unsupported types.
+// These are cleanup statements that should silently succeed.
+func tryUnsupportedDDLNoop(sql string) (*backend.CommandTag, bool) {
+	q := strings.TrimSpace(strings.TrimSuffix(sql, ";"))
+	lower := strings.ToLower(q)
+
+	dropIfExists := []struct {
+		prefix string
+		tag    string
+	}{
+		{"drop function if exists", "DROP FUNCTION"},
+		{"drop procedure if exists", "DROP PROCEDURE"},
+		{"drop aggregate if exists", "DROP AGGREGATE"},
+		{"drop type if exists", "DROP TYPE"},
+		{"drop domain if exists", "DROP DOMAIN"},
+		{"drop operator if exists", "DROP OPERATOR"},
+		{"drop rule if exists", "DROP RULE"},
+		{"drop trigger if exists", "DROP TRIGGER"},
+		{"drop foreign table if exists", "DROP FOREIGN TABLE"},
+		{"drop foreign data wrapper if exists", "DROP FOREIGN DATA WRAPPER"},
+		{"drop server if exists", "DROP SERVER"},
+		{"drop conversion if exists", "DROP CONVERSION"},
+		{"drop statistics if exists", "DROP STATISTICS"},
+		{"drop language if exists", "DROP LANGUAGE"},
+		{"drop cast if exists", "DROP CAST"},
+		{"drop collation if exists", "DROP COLLATION"},
+		{"drop access method if exists", "DROP ACCESS METHOD"},
+		{"drop event trigger if exists", "DROP EVENT TRIGGER"},
+		{"drop policy if exists", "DROP POLICY"},
+		{"drop extension if exists", "DROP EXTENSION"},
+	}
+
+	for _, d := range dropIfExists {
+		if strings.HasPrefix(lower, d.prefix) {
+			return &backend.CommandTag{Tag: d.tag}, true
+		}
+	}
+	return nil, false
 }
 
 func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {

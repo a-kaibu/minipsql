@@ -25,6 +25,16 @@ func rewriteRegexOp(sql string, op string, negate bool, icase bool) string {
 		for lhsEnd > 0 && sql[lhsEnd-1] == ' ' {
 			lhsEnd--
 		}
+		// Check what comes before the LHS: if it's a comma, open paren, =, comparison op, or start of SELECT list,
+		// then ~ is a unary (bitwise NOT) operator, not a regex binary operator.
+		lhsTrimmed := lhsEnd
+		if lhsTrimmed > 0 {
+			prevChar := sql[lhsTrimmed-1]
+			if prevChar == ',' || prevChar == '(' || prevChar == '=' || prevChar == '<' || prevChar == '>' {
+				startPos = idx + len(op)
+				continue
+			}
+		}
 		lhs := extractExprBefore(sql, lhsEnd)
 		if lhs == "" || isSQLKeyword(lhs) {
 			// Unary ~ (bitwise NOT) or keyword context: skip this occurrence
@@ -32,6 +42,14 @@ func rewriteRegexOp(sql string, op string, negate bool, icase bool) string {
 			continue
 		}
 		lhsStart := lhsEnd - len(lhs)
+		// If something precedes the LHS expression (comma/paren), it's unary
+		if lhsStart > 0 {
+			prevChar := sql[lhsStart-1]
+			if prevChar == ',' || prevChar == '(' || prevChar == '=' {
+				startPos = idx + len(op)
+				continue
+			}
+		}
 
 		rhsStart := idx + len(op)
 		for rhsStart < len(sql) && sql[rhsStart] == ' ' {
@@ -173,18 +191,30 @@ func findRegexOp(sql string, op string) int {
 }
 
 func findRegexOpFrom(sql string, op string, startPos int) int {
-	inQuote := false
+	inSingle := false
+	inDouble := false
 	escaped := false
 	for i := startPos; i < len(sql); i++ {
-		if sql[i] == '\'' && !escaped {
-			if inQuote && i+1 < len(sql) && sql[i+1] == '\'' {
+		if sql[i] == '"' && !inSingle {
+			if inDouble && i+1 < len(sql) && sql[i+1] == '"' {
 				i++
 				continue
 			}
-			inQuote = !inQuote
+			inDouble = !inDouble
 			continue
 		}
-		if inQuote {
+		if inDouble {
+			continue
+		}
+		if sql[i] == '\'' && !escaped {
+			if inSingle && i+1 < len(sql) && sql[i+1] == '\'' {
+				i++
+				continue
+			}
+			inSingle = !inSingle
+			continue
+		}
+		if inSingle {
 			escaped = sql[i] == '\\' && !escaped
 			continue
 		}

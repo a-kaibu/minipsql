@@ -305,8 +305,6 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 		return &backend.CommandTag{Tag: "EXECUTE"}, true
 	case strings.HasPrefix(lower, "deallocate "):
 		return &backend.CommandTag{Tag: "DEALLOCATE"}, true
-	case strings.Contains(lower, " as execute "):
-		return &backend.CommandTag{Tag: "SELECT 0"}, true
 	case strings.HasPrefix(lower, "cluster"):
 		return &backend.CommandTag{Tag: "CLUSTER"}, true
 	case strings.HasPrefix(lower, "reindex"):

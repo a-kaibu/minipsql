@@ -257,6 +257,15 @@ func init() {
 	sqlite.MustRegisterDeterministicScalarFunction("obj_description", -1, objDescriptionFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("col_description", 2, objDescriptionFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("shobj_description", 2, objDescriptionFunc)
+	// String conversion functions
+	sqlite.MustRegisterDeterministicScalarFunction("convert_to", 2, convertToFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("casefold", 1, casefoldFunc)
+	// Comparison variadic functions
+	sqlite.MustRegisterDeterministicScalarFunction("greatest", -1, greatestFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("least", -1, leastFunc)
+	// Numeric functions
+	sqlite.MustRegisterDeterministicScalarFunction("div", 2, divFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("trunc", -1, truncFunc)
 }
 
 func asciiFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
@@ -326,6 +335,163 @@ func convertFromFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Val
 		return nil, nil
 	}
 	return valueString(args[0]), nil
+}
+
+func convertToFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 {
+		return nil, fmt.Errorf("convert_to requires 2 arguments")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	return valueString(args[0]), nil
+}
+
+func casefoldFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("casefold requires 1 argument")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	return strings.ToLower(valueString(args[0])), nil
+}
+
+func greatestFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) == 0 {
+		return nil, nil
+	}
+	var best driver.Value
+	for _, a := range args {
+		if a == nil {
+			continue
+		}
+		if best == nil {
+			best = a
+			continue
+		}
+		if compareValues(a, best) > 0 {
+			best = a
+		}
+	}
+	return best, nil
+}
+
+func leastFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) == 0 {
+		return nil, nil
+	}
+	var best driver.Value
+	for _, a := range args {
+		if a == nil {
+			continue
+		}
+		if best == nil {
+			best = a
+			continue
+		}
+		if compareValues(a, best) < 0 {
+			best = a
+		}
+	}
+	return best, nil
+}
+
+func compareValues(a, b driver.Value) int {
+	switch av := a.(type) {
+	case int64:
+		switch bv := b.(type) {
+		case int64:
+			if av < bv {
+				return -1
+			} else if av > bv {
+				return 1
+			}
+			return 0
+		case float64:
+			af := float64(av)
+			if af < bv {
+				return -1
+			} else if af > bv {
+				return 1
+			}
+			return 0
+		}
+	case float64:
+		switch bv := b.(type) {
+		case float64:
+			if av < bv {
+				return -1
+			} else if av > bv {
+				return 1
+			}
+			return 0
+		case int64:
+			bf := float64(bv)
+			if av < bf {
+				return -1
+			} else if av > bf {
+				return 1
+			}
+			return 0
+		}
+	case string:
+		if bv, ok := b.(string); ok {
+			if av < bv {
+				return -1
+			} else if av > bv {
+				return 1
+			}
+			return 0
+		}
+	}
+	as := fmt.Sprintf("%v", a)
+	bs := fmt.Sprintf("%v", b)
+	if as < bs {
+		return -1
+	} else if as > bs {
+		return 1
+	}
+	return 0
+}
+
+func divFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 {
+		return nil, fmt.Errorf("div requires 2 arguments")
+	}
+	if args[0] == nil || args[1] == nil {
+		return nil, nil
+	}
+	a := valueInt(args[0])
+	b := valueInt(args[1])
+	if b == 0 {
+		return nil, fmt.Errorf("division by zero")
+	}
+	return a / b, nil
+}
+
+func truncFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) == 0 || len(args) > 2 {
+		return nil, fmt.Errorf("trunc requires 1 or 2 arguments")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	var val float64
+	switch v := args[0].(type) {
+	case int64:
+		val = float64(v)
+	case float64:
+		val = v
+	default:
+		val = 0
+	}
+	if len(args) == 1 {
+		return math.Trunc(val), nil
+	}
+	scale := int(valueInt(args[1]))
+	factor := math.Pow(10, float64(scale))
+	return math.Trunc(val*factor) / factor, nil
 }
 
 func leftFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {

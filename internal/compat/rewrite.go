@@ -81,6 +81,8 @@ var (
 	insertSelectRE     = regexp.MustCompile(`(?i)^\s*(INSERT\s+INTO\s+[A-Za-z0-9_".]+)\s*\(\s*(SELECT\b.+)\)\s*$`)
 	indexWithOptsRE    = regexp.MustCompile(`(?i)(CREATE\s+(?:UNIQUE\s+)?INDEX\b.+?)\s+WITH\s*\([^)]*\)`)
 	createIndexRE      = regexp.MustCompile(`(?i)(CREATE\s+(?:UNIQUE\s+)?INDEX\s+)(IF\s+NOT\s+EXISTS\s+|)([A-Za-z0-9_"]+)`)
+	createAsExecuteRE  = regexp.MustCompile(`(?i)^\s*CREATE\s+(?:TEMP(?:ORARY)?\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z0-9_".]+)\s+AS\s+EXECUTE\b`)
+	anyArrayRE         = regexp.MustCompile(`(?i)=\s*ANY\s*\(\s*ARRAY\s*\[([^\]]*)\](?:::[A-Za-z0-9_\[\]]+)?\s*\)`)
 )
 
 var idxCounter atomic.Int64
@@ -90,6 +92,7 @@ func Rewrite(sql string) string {
 	out := rewriteTruncate(sql)
 	out = rewriteCreateOrReplaceView(out)
 	out = rewriteCreateView(out)
+	out = rewriteCreateAsExecute(out)
 	out = rewriteUnloggedTable(out)
 	out = rewriteSelectInto(out)
 	out = rewriteIndexConcurrently(out)
@@ -122,6 +125,7 @@ func Rewrite(sql string) string {
 	out = rewriteIndexInclude(out)
 	out = indexWithOptsRE.ReplaceAllString(out, "$1")
 	out = rewriteCreateIndex(out)
+	out = anyArrayRE.ReplaceAllString(out, "IN ($1)")
 	out = rewriteCollateClause(out)
 	out = rewriteColumnCompression(out)
 	out = rewriteWithOids(out)
@@ -255,6 +259,16 @@ func rewriteCreateView(sql string) string {
 		}
 		return sub[1] + "IF NOT EXISTS " + sub[3]
 	})
+}
+
+// rewriteCreateAsExecute rewrites CREATE TABLE ... AS EXECUTE ... to CREATE TABLE ... (_dummy integer).
+func rewriteCreateAsExecute(sql string) string {
+	m := createAsExecuteRE.FindStringSubmatchIndex(sql)
+	if m == nil {
+		return sql
+	}
+	tableName := sql[m[2]:m[3]]
+	return "CREATE TABLE IF NOT EXISTS " + tableName + " (_dummy integer)"
 }
 
 // rewriteUnloggedTable strips UNLOGGED keyword from CREATE TABLE.
@@ -967,12 +981,14 @@ func IsQuery(sql string) bool {
 func TxCommand(sql string) string {
 	q := strings.TrimSpace(strings.TrimSuffix(sql, ";"))
 	lower := strings.ToLower(q)
-	switch lower {
-	case "begin", "begin transaction", "start transaction":
+	switch {
+	case lower == "begin" || lower == "begin transaction" || lower == "start transaction" ||
+		strings.HasPrefix(lower, "begin isolation level") || strings.HasPrefix(lower, "begin transaction isolation level") ||
+		strings.HasPrefix(lower, "start transaction isolation level"):
 		return "begin"
-	case "commit", "end":
+	case lower == "commit" || lower == "end":
 		return "commit"
-	case "rollback", "abort":
+	case lower == "rollback" || lower == "abort" || strings.HasPrefix(lower, "rollback to "):
 		return "rollback"
 	default:
 		return ""

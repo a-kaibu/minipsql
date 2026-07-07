@@ -116,7 +116,8 @@ var idxCounter atomic.Int64
 
 
 func Rewrite(sql string) string {
-	out := rewriteTruncate(sql)
+	out := rewriteDistinctOn(sql)
+	out = rewriteTruncate(out)
 	out = rewriteCreateOrReplaceView(out)
 	out = rewriteCreateMaterializedView(out)
 	out = rewriteDropMaterializedView(out)

@@ -183,6 +183,7 @@ func init() {
 	sqlite.MustRegisterDeterministicScalarFunction("num_nonnulls", -1, numNonnullsFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("num_nulls", -1, numNullsFunc)
 	sqlite.MustRegisterScalarFunction("gen_random_uuid", 0, genRandomUUIDFunc)
+	sqlite.MustRegisterScalarFunction("random", 0, pgRandomFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("normalize", -1, normalizeFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("is_normalized", -1, isNormalizedFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("unicode_version", 0, unicodeVersionFunc)
@@ -3204,6 +3205,17 @@ func numNullsFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value,
 		}
 	}
 	return count, nil
+}
+
+func pgRandomFunc(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return nil, err
+	}
+	// Convert 64-bit random to [0.0, 1.0)
+	n := uint64(b[0]) | uint64(b[1])<<8 | uint64(b[2])<<16 | uint64(b[3])<<24 |
+		uint64(b[4])<<32 | uint64(b[5])<<40 | uint64(b[6])<<48 | uint64(b[7])<<56
+	return float64(n) / float64(1<<64), nil
 }
 
 func genRandomUUIDFunc(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {

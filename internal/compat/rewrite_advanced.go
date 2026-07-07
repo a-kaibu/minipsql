@@ -670,3 +670,213 @@ func lastIndexOutsideQuotes(sql string, substr string) int {
 func containsOutsideQuotes(sql string, substr string) bool {
 	return indexOutsideQuotes(sql, substr) >= 0
 }
+
+// rewriteDistinctOn converts SELECT DISTINCT ON (exprs) ... to a ROW_NUMBER() window query.
+// PG: SELECT DISTINCT ON (e1, e2) cols FROM t ORDER BY e1, e2, e3
+// → SELECT cols FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY e1,e2 ORDER BY e1,e2,e3) AS __dn FROM t) WHERE __dn=1 ORDER BY e1,e2,e3
+func rewriteDistinctOn(sql string) string {
+	// Find "SELECT DISTINCT ON (" pattern (case-insensitive, outside quotes)
+	idx := findDistinctOnStart(sql)
+	if idx < 0 {
+		return sql
+	}
+
+	// prelude = everything before "SELECT"
+	prelude := sql[:idx]
+
+	// after "SELECT " is "DISTINCT ON ..."
+	body := sql[idx+len("SELECT "):]
+	bodyUpper := strings.ToUpper(body)
+
+	if !strings.HasPrefix(bodyUpper, "DISTINCT ON ") && !strings.HasPrefix(bodyUpper, "DISTINCT ON(") {
+		return sql
+	}
+
+	// Skip "DISTINCT ON" and find opening paren
+	afterDistinctOn := len("DISTINCT ON")
+	for afterDistinctOn < len(body) && body[afterDistinctOn] == ' ' {
+		afterDistinctOn++
+	}
+	if afterDistinctOn >= len(body) || body[afterDistinctOn] != '(' {
+		return sql
+	}
+
+	// Extract DISTINCT ON exprs
+	parenStart := afterDistinctOn
+	parenEnd := findMatchingParen(body, parenStart)
+	if parenEnd < 0 {
+		return sql
+	}
+	distinctExprs := body[parenStart+1 : parenEnd]
+
+	// Rest after DISTINCT ON (...)
+	rest := strings.TrimSpace(body[parenEnd+1:])
+
+	// Find FROM keyword (outside parens/quotes) to split col list from FROM clause
+	fromIdx := findKeywordOutsideParens(rest, "FROM")
+	if fromIdx < 0 {
+		return sql
+	}
+	colList := strings.TrimSpace(rest[:fromIdx])
+	fromClause := rest[fromIdx+len("FROM"):]
+
+	// Find ORDER BY in what follows FROM clause
+	// We need to find ORDER BY that belongs to this SELECT (not a subquery)
+	orderByIdx := findTopLevelKeyword(fromClause, "ORDER BY")
+	var fromBody, orderByClause string
+	if orderByIdx >= 0 {
+		fromBody = strings.TrimSpace(fromClause[:orderByIdx])
+		orderByClause = strings.TrimSpace(fromClause[orderByIdx+len("ORDER BY"):])
+	} else {
+		fromBody = strings.TrimSpace(fromClause)
+		orderByClause = ""
+	}
+
+	// Build window ORDER BY: prefer explicit ORDER BY, else use DISTINCT exprs
+	var windowOrder string
+	if orderByClause != "" {
+		windowOrder = orderByClause
+	} else {
+		windowOrder = distinctExprs
+	}
+
+	// Strip trailing semicolon from orderByClause for LIMIT detection
+	limitIdx := findTopLevelKeyword(orderByClause, "LIMIT")
+	var limitClause, orderByNoLimit string
+	if limitIdx >= 0 {
+		orderByNoLimit = strings.TrimSpace(orderByClause[:limitIdx])
+		limitClause = " LIMIT " + strings.TrimSpace(orderByClause[limitIdx+len("LIMIT"):])
+		windowOrder = orderByNoLimit
+	} else {
+		orderByNoLimit = orderByClause
+		limitClause = ""
+	}
+
+	// Outer trailing ORDER BY
+	var outerOrderBy string
+	if orderByNoLimit != "" {
+		outerOrderBy = " ORDER BY " + orderByNoLimit
+	}
+
+	// Build transformation
+	// outer col list: if it's just "*" we keep it since sqlite will return all cols incl __dn
+	// but we need to avoid exposing __dn. Use colList as-is.
+	transformed := prelude + "SELECT " + colList +
+		" FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY " + distinctExprs +
+		" ORDER BY " + windowOrder + ") AS __dn FROM " + fromBody +
+		") AS __dn_sub WHERE __dn = 1" + outerOrderBy + limitClause
+
+	return transformed
+}
+
+// findDistinctOnStart returns the index of "SELECT " before a "DISTINCT ON" pattern.
+// Returns -1 if not found or if inside quotes/parens.
+func findDistinctOnStart(sql string) int {
+	inQuote := false
+	depth := 0
+	i := 0
+	for i < len(sql) {
+		c := sql[i]
+		if c == '\'' && !inQuote {
+			inQuote = true
+			i++
+			continue
+		}
+		if c == '\'' && inQuote {
+			if i+1 < len(sql) && sql[i+1] == '\'' {
+				i += 2
+				continue
+			}
+			inQuote = false
+			i++
+			continue
+		}
+		if inQuote {
+			i++
+			continue
+		}
+		if c == '(' {
+			depth++
+			i++
+			continue
+		}
+		if c == ')' {
+			depth--
+			i++
+			continue
+		}
+		if depth == 0 {
+			upper := strings.ToUpper(sql[i:])
+			if strings.HasPrefix(upper, "SELECT ") || strings.HasPrefix(upper, "SELECT\t") || strings.HasPrefix(upper, "SELECT\n") {
+				// Check if "DISTINCT ON" follows (after optional whitespace)
+				selectEnd := i + 7
+				for selectEnd < len(sql) && (sql[selectEnd] == ' ' || sql[selectEnd] == '\t' || sql[selectEnd] == '\n') {
+					selectEnd++
+				}
+				rem := strings.ToUpper(sql[selectEnd:])
+				if strings.HasPrefix(rem, "DISTINCT ON ") || strings.HasPrefix(rem, "DISTINCT ON(") {
+					return i
+				}
+			}
+		}
+		i++
+	}
+	return -1
+}
+
+// findKeywordOutsideParens finds the first occurrence of a keyword at depth=0 (outside parens/quotes).
+func findKeywordOutsideParens(s string, keyword string) int {
+	upper := strings.ToUpper(keyword)
+	inQuote := false
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '\'' && !inQuote {
+			inQuote = true
+			continue
+		}
+		if c == '\'' && inQuote {
+			if i+1 < len(s) && s[i+1] == '\'' {
+				i++
+				continue
+			}
+			inQuote = false
+			continue
+		}
+		if inQuote {
+			continue
+		}
+		if c == '(' {
+			depth++
+			continue
+		}
+		if c == ')' {
+			depth--
+			continue
+		}
+		if depth == 0 && i+len(keyword) <= len(s) {
+			chunk := strings.ToUpper(s[i : i+len(keyword)])
+			if chunk == upper {
+				// Make sure it's a word boundary
+				before := i == 0 || !isIdentByte(s[i-1])
+				after := i+len(keyword) >= len(s) || !isIdentByte(s[i+len(keyword)])
+				if before && after {
+					return i
+				}
+			}
+		}
+	}
+	return -1
+}
+
+// findTopLevelKeyword is like findKeywordOutsideParens but also handles double-word keywords like "ORDER BY".
+func findTopLevelKeyword(s string, keyword string) int {
+	return findKeywordOutsideParens(s, keyword)
+}
+
+// findCaseInsensitive finds substr in s case-insensitively.
+func findCaseInsensitive(s string, substr string) int {
+	upper := strings.ToUpper(s)
+	upperSub := strings.ToUpper(substr)
+	return strings.Index(upper, upperSub)
+}

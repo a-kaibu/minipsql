@@ -586,6 +586,8 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 		return &backend.CommandTag{Tag: "DROP LANGUAGE"}, true
 	case strings.HasPrefix(lower, "drop extension ") || lower == "drop extension":
 		return &backend.CommandTag{Tag: "DROP EXTENSION"}, true
+	case strings.HasPrefix(lower, "drop owned by ") || strings.HasPrefix(lower, "drop owned by;"):
+		return &backend.CommandTag{Tag: "DROP OWNED"}, true
 	}
 
 	// ALTER TABLE with unsupported subcommands → no-op

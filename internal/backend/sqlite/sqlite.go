@@ -711,6 +711,78 @@ func initDatabase(ctx context.Context, db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS main.pg_partition_ancestors (
 			relid INTEGER
 		)`,
+		// System views (always empty stubs)
+		`CREATE TABLE IF NOT EXISTS main.pg_available_extensions (
+			name TEXT, default_version TEXT, installed_version TEXT, comment TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_available_extension_versions (
+			name TEXT, version TEXT, installed INTEGER, superuser INTEGER,
+			trusted INTEGER, relocatable INTEGER, schema TEXT, requires TEXT, comment TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_config (
+			name TEXT, setting TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_file_settings (
+			sourcefile TEXT, sourceline INTEGER, seqno INTEGER, name TEXT,
+			setting TEXT, applied INTEGER, error TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_hba_file_rules (
+			rule_number INTEGER, file_name TEXT, line_number INTEGER,
+			type TEXT, database TEXT, user_name TEXT, address TEXT,
+			netmask TEXT, auth_method TEXT, options TEXT, error TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_ident_file_mappings (
+			map_number INTEGER, file_name TEXT, line_number INTEGER,
+			map_name TEXT, sys_name TEXT, pg_username TEXT, error TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_backend_memory_contexts (
+			type TEXT, name TEXT, ident TEXT, parent TEXT, level INTEGER,
+			total_bytes INTEGER, total_nblocks INTEGER,
+			free_bytes INTEGER, free_chunks INTEGER, used_bytes INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_stat_slru (
+			name TEXT, blks_zeroed INTEGER, blks_hit INTEGER, blks_read INTEGER,
+			blks_written INTEGER, blks_exists INTEGER, flushes INTEGER,
+			truncates INTEGER, stats_reset TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_stat_wal (
+			wal_records INTEGER, wal_fpi INTEGER, wal_bytes INTEGER,
+			wal_buffers_full INTEGER, wal_write INTEGER, wal_sync INTEGER,
+			wal_write_time INTEGER, wal_sync_time INTEGER, stats_reset TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_stat_wal_receiver (
+			pid INTEGER, status TEXT, receive_start_lsn TEXT, receive_start_tli INTEGER,
+			written_lsn TEXT, flushed_lsn TEXT, received_tli INTEGER,
+			last_msg_send_time TIMESTAMP, last_msg_receipt_time TIMESTAMP,
+			latest_end_lsn TEXT, latest_end_time TIMESTAMP, slot_name TEXT,
+			sender_host TEXT, sender_port INTEGER, conninfo TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_stat_recovery (
+			pid INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_timezone_abbrevs (
+			abbrev TEXT, utc_offset TEXT, is_dst INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_timezone_names (
+			name TEXT, abbrev TEXT, utc_offset TEXT, is_dst INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_wait_events (
+			type TEXT, name TEXT, description TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_settings (
+			name TEXT, setting TEXT, unit TEXT, category TEXT,
+			short_desc TEXT, extra_desc TEXT, context TEXT, vartype TEXT,
+			source TEXT, min_val TEXT, max_val TEXT, enumvals TEXT,
+			boot_val TEXT, reset_val TEXT, sourcefile TEXT, sourceline INTEGER,
+			pending_restart INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_stat_io (
+			backend_type TEXT, object TEXT, context TEXT, reads INTEGER,
+			read_time INTEGER, writes INTEGER, write_time INTEGER,
+			writebacks INTEGER, writeback_time INTEGER, extends INTEGER,
+			extend_time INTEGER, op_bytes INTEGER, hits INTEGER, evictions INTEGER,
+			reuses INTEGER, fsyncs INTEGER, fsync_time INTEGER, stats_reset TIMESTAMP
+		)`,
 	}
 
 	for _, ddl := range ddls {

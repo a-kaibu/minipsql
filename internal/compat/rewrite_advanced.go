@@ -880,3 +880,83 @@ func findCaseInsensitive(s string, substr string) int {
 	upperSub := strings.ToUpper(substr)
 	return strings.Index(upper, upperSub)
 }
+
+// partitionSRFs maps SRF names to their stub SELECT columns (always empty, no partitioning support).
+var partitionSRFs = map[string]string{
+	"pg_partition_tree":      "SELECT NULL AS relid, NULL AS parentrelid, NULL AS isleaf, NULL AS level",
+	"pg_partition_ancestors": "SELECT NULL AS relid",
+}
+
+// rewritePartitionSRFs rewrites FROM pg_partition_tree(arg) and FROM pg_partition_ancestors(arg)
+// to inline subqueries that return empty result sets (minipsql has no partitioning support).
+func rewritePartitionSRFs(sql string) string {
+	lower := strings.ToLower(sql)
+	for fnName, cols := range partitionSRFs {
+		for {
+			idx := strings.Index(lower, fnName)
+			if idx == -1 {
+				break
+			}
+			// Check word boundary before
+			if idx > 0 && isIdentByte(sql[idx-1]) {
+				lower = lower[:idx] + strings.ToUpper(fnName) + lower[idx+len(fnName):]
+				continue
+			}
+			// Skip whitespace after function name
+			j := idx + len(fnName)
+			for j < len(sql) && (sql[j] == ' ' || sql[j] == '\t') {
+				j++
+			}
+			if j >= len(sql) || sql[j] != '(' {
+				lower = lower[:idx] + strings.ToUpper(fnName) + lower[idx+len(fnName):]
+				continue
+			}
+			// Find matching close paren
+			end := findMatchingParen(sql, j)
+			if end < 0 {
+				break
+			}
+			// Check for AS alias after the closing paren
+			after := end + 1
+			for after < len(sql) && (sql[after] == ' ' || sql[after] == '\t') {
+				after++
+			}
+			alias := fnName
+			aliasEnd := after
+			if after < len(sql) && strings.EqualFold(sql[after:min2(after+3, len(sql))], "as ") {
+				aliasEnd = after + 3
+				for aliasEnd < len(sql) && (sql[aliasEnd] == ' ' || sql[aliasEnd] == '\t') {
+					aliasEnd++
+				}
+				aliasStart := aliasEnd
+				for aliasEnd < len(sql) && isAlphaNumeric(sql[aliasEnd]) {
+					aliasEnd++
+				}
+				if aliasEnd > aliasStart {
+					alias = sql[aliasStart:aliasEnd]
+				}
+			} else if after < len(sql) && isAlphaNumeric(sql[after]) {
+				aliasStart := after
+				for aliasEnd < len(sql) && isAlphaNumeric(sql[aliasEnd]) {
+					aliasEnd++
+				}
+				if aliasEnd > aliasStart {
+					alias = sql[aliasStart:aliasEnd]
+				} else {
+					aliasEnd = after
+				}
+			}
+			replacement := fmt.Sprintf("(%s WHERE 0) AS %s", cols, alias)
+			sql = sql[:idx] + replacement + sql[aliasEnd:]
+			lower = strings.ToLower(sql)
+		}
+	}
+	return sql
+}
+
+func min2(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}

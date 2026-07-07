@@ -37,7 +37,8 @@ var (
 	asNullRE           = regexp.MustCompile(`(?i)\bAS\s+null\b`)
 	tableColumnAliasRE = regexp.MustCompile(`(?i)\bFROM\s+(int2_tbl|int4_tbl|int8_tbl)\b\s+(?:AS\s+)?([A-Za-z0-9_]+)\s*\(\s*([A-Za-z0-9_, ]+)\s*\)`)
 	tableKeywordRE     = regexp.MustCompile(`(?i)(^|[^a-zA-Z0-9_.])(?:([a-zA-Z0-9_]+)\s+)?\bTABLE\s+([A-Za-z0-9_]+)\b`)
-	arrayConstructorRE = regexp.MustCompile(`(?is)\bARRAY\s*\[(.*?)\]`)
+	arrayConstructorRE  = regexp.MustCompile(`(?is)\bARRAY\s*\[(.*?)\]`)
+	arrayIndexRE        = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\[(\d+)\]`)
 	usingLessRE         = regexp.MustCompile(`(?i)\busing\s+<`)
 	usingGreaterRE      = regexp.MustCompile(`(?i)\busing\s+>`)
 	// Match tablename* (PG inheritance asterisk) only when followed by whitespace, comma, ), or end of string.
@@ -211,6 +212,7 @@ func Rewrite(sql string) string {
 	out = rewriteStringContinuation(out)
 	out = rewriteDollarQuotes(out)
 	out = rewriteRegexFunctions(out)
+	out = rewriteSubstring(out)
 	out = rewriteToBinOctHex(out)
 	out = rewriteParametersAndCasts(out)
 	out = serialRE.ReplaceAllString(out, "integer")
@@ -248,7 +250,6 @@ func Rewrite(sql string) string {
 	out = rewriteSubqueryColumnAlias(out)
 	out = rewritePosition(out)
 	out = rewriteOverlay(out)
-	out = rewriteSubstring(out)
 	out = rewriteTrim(out)
 	out = rewriteDeleteAlias(out)
 	out = rewriteDistanceOperator(out)
@@ -264,8 +265,12 @@ func Rewrite(sql string) string {
 	out = onlyRE.ReplaceAllString(out, "FROM ")
 	out = eStringRE.ReplaceAllString(out, "'")
 	out = asNullRE.ReplaceAllString(out, "AS \"null\"")
+	out = rewritePartitionSRFs(out)
 	out = rewriteStringAgg(out)
 	out = rewriteArrayAgg(out)
+	out = rewriteArrayConcatStrip(out)
+	out = rewriteArraySubquery(out)
+	out = rewriteArrayIndex(out)
 	out = rewriteKeywords(out)
 	return out
 }
@@ -292,6 +297,8 @@ var (
 	createUnloggedTableRE = regexp.MustCompile(`(?i)\bCREATE\s+UNLOGGED\s+TABLE\b`)
 	selectIntoRE          = regexp.MustCompile(`(?i)^\s*SELECT\s+(.+?)\s+INTO\s+(?:TEMP(?:ORARY)?\s+)?(?:TABLE\s+)?([A-Za-z0-9_".]+)\s+FROM\s+`)
 	indexConcurrentlyRE   = regexp.MustCompile(`(?i)\b(CREATE\s+(?:UNIQUE\s+)?INDEX|DROP\s+INDEX)\s+CONCURRENTLY\s+`)
+	// strip "expr || ARRAY(SELECT ...)" — e.g. c.reloptions || array(select ...) → c.reloptions
+	pgArrayConcatRE        = regexp.MustCompile(`(?i)\s*\|\|\s*array\s*\(`)
 )
 
 // rewriteCreateOrReplaceView converts CREATE OR REPLACE VIEW to DROP VIEW IF EXISTS + CREATE VIEW.
@@ -801,6 +808,22 @@ func extractCastExpr(sql string) string {
 		depth := 1
 		i--
 		for i >= 0 && depth > 0 {
+			if sql[i] == '\'' {
+				// scan backwards through string literal
+				i--
+				for i >= 0 {
+					if sql[i] == '\'' {
+						if i > 0 && sql[i-1] == '\'' {
+							i -= 2
+							continue
+						}
+						break
+					}
+					i--
+				}
+				i--
+				continue
+			}
 			if sql[i] == ')' {
 				depth++
 			} else if sql[i] == '(' {
@@ -2549,6 +2572,170 @@ func rewriteViewOptions(sql string) string {
 // rewriteTableWithOptions strips WITH (option=value) from CREATE TABLE ... AS SELECT.
 func rewriteTableWithOptions(sql string) string {
 	return createTableWithOptsRE.ReplaceAllString(sql, "$1")
+}
+
+// rewriteArrayIndex converts PostgreSQL 1-based array index access to json_extract.
+//   identifier[N]  →  json_extract(identifier, '$[N-1]')
+func rewriteArrayIndex(sql string) string {
+	if !strings.Contains(sql, "[") {
+		return sql
+	}
+	return arrayIndexRE.ReplaceAllStringFunc(sql, func(m string) string {
+		sub := arrayIndexRE.FindStringSubmatch(m)
+		name := sub[1]
+		idx, _ := strconv.Atoi(sub[2])
+		return fmt.Sprintf("json_extract(%s, '$[%d]')", name, idx-1)
+	})
+}
+
+// rewriteArrayConcatStrip removes "|| ARRAY(SELECT ...)" from expressions like
+// c.reloptions || array(select ...) → c.reloptions
+// SQLite cannot handle identifier || (SELECT subquery) array-concat patterns.
+func rewriteArrayConcatStrip(sql string) string {
+	if !pgArrayConcatRE.MatchString(sql) {
+		return sql
+	}
+	for {
+		loc := pgArrayConcatRE.FindStringIndex(sql)
+		if loc == nil {
+			break
+		}
+		// loc[1]-1 points to the '(' after ARRAY
+		openParen := loc[1] - 1
+		// find the SELECT keyword inside
+		k := openParen + 1
+		for k < len(sql) && (sql[k] == ' ' || sql[k] == '\t' || sql[k] == '\n') {
+			k++
+		}
+		if k+6 > len(sql) || !strings.EqualFold(sql[k:k+6], "select") {
+			// not a SELECT subquery, skip
+			break
+		}
+		// find matching close paren
+		depth := 1
+		end := openParen + 1
+		inS := false
+		for end < len(sql) && depth > 0 {
+			if inS {
+				if sql[end] == '\'' {
+					if end+1 < len(sql) && sql[end+1] == '\'' {
+						end += 2
+						continue
+					}
+					inS = false
+				}
+				end++
+				continue
+			}
+			if sql[end] == '\'' {
+				inS = true
+				end++
+				continue
+			}
+			if sql[end] == '(' {
+				depth++
+			}
+			if sql[end] == ')' {
+				depth--
+			}
+			end++
+		}
+		if depth != 0 {
+			break
+		}
+		// Remove from loc[0] (the ||) to end
+		sql = sql[:loc[0]] + sql[end:]
+	}
+	return sql
+}
+
+// rewriteArraySubquery converts ARRAY(SELECT ...) to a json_group_array subquery.
+// PostgreSQL's ARRAY(SELECT expr FROM ...) constructor is not supported by SQLite.
+// We convert it to (SELECT json_group_array(col) FROM (SELECT ...)) which approximates
+// the behavior for string concatenation use cases.
+func rewriteArraySubquery(sql string) string {
+	lower := strings.ToLower(sql)
+	if !strings.Contains(lower, "array(") && !strings.Contains(lower, "array (") {
+		return sql
+	}
+	var result strings.Builder
+	i := 0
+	n := len(sql)
+	inSingle := false
+	inDouble := false
+	for i < n {
+		if inSingle {
+			result.WriteByte(sql[i])
+			if sql[i] == '\'' {
+				if i+1 < n && sql[i+1] == '\'' { result.WriteByte('\''); i += 2; continue }
+				inSingle = false
+			}
+			i++; continue
+		}
+		if inDouble {
+			result.WriteByte(sql[i])
+			if sql[i] == '"' {
+				if i+1 < n && sql[i+1] == '"' { result.WriteByte('"'); i += 2; continue }
+				inDouble = false
+			}
+			i++; continue
+		}
+		if sql[i] == '\'' { inSingle = true; result.WriteByte(sql[i]); i++; continue }
+		if sql[i] == '"' { inDouble = true; result.WriteByte(sql[i]); i++; continue }
+
+		// Check for ARRAY( pattern (case-insensitive)
+		if i+5 < n && strings.EqualFold(sql[i:i+5], "array") {
+			// Skip whitespace after ARRAY
+			j := i + 5
+			for j < n && (sql[j] == ' ' || sql[j] == '\t') { j++ }
+			if j < n && sql[j] == '(' {
+				// Check if the content starts with SELECT (possibly whitespace)
+				k := j + 1
+				for k < n && (sql[k] == ' ' || sql[k] == '\t' || sql[k] == '\n') { k++ }
+				if k+6 <= n && strings.EqualFold(sql[k:k+6], "select") {
+					// Find the matching close paren
+					depth := 1
+					end := j + 1
+					inS := false
+					inD := false
+					for end < n && depth > 0 {
+						if inS {
+							if sql[end] == '\'' {
+								if end+1 < n && sql[end+1] == '\'' { end += 2; continue }
+								inS = false
+							}
+							end++; continue
+						}
+						if inD {
+							if sql[end] == '"' {
+								if end+1 < n && sql[end+1] == '"' { end += 2; continue }
+								inD = false
+							}
+							end++; continue
+						}
+						if sql[end] == '\'' { inS = true; end++; continue }
+						if sql[end] == '"' { inD = true; end++; continue }
+						if sql[end] == '(' { depth++ }
+						if sql[end] == ')' { depth-- }
+						end++
+					}
+					if depth == 0 {
+						// Found matching paren: sql[j+1:end-1] is the SELECT statement
+						inner := sql[j+1 : end-1]
+						// Wrap in json_group_array subquery
+						result.WriteString("(SELECT json_group_array(_arr_val) FROM (")
+						result.WriteString(inner)
+						result.WriteString(") AS _arr_sub(_arr_val))")
+						i = end
+						continue
+					}
+				}
+			}
+		}
+		result.WriteByte(sql[i])
+		i++
+	}
+	return result.String()
 }
 
 // rewriteCreateTableWithNoData rewrites CREATE TABLE ... AS SELECT ... WITH NO DATA

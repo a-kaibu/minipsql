@@ -701,6 +701,16 @@ func initDatabase(ctx context.Context, db *sql.DB) error {
 			stavalues4 TEXT,
 			stavalues5 TEXT
 		)`,
+		// Partition catalog tables (always empty — minipsql doesn't support partitioning)
+		`CREATE TABLE IF NOT EXISTS main.pg_partition_tree (
+			relid INTEGER,
+			parentrelid INTEGER,
+			isleaf INTEGER,
+			level INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_partition_ancestors (
+			relid INTEGER
+		)`,
 	}
 
 	for _, ddl := range ddls {
@@ -742,7 +752,9 @@ func initDatabase(ctx context.Context, db *sql.DB) error {
 			0 AS relispartition,
 			0 AS relrewrite,
 			0 AS relfrozenxid,
-			0 AS relminmxid
+			0 AS relminmxid,
+			NULL AS reloptions,
+			NULL AS relpartbound
 		FROM sqlite_schema
 		WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`,
 

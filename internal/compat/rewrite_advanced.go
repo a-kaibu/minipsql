@@ -572,16 +572,28 @@ func rewriteGenerateSeries(sql string) string {
 		}
 
 		cmpOp := "<="
-		if strings.HasPrefix(strings.TrimSpace(step), "-") {
+		stepTrimmed := strings.TrimSpace(step)
+		if strings.HasPrefix(stepTrimmed, "-") {
 			cmpOp = ">="
 		}
 
+		// step = 0 would cause infinite loop; emit error instead
+		zeroStep := stepTrimmed == "0" || stepTrimmed == "+0" || stepTrimmed == "-0"
+
 		cteID := idxCounter.Add(1)
 		cteName := fmt.Sprintf("_gs_cte_%d", cteID)
-		cte := fmt.Sprintf(
-			"(WITH RECURSIVE %s(%s) AS (SELECT %s UNION ALL SELECT %s + (%s) FROM %s WHERE %s + (%s) %s %s) SELECT %s FROM %s) AS %s",
-			cteName, colName, start, colName, step, cteName, colName, step, cmpOp, stop, colName, cteName, alias,
-		)
+		var cte string
+		if zeroStep {
+			cte = fmt.Sprintf(
+				"(SELECT minipsql_error('step size cannot equal zero', 'XX000', '')) AS %s",
+				alias,
+			)
+		} else {
+			cte = fmt.Sprintf(
+				"(WITH RECURSIVE %s(%s) AS (SELECT %s UNION ALL SELECT %s + (%s) FROM %s WHERE %s + (%s) %s %s) SELECT %s FROM %s) AS %s",
+				cteName, colName, start, colName, step, cteName, colName, step, cmpOp, stop, colName, cteName, alias,
+			)
+		}
 
 		var afterPart string
 		if consumed > 0 {

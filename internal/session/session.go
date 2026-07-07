@@ -182,6 +182,10 @@ func (s *Session) Execute(ctx context.Context, sql string, args []backend.Value)
 	// where we have access to the backend for schema info.
 	rewritten = s.expandTableLike(ctx, rewritten)
 
+	// Rewrite INSERT INTO t VALUES (v1, v2) where t has more columns than supplied values.
+	// PostgreSQL fills missing columns with their DEFAULT values; SQLite requires explicit column list.
+	rewritten = s.rewriteInsertMissingColumns(ctx, rewritten)
+
 	// Handle multi-statement rewrites (e.g. CREATE MATERIALIZED VIEW → DROP TABLE IF EXISTS ...; CREATE TABLE ...)
 	if stmts := splitRewrittenStatements(rewritten); len(stmts) > 1 {
 		var lastTag *backend.CommandTag
@@ -406,6 +410,8 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 	case strings.HasPrefix(lower, "deallocate "):
 		return &backend.CommandTag{Tag: "DEALLOCATE"}, true
 	case strings.HasPrefix(lower, "cluster"):
+		return &backend.CommandTag{Tag: "CLUSTER"}, true
+	case strings.HasPrefix(lower, "repack"):
 		return &backend.CommandTag{Tag: "CLUSTER"}, true
 	case strings.HasPrefix(lower, "reindex"):
 		return &backend.CommandTag{Tag: "REINDEX"}, true
@@ -1676,6 +1682,110 @@ func (s *Session) expandTableLike(ctx context.Context, sql string) string {
 		}
 		return m[1] + " AS SELECT * FROM " + m[2] + " WHERE 1=0"
 	})
+}
+
+// insertMissingColumnsRE matches "INSERT INTO tablename VALUES ..." without an explicit column list.
+var insertMissingColumnsRE = regexp.MustCompile(`(?i)^\s*INSERT\s+INTO\s+("?[A-Za-z_][A-Za-z0-9_.]*"?)\s+VALUES\s*\(`)
+
+// rewriteInsertMissingColumns handles the case where INSERT INTO t VALUES (v1, v2) provides fewer
+// values than t has columns. PostgreSQL fills missing columns with DEFAULT; SQLite requires an
+// explicit column list. We rewrite to INSERT INTO t (col1, col2) VALUES (v1, v2).
+func (s *Session) rewriteInsertMissingColumns(ctx context.Context, sql string) string {
+	loc := insertMissingColumnsRE.FindStringSubmatchIndex(sql)
+	if loc == nil {
+		return sql
+	}
+	rawTableName := sql[loc[2]:loc[3]]
+	tableName := strings.ToLower(strings.Trim(rawTableName, `"`))
+
+	// Count supplied VALUES by finding the VALUES ( ... ) span
+	valuesStart := loc[1] - 1 // position of the opening '('
+	depth := 0
+	valuesEnd := -1
+	inStr := false
+	strChar := byte(0)
+	for i := valuesStart; i < len(sql); i++ {
+		c := sql[i]
+		if inStr {
+			if c == strChar {
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '\'', '"':
+			inStr = true
+			strChar = c
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				valuesEnd = i
+			}
+		}
+		if valuesEnd >= 0 {
+			break
+		}
+	}
+	if valuesEnd < 0 {
+		return sql
+	}
+
+	inner := sql[valuesStart+1 : valuesEnd]
+	suppliedCount := countTopLevelCommas(inner) + 1
+
+	cols, err := s.Backend.TableColumns(ctx, tableName)
+	if err != nil || len(cols) == 0 {
+		return sql
+	}
+	if suppliedCount >= len(cols) {
+		return sql
+	}
+
+	// Build explicit column list from the first suppliedCount columns
+	var colNames []string
+	for i := 0; i < suppliedCount; i++ {
+		colNames = append(colNames, cols[i])
+	}
+	colList := "(" + strings.Join(colNames, ", ") + ")"
+
+	// Rebuild: INSERT INTO tablename (col1, ...) VALUES (...)
+	// loc[2]:loc[3] is the table name. We keep everything up to and including the table name,
+	// then inject the column list, then append " VALUES (values)".
+	tableEnd := loc[3] // position just after the table name in the original sql
+	return sql[:tableEnd] + " " + colList + " VALUES (" + inner + ")" + sql[valuesEnd+1:]
+}
+
+// countTopLevelCommas counts commas at paren depth 0, respecting string literals.
+func countTopLevelCommas(s string) int {
+	count := 0
+	depth := 0
+	inStr := false
+	strChar := byte(0)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inStr {
+			if c == strChar {
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '\'', '"':
+			inStr = true
+			strChar = c
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				count++
+			}
+		}
+	}
+	return count
 }
 
 // serialColumnRE matches column definitions with serial/bigserial/smallserial type.

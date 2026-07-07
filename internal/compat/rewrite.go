@@ -78,7 +78,8 @@ var (
 	cminRE              = regexp.MustCompile(`(?i)\b([a-zA-Z0-9_]+\.)?cmin\b`)
 	cmaxRE              = regexp.MustCompile(`(?i)\b([a-zA-Z0-9_]+\.)?cmax\b`)
 	onCommitRE          = regexp.MustCompile(`(?i)\s+ON\s+COMMIT\s+(?:DELETE\s+ROWS|DROP|PRESERVE\s+ROWS)`)
-	inheritsRE          = regexp.MustCompile(`(?i)\s+INHERITS\s*\([^)]*\)`)
+	// Group 1: the parent table name inside INHERITS(...)
+	inheritsRE          = regexp.MustCompile(`(?i)\s+INHERITS\s*\(([^)]+)\)`)
 	generatedStoredRE   = regexp.MustCompile(`(?i)\s+GENERATED\s+ALWAYS\s+AS\s+\(([^)]+)\)\s+(?:STORED|VIRTUAL)`)
 	generatedByDefaultStoredRE = regexp.MustCompile(`(?i)\s+GENERATED\s+BY\s+DEFAULT\s+AS\s+\(([^)]+)\)\s+STORED`)
 	dropMultiTableRE   = regexp.MustCompile(`(?i)^\s*(DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?)([A-Za-z0-9_".,\s]+?)(\s+(?:CASCADE|RESTRICT))?\s*;?\s*$`)
@@ -151,6 +152,7 @@ func Rewrite(sql string) string {
 	out = rewriteTableWithOptions(out)
 	out = rewriteCreateTableWithNoData(out)
 	out = rewriteCreateTableColList(out)
+	out = rewriteCreateTableAsParenSelect(out)
 	out = rewriteDropCascade(out)
 	out = rewritePGCatalogOperator(out)
 	out = rewriteGeneratedColumns(out)
@@ -162,7 +164,19 @@ func Rewrite(sql string) string {
 	out = cminRE.ReplaceAllString(out, "0")
 	out = cmaxRE.ReplaceAllString(out, "0")
 	out = onCommitRE.ReplaceAllString(out, "")
-	out = inheritsRE.ReplaceAllString(out, "")
+	// Rewrite "CREATE TABLE t () INHERITS (parent)" → "CREATE TABLE t (LIKE parent)"
+	// so expandTableLike in session.go can copy the parent's columns via schema introspection.
+	out = inheritsRE.ReplaceAllStringFunc(out, func(m string) string {
+		sub := inheritsRE.FindStringSubmatch(m)
+		if sub == nil {
+			return ""
+		}
+		parent := strings.TrimSpace(sub[1])
+		return " (LIKE " + parent + ")"
+	})
+	// Remove empty column list that preceded the INHERITS clause: "t () (LIKE p)" → "t (LIKE p)"
+	out = regexp.MustCompile(`(?i)(CREATE\s+(?:TEMP(?:ORARY)?\s+)?TABLE\s+\S+)\s*\(\s*\)\s*\(LIKE`).
+		ReplaceAllString(out, "$1 (LIKE")
 	out = rewritePartitionBy(out)
 	out = rewriteOffsetBeforeLimit(out)
 	out = rewriteBareOffset(out)
@@ -2954,6 +2968,76 @@ func rewriteCreateTableWithNoData(sql string) string {
 		return sql
 	}
 	return createTableWithNoDataRE.ReplaceAllString(sql, "LIMIT 0")
+}
+
+// rewriteCreateTableAsParenSelect strips the outer parens from CREATE TABLE ... AS (SELECT ...).
+// SQLite requires CREATE TABLE ... AS SELECT ... (no wrapping parens).
+var createTableAsParenSelectRE = regexp.MustCompile(`(?i)\bAS\s*\(\s*(SELECT\b)`)
+
+func rewriteCreateTableAsParenSelect(sql string) string {
+	lower := strings.ToLower(strings.TrimSpace(sql))
+	if !strings.HasPrefix(lower, "create ") && !strings.HasPrefix(lower, "create\t") {
+		return sql
+	}
+	if !strings.Contains(lower, " as ") && !strings.Contains(lower, " as\t") && !strings.Contains(lower, " as\n") {
+		return sql
+	}
+	// Find "AS (SELECT" pattern
+	m := createTableAsParenSelectRE.FindStringIndex(sql)
+	if m == nil {
+		return sql
+	}
+	asPos := m[0]
+	// Find the matching ')' for the '(' that comes right after AS
+	openPos := strings.Index(sql[asPos:], "(")
+	if openPos < 0 {
+		return sql
+	}
+	openPos += asPos
+	closePos := findMatchingCloseParen(sql, openPos)
+	if closePos < 0 {
+		return sql
+	}
+	// Only remove the parens if closePos is at the end of the statement (possibly before ';')
+	tail := strings.TrimSpace(sql[closePos+1:])
+	if tail != "" && tail != ";" {
+		return sql
+	}
+	// Remove open paren and close paren
+	inner := sql[openPos+1 : closePos]
+	result := sql[:openPos] + inner + sql[closePos+1:]
+	return result
+}
+
+// findMatchingCloseParen finds the ')' that matches the '(' at openPos.
+func findMatchingCloseParen(sql string, openPos int) int {
+	depth := 0
+	inSingle := false
+	inDouble := false
+	for i := openPos; i < len(sql); i++ {
+		if inSingle {
+			if sql[i] == '\'' {
+				if i+1 < len(sql) && sql[i+1] == '\'' { i++; continue }
+				inSingle = false
+			}
+			continue
+		}
+		if inDouble {
+			if sql[i] == '"' {
+				if i+1 < len(sql) && sql[i+1] == '"' { i++; continue }
+				inDouble = false
+			}
+			continue
+		}
+		if sql[i] == '\'' { inSingle = true; continue }
+		if sql[i] == '"' { inDouble = true; continue }
+		if sql[i] == '(' { depth++ }
+		if sql[i] == ')' {
+			depth--
+			if depth == 0 { return i }
+		}
+	}
+	return -1
 }
 
 // rewriteCreateTableColList strips the column name list from

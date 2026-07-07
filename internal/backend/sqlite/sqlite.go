@@ -252,6 +252,7 @@ func initDatabase(ctx context.Context, db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS main.pg_locks (
 			locktype TEXT,
 			database INTEGER,
+			datoid INTEGER,
 			relation INTEGER,
 			page INTEGER,
 			tuple INTEGER,
@@ -408,6 +409,9 @@ func initDatabase(ctx context.Context, db *sql.DB) error {
 		INSERT OR IGNORE INTO main.pg_type (oid, typname, typnamespace) VALUES (2950, 'uuid', 11);
 
 		INSERT OR IGNORE INTO main.pg_init_privs (objoid, classid, objsubid, privtype, initprivs) VALUES (0, 0, 0, 'i', '{}');
+		INSERT OR IGNORE INTO main.pg_database (oid, datname, datdba, encoding, datcollate, datctype, datistemplate, datallowconn, datconnlimit) VALUES (1, 'default', 10, 6, 'C', 'C', 0, 1, -1);
+		INSERT OR IGNORE INTO main.pg_database (oid, datname, datdba, encoding, datcollate, datctype, datistemplate, datallowconn, datconnlimit) VALUES (2, 'minipsql', 10, 6, 'C', 'C', 0, 1, -1);
+		INSERT OR IGNORE INTO main.pg_database (oid, datname, datdba, encoding, datcollate, datctype, datistemplate, datallowconn, datconnlimit) VALUES (3, 'regression', 10, 6, 'C', 'C', 0, 1, -1);
 	`
 	if _, err := db.ExecContext(ctx, populateSQL); err != nil {
 		return err

@@ -266,6 +266,18 @@ func init() {
 	// Numeric functions
 	sqlite.MustRegisterDeterministicScalarFunction("div", 2, divFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("trunc", -1, truncFunc)
+	// Advisory lock stubs — always succeed (no real locking in SQLite)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_advisory_lock", -1, pgAdvisoryLockFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_advisory_lock_shared", -1, pgAdvisoryLockFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_advisory_xact_lock", -1, pgAdvisoryLockFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_advisory_xact_lock_shared", -1, pgAdvisoryLockFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_advisory_unlock", -1, pgAdvisoryUnlockFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_advisory_unlock_shared", -1, pgAdvisoryUnlockFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_advisory_unlock_all", 0, pgAdvisoryUnlockAllFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_try_advisory_lock", -1, pgAdvisoryUnlockFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_try_advisory_lock_shared", -1, pgAdvisoryUnlockFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_try_advisory_xact_lock", -1, pgAdvisoryUnlockFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_try_advisory_xact_lock_shared", -1, pgAdvisoryUnlockFunc)
 }
 
 func asciiFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
@@ -4520,6 +4532,21 @@ func formatTypeFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Valu
 
 func objDescriptionFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
 	// Always return NULL (no comments stored)
+	return nil, nil
+}
+
+// pgAdvisoryLockFunc is a no-op advisory lock (SQLite has no locking primitives).
+func pgAdvisoryLockFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	return nil, nil
+}
+
+// pgAdvisoryUnlockFunc always returns true (lock was held and released).
+func pgAdvisoryUnlockFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	return int64(1), nil
+}
+
+// pgAdvisoryUnlockAllFunc releases all advisory locks (no-op).
+func pgAdvisoryUnlockAllFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
 	return nil, nil
 }
 

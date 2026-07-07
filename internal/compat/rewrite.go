@@ -63,6 +63,10 @@ var (
 	enforcedRE          = regexp.MustCompile(`(?i)\s+(?:NOT\s+)?ENFORCED\b`)
 	tableoidRE          = regexp.MustCompile(`(?i)\b([a-zA-Z0-9_]+\.)?tableoid\b`)
 	ctidRE              = regexp.MustCompile(`(?i)\b([a-zA-Z0-9_]+\.)?ctid\b`)
+	xminRE              = regexp.MustCompile(`(?i)\b([a-zA-Z0-9_]+\.)?xmin\b`)
+	xmaxRE              = regexp.MustCompile(`(?i)\b([a-zA-Z0-9_]+\.)?xmax\b`)
+	cminRE              = regexp.MustCompile(`(?i)\b([a-zA-Z0-9_]+\.)?cmin\b`)
+	cmaxRE              = regexp.MustCompile(`(?i)\b([a-zA-Z0-9_]+\.)?cmax\b`)
 	onCommitRE          = regexp.MustCompile(`(?i)\s+ON\s+COMMIT\s+(?:DELETE\s+ROWS|DROP|PRESERVE\s+ROWS)`)
 	inheritsRE          = regexp.MustCompile(`(?i)\s+INHERITS\s*\([^)]*\)`)
 	generatedStoredRE   = regexp.MustCompile(`(?i)\s+GENERATED\s+ALWAYS\s+AS\s+\(([^)]+)\)\s+(?:STORED|VIRTUAL)`)
@@ -95,6 +99,7 @@ func Rewrite(sql string) string {
 	out := rewriteTruncate(sql)
 	out = rewriteCreateOrReplaceView(out)
 	out = rewriteCreateMaterializedView(out)
+	out = rewriteDropMaterializedView(out)
 	out = rewriteCreateView(out)
 	out = rewriteCreateAsExecute(out)
 	out = rewriteUnloggedTable(out)
@@ -117,6 +122,10 @@ func Rewrite(sql string) string {
 	out = enforcedRE.ReplaceAllString(out, "")
 	out = tableoidRE.ReplaceAllString(out, "0")
 	out = ctidRE.ReplaceAllString(out, "'(0,1)'")
+	out = xminRE.ReplaceAllString(out, "0")
+	out = xmaxRE.ReplaceAllString(out, "0")
+	out = cminRE.ReplaceAllString(out, "0")
+	out = cmaxRE.ReplaceAllString(out, "0")
 	out = onCommitRE.ReplaceAllString(out, "")
 	out = inheritsRE.ReplaceAllString(out, "")
 	out = rewritePartitionBy(out)
@@ -263,6 +272,24 @@ func rewriteCreateOrReplaceView(sql string) string {
 		tempClause = "TEMP "
 	}
 	return "DROP VIEW IF EXISTS " + viewName + "; CREATE " + tempClause + "VIEW " + rest
+}
+
+var dropMaterializedViewRE = regexp.MustCompile(`(?i)^\s*DROP\s+MATERIALIZED\s+VIEW\s+(?:IF\s+EXISTS\s+)?`)
+var dropMaterializedViewNameRE = regexp.MustCompile(`(?i)^\s*DROP\s+MATERIALIZED\s+VIEW\s+(IF\s+EXISTS\s+)?([A-Za-z0-9_".]+)`)
+
+func rewriteDropMaterializedView(sql string) string {
+	sub := dropMaterializedViewNameRE.FindStringSubmatch(sql)
+	if sub == nil {
+		return sql
+	}
+	viewName := sub[2]
+	ifExists := ""
+	if strings.TrimSpace(strings.ToUpper(sub[1])) == "IF EXISTS" {
+		ifExists = "IF EXISTS "
+	} else {
+		ifExists = "IF EXISTS "
+	}
+	return "DROP TABLE " + ifExists + viewName
 }
 
 // rewriteCreateMaterializedView rewrites CREATE MATERIALIZED VIEW to CREATE TABLE AS SELECT
@@ -1025,7 +1052,7 @@ func TxCommand(sql string) string {
 		return "begin"
 	case lower == "commit" || lower == "end":
 		return "commit"
-	case lower == "rollback" || lower == "abort" || strings.HasPrefix(lower, "rollback to "):
+	case lower == "rollback" || lower == "abort":
 		return "rollback"
 	default:
 		return ""

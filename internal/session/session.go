@@ -148,12 +148,51 @@ func (s *Session) Execute(ctx context.Context, sql string, args []backend.Value)
 	}
 
 	rewritten := compat.Rewrite(sql)
+
+	// Handle multi-statement rewrites (e.g. CREATE MATERIALIZED VIEW → DROP TABLE IF EXISTS ...; CREATE TABLE ...)
+	if stmts := splitRewrittenStatements(rewritten); len(stmts) > 1 {
+		var lastTag *backend.CommandTag
+		for _, stmt := range stmts {
+			stmt = strings.TrimSpace(stmt)
+			if stmt == "" {
+				continue
+			}
+			if compat.IsQuery(stmt) || compat.HasReturning(stmt) {
+				result, err := s.Backend.Query(ctx, stmt, args)
+				if err != nil {
+					return nil, nil, err
+				}
+				return result, nil, nil
+			}
+			t, err := s.Backend.Exec(ctx, stmt, args)
+			if err != nil {
+				return nil, nil, err
+			}
+			lastTag = t
+		}
+		return nil, lastTag, nil
+	}
+
 	if compat.IsQuery(rewritten) || compat.HasReturning(rewritten) {
 		result, err := s.Backend.Query(ctx, rewritten, args)
 		return result, nil, err
 	}
 	tag, err := s.Backend.Exec(ctx, rewritten, args)
 	return nil, tag, err
+}
+
+// splitRewrittenStatements splits a rewritten SQL string by top-level semicolons.
+// Returns the original single-element slice if there is only one statement.
+func splitRewrittenStatements(sql string) []string {
+	parts := strings.Split(sql, ";")
+	var stmts []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			stmts = append(stmts, p)
+		}
+	}
+	return stmts
 }
 
 func checkUnsupportedDDL(sql string) error {
@@ -365,12 +404,8 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 		return &backend.CommandTag{Tag: "CREATE SEQUENCE"}, true
 	case strings.HasPrefix(lower, "drop sequence "):
 		return &backend.CommandTag{Tag: "DROP SEQUENCE"}, true
-	case strings.HasPrefix(lower, "create materialized view"):
-		return &backend.CommandTag{Tag: "CREATE MATERIALIZED VIEW"}, true
 	case strings.HasPrefix(lower, "refresh materialized view"):
 		return &backend.CommandTag{Tag: "REFRESH MATERIALIZED VIEW"}, true
-	case strings.HasPrefix(lower, "drop materialized view"):
-		return &backend.CommandTag{Tag: "DROP MATERIALIZED VIEW"}, true
 	case strings.HasPrefix(lower, "alter index "):
 		return &backend.CommandTag{Tag: "ALTER INDEX"}, true
 	case strings.HasPrefix(lower, "alter view "):
@@ -484,12 +519,15 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 		}
 	}
 
-	// SAVEPOINT / RELEASE / ROLLBACK TO → pass through to SQLite
+	// SAVEPOINT / RELEASE / ROLLBACK TO → no-op (SQLite savepoints behave differently)
 	if strings.HasPrefix(lower, "savepoint ") || lower == "savepoint" {
 		return &backend.CommandTag{Tag: "SAVEPOINT"}, true
 	}
 	if strings.HasPrefix(lower, "release ") || lower == "release" {
 		return &backend.CommandTag{Tag: "RELEASE"}, true
+	}
+	if strings.HasPrefix(lower, "rollback to ") {
+		return &backend.CommandTag{Tag: "ROLLBACK"}, true
 	}
 
 	return nil, false

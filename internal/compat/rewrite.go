@@ -140,7 +140,6 @@ func Rewrite(sql string) string {
 	out = rewriteTableWithOptions(out)
 	out = rewriteCreateTableWithNoData(out)
 	out = rewriteCreateTableColList(out)
-	out = rewriteWithOrdinality(out)
 	out = rewriteDropCascade(out)
 	out = rewritePGCatalogOperator(out)
 	out = rewriteGeneratedColumns(out)
@@ -215,6 +214,7 @@ func Rewrite(sql string) string {
 	out = rewriteRegexFunctions(out)
 	out = rewriteSubstring(out)
 	out = rewriteUnnest(out)
+	out = rewriteWithOrdinality(out) // strip any remaining WITH ORDINALITY not handled by unnest
 	out = rewriteToBinOctHex(out)
 	out = rewriteParametersAndCasts(out)
 	out = serialRE.ReplaceAllString(out, "integer")
@@ -2661,9 +2661,9 @@ func rewriteUnnest(sql string) string {
 		colNames := []string{}
 		aliasEnd := rawAfter
 		// Check for WITH ORDINALITY
-		if after+16 <= len(sql) && strings.EqualFold(sql[after:after+16], "with ordinality") {
+		if after+15 <= len(sql) && strings.EqualFold(sql[after:after+15], "with ordinality") {
 			withOrdinality = true
-			aliasEnd = after + 16
+			aliasEnd = after + 15
 			for aliasEnd < len(sql) && (sql[aliasEnd] == ' ' || sql[aliasEnd] == '\t') {
 				aliasEnd++
 			}

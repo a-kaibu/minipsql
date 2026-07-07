@@ -737,7 +737,7 @@ func initDatabase(ctx context.Context, db *sql.DB) error {
 		)`,
 		`CREATE TABLE IF NOT EXISTS main.pg_backend_memory_contexts (
 			type TEXT, name TEXT, ident TEXT, parent TEXT, level INTEGER,
-			total_bytes INTEGER, total_nblocks INTEGER,
+			path TEXT, total_bytes INTEGER, total_nblocks INTEGER,
 			free_bytes INTEGER, free_chunks INTEGER, used_bytes INTEGER
 		)`,
 		`CREATE TABLE IF NOT EXISTS main.pg_stat_slru (

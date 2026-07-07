@@ -506,13 +506,37 @@ func rewriteGenerateSeries(sql string) string {
 
 	result := sql
 	for {
-		idx := indexOutsideQuotes(strings.ToUpper(result), "GENERATE_SERIES")
+		// Use last occurrence so nested generate_series(1, generate_series(1,3)) is
+		// rewritten from the inside out — innermost first, then outer.
+		idx := lastIndexOutsideQuotes(strings.ToUpper(result), "GENERATE_SERIES")
 		if idx < 0 {
 			break
 		}
 
 		fromIdx := -1
 		prefix := strings.ToUpper(result[:idx])
+
+		// Skip generate_series that appears after ORDER BY, HAVING, GROUP BY, or WHERE
+		// at the top level — injecting a CTE there would break the SQL structure.
+		// Detect this by checking if the last clause-start keyword before idx is one of these.
+		skipClauseStart := -1
+		for _, kw := range []string{"ORDER BY", "HAVING", "GROUP BY", "WHERE"} {
+			kwIdx := strings.LastIndex(prefix, kw)
+			if kwIdx > skipClauseStart {
+				skipClauseStart = kwIdx
+			}
+		}
+		lastFromOrSelect := strings.LastIndex(prefix, "FROM")
+		if lastSelectIdx := strings.LastIndex(prefix, "SELECT"); lastSelectIdx > lastFromOrSelect {
+			lastFromOrSelect = lastSelectIdx
+		}
+		if skipClauseStart > lastFromOrSelect {
+			// generate_series is in ORDER BY/WHERE/HAVING/GROUP BY context — skip this occurrence
+			// by replacing with a marker that won't re-match "GENERATE_SERIES".
+			result = result[:idx] + "_gs_skipped_" + result[idx+len("GENERATE_SERIES"):]
+			continue
+		}
+
 		candidate := strings.LastIndex(prefix, "FROM")
 		if candidate >= 0 {
 			between := strings.TrimSpace(result[candidate+4 : idx])
@@ -543,14 +567,14 @@ func rewriteGenerateSeries(sql string) string {
 
 		argsStr := result[parenStart+1 : parenEnd-1]
 		argParts := splitOrderByItems(argsStr)
-		start := strings.TrimSpace(argParts[0])
+		start := stripSubqueryAlias(strings.TrimSpace(argParts[0]))
 		stop := ""
 		if len(argParts) > 1 {
-			stop = strings.TrimSpace(argParts[1])
+			stop = stripSubqueryAlias(strings.TrimSpace(argParts[1]))
 		}
 		step := "1"
 		if len(argParts) > 2 {
-			step = strings.TrimSpace(argParts[2])
+			step = stripSubqueryAlias(strings.TrimSpace(argParts[2]))
 		}
 
 		// Parse optional alias forms: AS alias(col), alias(col), or alias.
@@ -608,7 +632,42 @@ func rewriteGenerateSeries(sql string) string {
 			result = result[:fromIdx] + "FROM " + cte + " " + afterPart
 		}
 	}
+	// Restore any skipped generate_series occurrences (in ORDER BY / WHERE / etc.)
+	result = strings.ReplaceAll(result, "_gs_skipped_", "generate_series")
 	return result
+}
+
+// stripSubqueryAlias removes a trailing " AS alias" from a scalar subquery like
+// "(WITH RECURSIVE ...) AS _gs_alias" so it can be used in an expression context.
+func stripSubqueryAlias(s string) string {
+	if !strings.HasPrefix(s, "(") {
+		return s
+	}
+	// Find the matching closing paren
+	depth := 0
+	closePos := -1
+	for i, c := range s {
+		switch c {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				closePos = i
+			}
+		}
+		if closePos >= 0 {
+			break
+		}
+	}
+	if closePos < 0 || closePos == len(s)-1 {
+		return s // no trailing content
+	}
+	tail := strings.TrimSpace(s[closePos+1:])
+	if strings.HasPrefix(strings.ToUpper(tail), "AS ") {
+		return s[:closePos+1] // strip " AS alias"
+	}
+	return s
 }
 
 func parseGenerateSeriesAlias(trimmed string) (alias string, colName string, consumed int) {

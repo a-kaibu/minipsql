@@ -253,8 +253,8 @@ var (
 	offsetRowsRE = regexp.MustCompile(`(?i)\bOFFSET\s+(\d+)\s+ROWS\b`)
 	// LATERAL keyword before subqueries/functions
 	lateralRE = regexp.MustCompile(`(?i)\bLATERAL\s+`)
-	// TABLESAMPLE clause
-	tablesampleRE = regexp.MustCompile(`(?i)\bTABLESAMPLE\s+\w+\s*\([^)]*\)(?:\s+REPEATABLE\s*\([^)]*\))?`)
+	// TABLESAMPLE clause — matches method name only; arg stripping is done by rewriteTablesample()
+	tablesampleStartRE = regexp.MustCompile(`(?i)\bTABLESAMPLE\s+\w+\s*\(`)
 
 	createOrReplaceViewRE   = regexp.MustCompile(`(?i)^\s*CREATE\s+OR\s+REPLACE\s+(TEMP(?:ORARY)?\s+)?VIEW\s+`)
 	createViewRE            = regexp.MustCompile(`(?i)(^\s*CREATE\s+(?:TEMP(?:ORARY)?\s+)?VIEW\s+)(IF\s+NOT\s+EXISTS\s+|)([A-Za-z0-9_".]+)`)
@@ -396,8 +396,49 @@ func rewriteLateral(sql string) string {
 }
 
 // rewriteTablesample strips TABLESAMPLE clauses (not supported in SQLite).
+// Handles nested parentheses, e.g. TABLESAMPLE bernoulli (('1'::text < '0'::text)::int).
 func rewriteTablesample(sql string) string {
-	return tablesampleRE.ReplaceAllString(sql, "")
+	for {
+		loc := tablesampleStartRE.FindStringIndex(sql)
+		if loc == nil {
+			break
+		}
+		// loc[1]-1 is the position of the opening '(' already matched
+		start := loc[0]
+		openParen := loc[1] - 1
+		depth := 1
+		i := openParen + 1
+		for i < len(sql) && depth > 0 {
+			switch sql[i] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+			}
+			i++
+		}
+		// i now points just after the closing ')' of TABLESAMPLE args
+		// strip optional REPEATABLE (...) too
+		repeatableRE := regexp.MustCompile(`(?i)^\s*REPEATABLE\s*\(`)
+		rest := sql[i:]
+		if m := repeatableRE.FindStringIndex(rest); m != nil {
+			openR := m[1] - 1
+			depth2 := 1
+			j := openR + 1
+			for j < len(rest) && depth2 > 0 {
+				switch rest[j] {
+				case '(':
+					depth2++
+				case ')':
+					depth2--
+				}
+				j++
+			}
+			i += j
+		}
+		sql = sql[:start] + sql[i:]
+	}
+	return sql
 }
 
 // rewriteIndexConcurrently strips CONCURRENTLY from CREATE/DROP INDEX.

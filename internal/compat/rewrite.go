@@ -50,6 +50,10 @@ var idxCounter atomic.Int64
 
 func Rewrite(sql string) string {
 	out := rewriteTruncate(sql)
+	out = rewriteCreateOrReplaceView(out)
+	out = rewriteUnloggedTable(out)
+	out = rewriteSelectInto(out)
+	out = rewriteIndexConcurrently(out)
 	out = rewriteUnicodeLiterals(out)
 	out = rewriteValuesAlias(out)
 	out = tableKeywordRE.ReplaceAllStringFunc(out, func(m string) string {
@@ -127,6 +131,59 @@ func Rewrite(sql string) string {
 	out = rewriteArrayAgg(out)
 	out = rewriteKeywords(out)
 	return out
+}
+
+var (
+	createOrReplaceViewRE = regexp.MustCompile(`(?i)^\s*CREATE\s+OR\s+REPLACE\s+(TEMP(?:ORARY)?\s+)?VIEW\s+`)
+	createUnloggedTableRE = regexp.MustCompile(`(?i)\bCREATE\s+UNLOGGED\s+TABLE\b`)
+	selectIntoRE          = regexp.MustCompile(`(?i)^\s*SELECT\s+(.+?)\s+INTO\s+(?:TEMP(?:ORARY)?\s+)?(?:TABLE\s+)?([A-Za-z0-9_".]+)\s+FROM\s+`)
+	indexConcurrentlyRE   = regexp.MustCompile(`(?i)\b(CREATE\s+(?:UNIQUE\s+)?INDEX|DROP\s+INDEX)\s+CONCURRENTLY\s+`)
+)
+
+// rewriteCreateOrReplaceView converts CREATE OR REPLACE VIEW to DROP VIEW IF EXISTS + CREATE VIEW.
+func rewriteCreateOrReplaceView(sql string) string {
+	m := createOrReplaceViewRE.FindStringIndex(sql)
+	if m == nil {
+		return sql
+	}
+	// Extract view name
+	rest := sql[m[1]:]
+	nameEnd := 0
+	for nameEnd < len(rest) && rest[nameEnd] != ' ' && rest[nameEnd] != '\t' && rest[nameEnd] != '\n' && rest[nameEnd] != '(' {
+		nameEnd++
+	}
+	viewName := rest[:nameEnd]
+	tempClause := ""
+	if sub := createOrReplaceViewRE.FindStringSubmatch(sql); sub != nil && sub[1] != "" {
+		tempClause = "TEMP "
+	}
+	return "DROP VIEW IF EXISTS " + viewName + "; CREATE " + tempClause + "VIEW " + rest
+}
+
+// rewriteUnloggedTable strips UNLOGGED keyword from CREATE TABLE.
+func rewriteUnloggedTable(sql string) string {
+	return createUnloggedTableRE.ReplaceAllString(sql, "CREATE TABLE")
+}
+
+// rewriteSelectInto rewrites SELECT ... INTO tablename FROM ... to CREATE TABLE tablename AS SELECT ... FROM ...
+func rewriteSelectInto(sql string) string {
+	m := selectIntoRE.FindStringSubmatchIndex(sql)
+	if m == nil {
+		return sql
+	}
+	// m[2],m[3] = select list, m[4],m[5] = table name
+	selectList := sql[m[2]:m[3]]
+	tableName := sql[m[4]:m[5]]
+	fromPos := m[1]
+	return "CREATE TABLE " + tableName + " AS SELECT " + selectList + " FROM " + sql[fromPos:]
+}
+
+// rewriteIndexConcurrently strips CONCURRENTLY from CREATE/DROP INDEX.
+func rewriteIndexConcurrently(sql string) string {
+	return indexConcurrentlyRE.ReplaceAllStringFunc(sql, func(m string) string {
+		sub := indexConcurrentlyRE.FindStringSubmatch(m)
+		return sub[1] + " "
+	})
 }
 
 func rewriteTruncate(sql string) string {

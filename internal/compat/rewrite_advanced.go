@@ -2,6 +2,7 @@ package compat
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -603,6 +604,31 @@ func rewriteGenerateSeries(sql string) string {
 
 		// step = 0 would cause infinite loop; emit error instead
 		zeroStep := stepTrimmed == "0" || stepTrimmed == "+0" || stepTrimmed == "-0"
+		// INTERVAL '0 ...' also counts as zero step
+		if !zeroStep && strings.Contains(strings.ToUpper(stepTrimmed), "INTERVAL") {
+			inner := regexp.MustCompile(`INTERVAL\s+'([^']*)'`).FindStringSubmatch(strings.ToUpper(stepTrimmed))
+			if len(inner) > 1 {
+				// check if all numeric parts are zero
+				fields := regexp.MustCompile(`[\d.]+`).FindAllString(inner[1], -1)
+				allZero := len(fields) > 0
+				for _, f := range fields {
+					if f != "0" && f != "0.0" {
+						allZero = false
+						break
+					}
+				}
+				if allZero {
+					zeroStep = true
+				}
+			}
+		}
+
+		// infinity start/stop with timestamp generate_series would loop forever in SQLite
+		stopLower := strings.ToLower(strings.TrimSpace(stop))
+		startLower := strings.ToLower(strings.TrimSpace(start))
+		hasInfinity := strings.Contains(stopLower, "infinity") || strings.Contains(startLower, "infinity")
+		// INTERVAL step cannot be used natively in SQLite recursive CTEs (date arithmetic differs)
+		hasInterval := strings.Contains(strings.ToUpper(stepTrimmed), "INTERVAL")
 
 		cteID := idxCounter.Add(1)
 		cteName := fmt.Sprintf("_gs_cte_%d", cteID)
@@ -612,6 +638,9 @@ func rewriteGenerateSeries(sql string) string {
 				"(SELECT minipsql_error('step size cannot equal zero', 'XX000', '')) AS %s",
 				alias,
 			)
+		} else if hasInfinity || hasInterval {
+			// Cannot iterate over infinite range or INTERVAL step in SQLite recursive CTE; return empty.
+			cte = fmt.Sprintf("(SELECT NULL AS %s WHERE 1=0) AS %s", colName, alias)
 		} else {
 			cte = fmt.Sprintf(
 				"(WITH RECURSIVE %s(%s) AS (SELECT %s UNION ALL SELECT %s + (%s) FROM %s WHERE %s + (%s) %s %s) SELECT %s FROM %s) AS %s",

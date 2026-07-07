@@ -105,7 +105,8 @@ var (
 	notAllArrayRE      = regexp.MustCompile(`(?i)(?:<>|!=)\s*ALL\s*\(\s*ARRAY\s*\[([^\]]*)\](?:::[A-Za-z0-9_\[\]]+)?\s*\)`)
 	namedArgRE         = regexp.MustCompile(`(?i)\b[A-Za-z_][A-Za-z0-9_]*\s*=>\s*`)
 	forPortionOfRE     = regexp.MustCompile(`(?i)\s+FOR\s+PORTION\s+OF\s+\S+\s+FROM\s+\S+\s+TO\s+\S+`)
-	bitLiteralRE       = regexp.MustCompile(`(?i)\bB'([01]*)'`)
+	bitLiteralRE       = regexp.MustCompile(`(?i)\bB'([01 \t]*)'`)
+	hexLiteralSpaceRE  = regexp.MustCompile(`(?i)\bX'([0-9a-fA-F \t]*)'`)
 	variadicRE         = regexp.MustCompile(`(?i)\bVARIADIC\s+`)
 	// timestamp/time WITH/WITHOUT TIME ZONE — strip the WITH/WITHOUT TIME ZONE suffix
 	withoutTimeZoneRE  = regexp.MustCompile(`(?i)\b(timestamp|time)(?:\s*\(\s*\d+\s*\))?\s+without\s+time\s+zone\b`)
@@ -266,6 +267,8 @@ func Rewrite(sql string) string {
 	out = charLiteralRE.ReplaceAllString(out, "$1")
 	out = pgLsnLiteralRE.ReplaceAllString(out, "$1")
 	out = pointLiteralRE.ReplaceAllString(out, "$1")
+	// rewriteGenerateSeries before typedLiteralRE so INTERVAL 'x' literals are still recognizable.
+	out = rewriteGenerateSeries(out)
 	out = typedLiteralRE.ReplaceAllStringFunc(out, func(m string) string {
 		sub := typedLiteralRE.FindStringSubmatch(m)
 		tName := strings.ToLower(sub[1])
@@ -283,7 +286,6 @@ func Rewrite(sql string) string {
 	out = rewriteRegexOps(out)
 	out = rewriteSimilarTo(out)
 	out = rewriteNullsOrder(out)
-	out = rewriteGenerateSeries(out)
 	out = rewriteSubqueryColumnAlias(out)
 	out = rewritePosition(out)
 	out = rewriteOverlay(out)
@@ -455,21 +457,32 @@ func rewriteSelectInto(sql string) string {
 	return "CREATE TABLE " + tableName + " AS SELECT " + selectList + " FROM " + sql[fromPos:]
 }
 
-// rewriteBitHexLiterals converts PG bit-string literals B'...' to integer values.
+// rewriteBitHexLiterals converts PG bit-string literals B'...' to integer values
+// and fixes X'...' hex literals by removing embedded spaces.
 // SQLite does not support B'...' syntax; we convert to the decimal integer equivalent.
+// SQLite supports X'...' but not with spaces inside.
 func rewriteBitHexLiterals(sql string) string {
-	return bitLiteralRE.ReplaceAllStringFunc(sql, func(m string) string {
+	out := bitLiteralRE.ReplaceAllStringFunc(sql, func(m string) string {
 		sub := bitLiteralRE.FindStringSubmatch(m)
-		bits := sub[1]
+		bits := strings.ReplaceAll(strings.ReplaceAll(sub[1], " ", ""), "\t", "")
 		if bits == "" {
 			return "0"
 		}
 		val := int64(0)
 		for _, c := range bits {
-			val = val*2 + int64(c-'0')
+			if c == '0' || c == '1' {
+				val = val*2 + int64(c-'0')
+			}
 		}
 		return strconv.FormatInt(val, 10)
 	})
+	// Remove spaces from X'...' hex literals so SQLite can parse them.
+	out = hexLiteralSpaceRE.ReplaceAllStringFunc(out, func(m string) string {
+		sub := hexLiteralSpaceRE.FindStringSubmatch(m)
+		hex := strings.ReplaceAll(strings.ReplaceAll(sub[1], " ", ""), "\t", "")
+		return "X'" + hex + "'"
+	})
+	return out
 }
 
 // rewriteFetchFirst rewrites SQL:2008 FETCH FIRST/NEXT syntax to LIMIT/OFFSET.

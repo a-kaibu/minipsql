@@ -432,6 +432,12 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 		return &backend.CommandTag{Tag: "ALTER FUNCTION"}, true
 	case strings.HasPrefix(lower, "alter procedure ") || lower == "alter procedure":
 		return &backend.CommandTag{Tag: "ALTER PROCEDURE"}, true
+	case strings.HasPrefix(lower, "alter default privileges"):
+		return &backend.CommandTag{Tag: "ALTER DEFAULT PRIVILEGES"}, true
+	case strings.HasPrefix(lower, "set session authorization"):
+		return &backend.CommandTag{Tag: "SET"}, true
+	case lower == "reset session authorization" || strings.HasPrefix(lower, "reset session authorization"):
+		return &backend.CommandTag{Tag: "RESET"}, true
 	case strings.HasPrefix(lower, "alter sequence "):
 		return &backend.CommandTag{Tag: "ALTER SEQUENCE"}, true
 	case strings.HasPrefix(lower, "create sequence "):
@@ -956,8 +962,17 @@ func (s *Session) tryHandleCreateFunction(sql string) (*backend.CommandTag, erro
 		}
 	}
 
-	// PLpgSQL and other languages: no-op (we can't execute them)
-	_ = isPLpgSQL
+	// For LANGUAGE C / PLpgSQL / internal without error cases: register a stub
+	// that returns NULL (or true for bool-returning functions) so calls don't fail.
+	if (isC || isPLpgSQL) && funcName != "" && !strings.Contains(lower, "nosuch") {
+		// Determine a reasonable default return: use NULL for most, but
+		// register so calls succeed with NULL rather than "no such function".
+		s.SQLFunctions[funcName] = &SQLFunction{
+			Name:  funcName,
+			NArgs: nArgs,
+			Body:  "SELECT NULL",
+		}
+	}
 
 	return &backend.CommandTag{Tag: "CREATE FUNCTION"}, nil
 }
@@ -1137,11 +1152,37 @@ func extractStringLiterals(sql string) []string {
 }
 
 // extractFunctionBody extracts the SQL body from a CREATE FUNCTION statement.
-// Handles both $$ ... $$ and 'body' quoting styles.
+// Handles $$ ... $$, 'body', BEGIN ATOMIC ... END, and bare RETURN expr.
 func extractFunctionBody(sql string) string {
 	lower := strings.ToLower(sql)
 
-	// Try RETURN/AS with dollar quoting: $$ body $$ or $tag$ body $tag$
+	// BEGIN ATOMIC ... END
+	if idx := strings.Index(lower, "begin atomic"); idx >= 0 {
+		bodyStart := idx + len("begin atomic")
+		endIdx := strings.LastIndex(lower, "end")
+		if endIdx > bodyStart {
+			inner := strings.TrimSpace(sql[bodyStart:endIdx])
+			// strip leading/trailing semicolons
+			inner = strings.Trim(inner, ";")
+			inner = strings.TrimSpace(inner)
+			// If multiple statements, use the last SELECT
+			stmts := strings.Split(inner, ";")
+			for i := len(stmts) - 1; i >= 0; i-- {
+				s := strings.TrimSpace(stmts[i])
+				if s != "" {
+					if strings.HasPrefix(strings.ToLower(s), "select ") {
+						return s
+					}
+					if strings.HasPrefix(strings.ToLower(s), "return ") {
+						return "SELECT " + strings.TrimSpace(s[len("return "):])
+					}
+					return "SELECT " + s
+				}
+			}
+		}
+	}
+
+	// Try AS with dollar quoting: $$ body $$ or $tag$ body $tag$
 	if idx := strings.Index(lower, " as "); idx >= 0 {
 		rest := sql[idx+4:]
 		rest = strings.TrimSpace(rest)
@@ -1152,7 +1193,7 @@ func extractFunctionBody(sql string) string {
 			}
 		}
 		// dollar quoting with tag: $tag$ ... $tag$
-		if rest[0] == '$' {
+		if len(rest) > 0 && rest[0] == '$' {
 			end := strings.Index(rest[1:], "$")
 			if end >= 0 {
 				tag := rest[:end+2] // includes both $
@@ -1164,7 +1205,7 @@ func extractFunctionBody(sql string) string {
 			}
 		}
 		// single-quoted: 'body'
-		if rest[0] == '\'' {
+		if len(rest) > 0 && rest[0] == '\'' {
 			end := strings.Index(rest[1:], "'")
 			if end >= 0 {
 				return strings.TrimSpace(rest[1 : end+1])

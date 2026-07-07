@@ -194,6 +194,15 @@ func (s *Session) Execute(ctx context.Context, sql string, args []backend.Value)
 			if stmt == "" {
 				continue
 			}
+			// Apply no-op checks for each split statement too
+			if tag, ok := s.tryNoopCommand(stmt); ok {
+				lastTag = tag
+				continue
+			}
+			if tag, ok := tryUnsupportedDDLNoop(stmt); ok {
+				lastTag = tag
+				continue
+			}
 			if compat.IsQuery(stmt) || compat.HasReturning(stmt) {
 				result, err := s.Backend.Query(ctx, stmt, args)
 				if err != nil {
@@ -652,6 +661,17 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 	}
 	if strings.HasPrefix(lower, "rollback to ") {
 		return &backend.CommandTag{Tag: "ROLLBACK"}, true
+	}
+
+	// Two-phase commit (not supported by SQLite) → no-op
+	if strings.HasPrefix(lower, "prepare transaction ") {
+		return &backend.CommandTag{Tag: "PREPARE TRANSACTION"}, true
+	}
+	if strings.HasPrefix(lower, "commit prepared ") {
+		return &backend.CommandTag{Tag: "COMMIT PREPARED"}, true
+	}
+	if strings.HasPrefix(lower, "rollback prepared ") {
+		return &backend.CommandTag{Tag: "ROLLBACK PREPARED"}, true
 	}
 
 	return nil, false

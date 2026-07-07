@@ -127,7 +127,8 @@ var idxCounter atomic.Int64
 
 
 func Rewrite(sql string) string {
-	out := rewriteDistinctOn(sql)
+	out := rewriteAlterTableMultiAction(sql)
+	out = rewriteDistinctOn(out)
 	out = rewriteTruncate(out)
 	// Strip RECURSIVE keyword from CREATE [OR REPLACE] RECURSIVE VIEW
 	out = regexp.MustCompile(`(?i)(CREATE\s+(?:OR\s+REPLACE\s+)?)RECURSIVE\s+(VIEW\s+)`).ReplaceAllString(out, "${1}${2}")
@@ -4101,9 +4102,62 @@ func rewriteStandaloneUser(sql string) string {
 	})
 }
 
-
-
-
-
+// rewriteAlterTableMultiAction splits ALTER TABLE t a1, a2, a3 into
+// separate ALTER TABLE statements that SQLite can execute one at a time.
+func rewriteAlterTableMultiAction(sql string) string {
+	upper := strings.ToUpper(strings.TrimSpace(sql))
+	if !strings.HasPrefix(upper, "ALTER TABLE") {
+		return sql
+	}
+	// Find table name start
+	rest := strings.TrimSpace(sql[len("ALTER TABLE"):])
+	restUpper := strings.ToUpper(rest)
+	// skip IF EXISTS
+	if strings.HasPrefix(restUpper, "IF EXISTS ") {
+		rest = strings.TrimSpace(rest[len("IF EXISTS "):])
+	}
+	// skip ONLY
+	if strings.HasPrefix(strings.ToUpper(rest), "ONLY ") {
+		rest = strings.TrimSpace(rest[len("ONLY "):])
+	}
+	// extract table name (possibly quoted)
+	var tableName string
+	if len(rest) > 0 && rest[0] == '"' {
+		end := strings.Index(rest[1:], "\"")
+		if end < 0 {
+			return sql
+		}
+		tableName = rest[:end+2]
+		rest = strings.TrimSpace(rest[end+2:])
+	} else {
+		i := 0
+		for i < len(rest) && rest[i] != ' ' && rest[i] != '\t' && rest[i] != '\n' && rest[i] != ',' {
+			i++
+		}
+		if i == 0 {
+			return sql
+		}
+		tableName = rest[:i]
+		rest = strings.TrimSpace(rest[i:])
+	}
+	// If no comma at the top level, nothing to split
+	if !strings.Contains(rest, ",") {
+		return sql
+	}
+	// Split actions by top-level comma
+	actions := splitTopLevelCommas(rest)
+	if len(actions) <= 1 {
+		return sql
+	}
+	prefix := "ALTER TABLE " + tableName + " "
+	var stmts []string
+	for _, a := range actions {
+		a = strings.TrimSpace(a)
+		if a != "" {
+			stmts = append(stmts, prefix+a)
+		}
+	}
+	return strings.Join(stmts, "; ")
+}
 
 

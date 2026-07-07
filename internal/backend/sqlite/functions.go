@@ -500,6 +500,11 @@ func init() {
 	sqlite.MustRegisterDeterministicScalarFunction("pg_log_backend_memory_contexts", 1, func(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
 		return nil, nil
 	})
+	// pg_bitxor: bitwise XOR (PostgreSQL # operator)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_bitxor", 2, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+		if args[0] == nil || args[1] == nil { return nil, nil }
+		return valueInt(args[0]) ^ valueInt(args[1]), nil
+	})
 	// fipshash stub
 	sqlite.MustRegisterDeterministicScalarFunction("fipshash", 1, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
 		if args[0] == nil { return nil, nil }

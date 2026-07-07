@@ -3489,7 +3489,7 @@ func rewriteDropMultiTable(sql string) string {
 //   ||/ expr → POWER(expr, 1.0/3.0)  [cubic root]
 //   a ^ b    → POWER(a, b)           [exponentiation — PG uses ^ for power, not bitXOR]
 func rewritePGNumericOps(sql string) string {
-	if !strings.ContainsAny(sql, "@|^") {
+	if !strings.ContainsAny(sql, "@|^#") {
 		return sql
 	}
 	var b strings.Builder
@@ -3555,6 +3555,26 @@ func rewritePGNumericOps(sql string) string {
 			if expr != "" {
 				b.WriteString("ABS(" + expr + ")")
 				i = end; continue
+			}
+		}
+		// # bitwise XOR (binary operator: left # right → pg_bitxor(left, right))
+		// But NOT #> or #- (jsonb path operators)
+		if sql[i] == '#' && i+1 < n && sql[i+1] != '>' && sql[i+1] != '-' && sql[i+1] != '#' {
+			if i > 0 && (isIdentByte(sql[i-1]) || sql[i-1] == ' ' || sql[i-1] == '\t' || sql[i-1] == ')' || sql[i-1] == '\'') {
+				j := i + 1
+				for j < n && (sql[j] == ' ' || sql[j] == '\t') { j++ }
+				rExpr, rEnd := extractOperand(sql, j)
+				if rExpr != "" {
+					bStr := b.String()
+					lExpr, lStart := extractOperandBackward(bStr)
+					if lExpr != "" {
+						newB := bStr[:lStart]
+						b.Reset()
+						b.WriteString(newB)
+						b.WriteString("pg_bitxor(" + lExpr + ", " + rExpr + ")")
+						i = rEnd; continue
+					}
+				}
 			}
 		}
 		// ^ exponentiation (binary operator: left ^ right → POWER(left, right))

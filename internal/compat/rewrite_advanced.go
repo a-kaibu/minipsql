@@ -590,8 +590,9 @@ func rewriteGenerateSeries(sql string) string {
 		rest := result[parenEnd:]
 		alias := "_gs_alias"
 		colName := "value"
-		trimmed := strings.TrimSpace(rest)
-		leadingSpace := len(rest) - len(trimmed)
+		leftTrimmed := strings.TrimLeft(rest, " \t")
+		leadingSpace := len(rest) - len(leftTrimmed)
+		trimmed := strings.TrimRight(leftTrimmed, " \t")
 		parsedAlias, parsedCol, consumedTrimmed := parseGenerateSeriesAlias(trimmed)
 		consumed := 0
 		if parsedAlias != "" {

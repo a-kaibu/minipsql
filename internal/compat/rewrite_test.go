@@ -75,7 +75,7 @@ func TestRewriteTypedLiteralsAndCreateIndexUsing(t *testing.T) {
 	cases := map[string]string{
 		`SELECT pg_lsn '0/16AE7F7'`:                                                     `SELECT '0/16AE7F7'`,
 		`INSERT INTO line_tbl VALUES (line(point '(3,1)', point '(3,2)'))`:              `INSERT INTO line_tbl VALUES (line('(3,1)', '(3,2)'))`,
-		`CREATE INDEX macaddr_data_btree ON macaddr_data USING btree (b)`:               `CREATE INDEX macaddr_data_btree ON macaddr_data (b)`,
+		`CREATE INDEX macaddr_data_btree ON macaddr_data USING btree (b)`:               `CREATE INDEX IF NOT EXISTS macaddr_data_btree ON macaddr_data (b)`,
 		`SELECT '[{"attributes": [], "dependency": 2, "degree": 1}]' ::pg_dependencies`: `SELECT CAST('[{"attributes": [], "dependency": 2, "degree": 1}]' AS text)`,
 		`SELECT b::macaddr <> '08:00:2b:01:02:04'::macaddr FROM macaddr8_data`:          `SELECT CAST(b AS text) <> CAST('08:00:2b:01:02:04' AS text) FROM macaddr8_data`,
 		`SELECT (i || '/' || j)::pg_lsn f FROM t ORDER BY f`:                            `SELECT CAST((i || '/' || j) AS text) f FROM t ORDER BY f`,

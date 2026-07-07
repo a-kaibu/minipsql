@@ -45,7 +45,7 @@ var (
 	parenthesizedSetSelectRE   = regexp.MustCompile(`(?i)\b(UNION\s+ALL|UNION|EXCEPT|INTERSECT)\s*\(\s*(SELECT\b[^)]+?)\)`)
 	extractRE          = regexp.MustCompile(`(?i)\bEXTRACT\s*\(\s*([A-Za-z_]+)\s+FROM\s+`)
 	schemaPrefixRE     = regexp.MustCompile(`(?i)\b(?:public|pg_temp|pg_catalog|information_schema)\s*\.\s*([A-Za-z0-9_"]+)`)
-	createViewWithOptsRE = regexp.MustCompile(`(?i)(CREATE\s+(?:OR\s+REPLACE\s+)?(?:TEMP(?:ORARY)?\s+)?VIEW\s+\S+)\s+WITH\s*\([^)]*\)`)
+	createViewWithOptsRE = regexp.MustCompile(`(?i)(CREATE\s+(?:OR\s+REPLACE\s+)?(?:TEMP(?:ORARY)?\s+)?VIEW\s+(?:IF\s+NOT\s+EXISTS\s+)?\S+)\s+WITH\s*\([^)]*\)`)
 	createTableWithOptsRE = regexp.MustCompile(`(?i)(CREATE\s+(?:UNLOGGED\s+|TEMP(?:ORARY)?\s+)?TABLE\s+[^\s(]+(?:\s*\([^)]*\))?)\s+WITH\s*\([^)]*\)`)
 	createTableWithNoDataRE = regexp.MustCompile(`(?i)\bWITH\s+NO\s+DATA\b`)
 	createTableColListRE = regexp.MustCompile(`(?i)^\s*(CREATE\s+(?:UNLOGGED\s+|TEMP(?:ORARY)?\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[A-Za-z0-9_".]+)\s*\(([^)]+)\)\s*(AS\s+)`)
@@ -70,7 +70,7 @@ var (
 	dropMultiTableRE   = regexp.MustCompile(`(?i)^\s*(DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?)([A-Za-z0-9_".,\s]+?)(\s+(?:CASCADE|RESTRICT))?\s*;?\s*$`)
 	indexOpClassRE     = regexp.MustCompile(`(?i)\b([A-Za-z0-9_]+)\s+([A-Za-z0-9_]+_ops\b)(?:\s+ASC|\s+DESC)?`)
 	nullsFirstLastRE   = regexp.MustCompile(`(?i)\bNULLS\s+(?:FIRST|LAST)\b`)
-	collateClauseRE    = regexp.MustCompile(`(?i)\bCOLLATE\s+(?:"[^"]*"|[A-Za-z0-9_".-]+)`)
+	collateClauseRE    = regexp.MustCompile(`(?i)\bCOLLATE\s+(?:"([^"]*)"|([A-Za-z0-9_.]+))`)
 	forUpdateRE        = regexp.MustCompile(`(?i)\s+FOR\s+(?:UPDATE|SHARE|NO\s+KEY\s+UPDATE|KEY\s+SHARE)(?:\s+OF\s+\S+)?(?:\s+NOWAIT|\s+SKIP\s+LOCKED)?\s*$`)
 	indexIncludeRE     = regexp.MustCompile(`(?i)\bINCLUDE\s*\([^)]*\)`)
 	compressionRE      = regexp.MustCompile(`(?i)\bCOMPRESSION\s+\w+\b`)
@@ -80,6 +80,7 @@ var (
 	insertDefaultRE    = regexp.MustCompile(`(?i)\bDEFAULT\b`)
 	insertSelectRE     = regexp.MustCompile(`(?i)^\s*(INSERT\s+INTO\s+[A-Za-z0-9_".]+)\s*\(\s*(SELECT\b.+)\)\s*$`)
 	indexWithOptsRE    = regexp.MustCompile(`(?i)(CREATE\s+(?:UNIQUE\s+)?INDEX\b.+?)\s+WITH\s*\([^)]*\)`)
+	createIndexRE      = regexp.MustCompile(`(?i)(CREATE\s+(?:UNIQUE\s+)?INDEX\s+)(IF\s+NOT\s+EXISTS\s+|)([A-Za-z0-9_"]+)`)
 )
 
 var idxCounter atomic.Int64
@@ -120,6 +121,8 @@ func Rewrite(sql string) string {
 	out = rewriteForUpdate(out)
 	out = rewriteIndexInclude(out)
 	out = indexWithOptsRE.ReplaceAllString(out, "$1")
+	out = rewriteCreateIndex(out)
+	out = rewriteCollateClause(out)
 	out = rewriteColumnCompression(out)
 	out = rewriteWithOids(out)
 	out = rewriteEmptyTable(out)
@@ -2622,6 +2625,45 @@ func findScopeStart(sql string, pos int) int {
 		i--
 	}
 	return 0
+}
+
+// rewriteCreateIndex adds IF NOT EXISTS to named CREATE INDEX to prevent duplicate errors.
+func rewriteCreateIndex(sql string) string {
+	return createIndexRE.ReplaceAllStringFunc(sql, func(m string) string {
+		sub := createIndexRE.FindStringSubmatch(m)
+		if sub[2] != "" {
+			return m // already has IF NOT EXISTS
+		}
+		// skip anonymous index: name would be "ON" (CREATE INDEX ON table)
+		if strings.EqualFold(sub[3], "ON") {
+			return m
+		}
+		return sub[1] + "IF NOT EXISTS " + sub[3]
+	})
+}
+
+// rewriteCollateClause maps PostgreSQL collation names to SQLite equivalents.
+// SQLite supports BINARY, NOCASE, RTRIM. Unknown collations are stripped.
+func rewriteCollateClause(sql string) string {
+	if !strings.Contains(strings.ToLower(sql), "collate") {
+		return sql
+	}
+	return collateClauseRE.ReplaceAllStringFunc(sql, func(m string) string {
+		sub := collateClauseRE.FindStringSubmatch(m)
+		name := sub[1]
+		if name == "" {
+			name = sub[2]
+		}
+		nameLower := strings.ToLower(name)
+		switch {
+		case nameLower == "c" || nameLower == "posix" || nameLower == "binary":
+			return "COLLATE BINARY"
+		case strings.HasPrefix(nameLower, "en") || strings.HasPrefix(nameLower, "nocase"):
+			return "COLLATE NOCASE"
+		default:
+			return "" // strip unknown collations
+		}
+	})
 }
 
 // rewriteIndexInclude strips INCLUDE (col1, col2) from CREATE INDEX statements.

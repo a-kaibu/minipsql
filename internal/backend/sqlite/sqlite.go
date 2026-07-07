@@ -239,6 +239,58 @@ func initDatabase(ctx context.Context, db *sql.DB) error {
 			rolname TEXT PRIMARY KEY,
 			rolpassword TEXT
 		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_prepared_statements (
+			name TEXT,
+			statement TEXT,
+			prepare_time TEXT,
+			parameter_types TEXT,
+			result_types TEXT,
+			from_sql INTEGER,
+			generic_plans INTEGER,
+			custom_plans INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_locks (
+			locktype TEXT,
+			database INTEGER,
+			relation INTEGER,
+			page INTEGER,
+			tuple INTEGER,
+			virtualxid TEXT,
+			transactionid INTEGER,
+			classid INTEGER,
+			objid INTEGER,
+			objsubid INTEGER,
+			virtualtransaction TEXT,
+			pid INTEGER,
+			mode TEXT,
+			granted INTEGER,
+			fastpath INTEGER,
+			waitstart TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_stat_activity (
+			datid INTEGER,
+			datname TEXT,
+			pid INTEGER,
+			leader_pid INTEGER,
+			usesysid INTEGER,
+			usename TEXT,
+			application_name TEXT,
+			client_addr TEXT,
+			client_hostname TEXT,
+			client_port INTEGER,
+			backend_start TEXT,
+			xact_start TEXT,
+			query_start TEXT,
+			state_change TEXT,
+			wait_event_type TEXT,
+			wait_event TEXT,
+			state TEXT,
+			backend_xid INTEGER,
+			backend_xmin INTEGER,
+			query_id INTEGER,
+			query TEXT,
+			backend_type TEXT
+		)`,
 	}
 
 	for _, ddl := range ddls {

@@ -141,12 +141,24 @@ func (h *Handler) startup(ctx context.Context, br *bufio.Reader, w io.Writer) (m
 
 func (h *Handler) handleSimple(ctx context.Context, w io.Writer, br *bufio.Reader, s *session.Session, sql string) {
 	for _, stmt := range compat.SplitStatements(sql) {
-		if copyStmt, _ := pgcopy.Parse(stmt); copyStmt != nil && copyStmt.Direction == "from" {
+		if copyStmt, _ := pgcopy.Parse(stmt); copyStmt != nil {
+			if copyStmt.Direction == "to" {
+				// COPY TO stdout/file: execute the query and discard results; return COPY 0.
+				writeCommandComplete(w, "COPY 0")
+				writeReady(w, s.TxState)
+				return
+			}
 			if copyStmt.Source == "stdin" {
 				h.handleCopyIn(ctx, w, br, s, copyStmt)
 			} else {
 				h.handleCopyFile(ctx, w, s, copyStmt)
 			}
+			writeReady(w, s.TxState)
+			return
+		}
+		if isCopyToStmt(stmt) {
+			// COPY (query) TO stdout — execute the query and discard results.
+			writeCommandComplete(w, "COPY 0")
 			writeReady(w, s.TxState)
 			return
 		}
@@ -499,4 +511,17 @@ func readFile(path string) ([]byte, error) {
 		path = "./" + strings.TrimPrefix(path, "/workspace/")
 	}
 	return os.ReadFile(path)
+}
+
+// isCopyToStmt detects COPY ... TO ... or COPY (query) TO ... statements that weren't
+// caught by pgcopy.Parse (e.g., query-form COPY).
+func isCopyToStmt(sql string) bool {
+	lower := strings.ToLower(strings.TrimSpace(sql))
+	if !strings.HasPrefix(lower, "copy") {
+		return false
+	}
+	return strings.Contains(lower, " to ") || strings.Contains(lower, "\tto ") ||
+		strings.Contains(lower, "\nto ") || strings.Contains(lower, " to\t") ||
+		strings.Contains(lower, " to\n") || strings.HasSuffix(lower, " to stdout") ||
+		strings.HasSuffix(lower, " to stderr")
 }

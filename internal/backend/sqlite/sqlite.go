@@ -59,7 +59,25 @@ func initDatabase(ctx context.Context, db *sql.DB) error {
 			typdelim TEXT,
 			typrelid INTEGER,
 			typelem INTEGER,
-			typarray INTEGER
+			typarray INTEGER,
+			typalign TEXT DEFAULT 'i',
+			typstorage TEXT DEFAULT 'p',
+			typnotnull INTEGER DEFAULT 0,
+			typbasetype INTEGER DEFAULT 0,
+			typtypmod INTEGER DEFAULT -1,
+			typndims INTEGER DEFAULT 0,
+			typcollation INTEGER DEFAULT 0,
+			typdefaultbin TEXT,
+			typacl TEXT,
+			typdefault TEXT,
+			typinput TEXT DEFAULT '-',
+			typoutput TEXT DEFAULT '-',
+			typreceive TEXT DEFAULT '-',
+			typsend TEXT DEFAULT '-',
+			typmodin TEXT DEFAULT '-',
+			typmodout TEXT DEFAULT '-',
+			typanalyze TEXT DEFAULT '-',
+			typsubscript TEXT DEFAULT '-'
 		)`,
 		`CREATE TABLE IF NOT EXISTS main.pg_index (
 			indexrelid INTEGER PRIMARY KEY,
@@ -236,8 +254,18 @@ func initDatabase(ctx context.Context, db *sql.DB) error {
 			colliculocale TEXT
 		)`,
 		`CREATE TABLE IF NOT EXISTS main.pg_authid (
+			oid INTEGER,
 			rolname TEXT PRIMARY KEY,
-			rolpassword TEXT
+			rolsuper INTEGER DEFAULT 0,
+			rolinherit INTEGER DEFAULT 1,
+			rolcreaterole INTEGER DEFAULT 0,
+			rolcreatedb INTEGER DEFAULT 0,
+			rolcanlogin INTEGER DEFAULT 1,
+			rolreplication INTEGER DEFAULT 0,
+			rolbypassrls INTEGER DEFAULT 0,
+			rolconnlimit INTEGER DEFAULT -1,
+			rolpassword TEXT,
+			rolvaliduntil TEXT
 		)`,
 		`CREATE TABLE IF NOT EXISTS main.pg_prepared_statements (
 			name TEXT,

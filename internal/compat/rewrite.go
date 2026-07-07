@@ -2656,7 +2656,7 @@ func rewriteUnnest(sql string) string {
 		// Scan for optional WITH ORDINALITY, AS alias[(col)] after the closing paren
 		after := end + 1
 		rawAfter := after // position before skipping whitespace — used as aliasEnd when no alias found
-		for after < len(sql) && (sql[after] == ' ' || sql[after] == '\t') {
+		for after < len(sql) && (sql[after] == ' ' || sql[after] == '\t' || sql[after] == '\n' || sql[after] == '\r') {
 			after++
 		}
 		withOrdinality := false
@@ -2667,15 +2667,17 @@ func rewriteUnnest(sql string) string {
 		if after+15 <= len(sql) && strings.EqualFold(sql[after:after+15], "with ordinality") {
 			withOrdinality = true
 			aliasEnd = after + 15
-			for aliasEnd < len(sql) && (sql[aliasEnd] == ' ' || sql[aliasEnd] == '\t') {
+			for aliasEnd < len(sql) && (sql[aliasEnd] == ' ' || sql[aliasEnd] == '\t' || sql[aliasEnd] == '\n' || sql[aliasEnd] == '\r') {
 				aliasEnd++
 			}
 			after = aliasEnd
 		}
 		// Parse AS alias or bare alias
-		if after < len(sql) && strings.EqualFold(sql[after:min(after+3, len(sql))], "as ") {
-			aliasEnd = after + 3
-			for aliasEnd < len(sql) && (sql[aliasEnd] == ' ' || sql[aliasEnd] == '\t') {
+		asKeyword := after+2 <= len(sql) && strings.EqualFold(sql[after:after+2], "as") &&
+			(after+2 >= len(sql) || sql[after+2] == ' ' || sql[after+2] == '\t' || sql[after+2] == '\n' || sql[after+2] == '\r')
+		if after < len(sql) && asKeyword {
+			aliasEnd = after + 2
+			for aliasEnd < len(sql) && (sql[aliasEnd] == ' ' || sql[aliasEnd] == '\t' || sql[aliasEnd] == '\n' || sql[aliasEnd] == '\r') {
 				aliasEnd++
 			}
 			aliasStart := aliasEnd

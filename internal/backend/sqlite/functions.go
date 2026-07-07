@@ -183,7 +183,9 @@ func init() {
 	sqlite.MustRegisterDeterministicScalarFunction("num_nonnulls", -1, numNonnullsFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("num_nulls", -1, numNullsFunc)
 	sqlite.MustRegisterScalarFunction("gen_random_uuid", 0, genRandomUUIDFunc)
-	sqlite.MustRegisterScalarFunction("random", 0, pgRandomFunc)
+	sqlite.MustRegisterScalarFunction("random", -1, pgRandomDispatchFunc)
+	sqlite.MustRegisterScalarFunction("random_normal", -1, pgRandomNormalDispatchFunc)
+	sqlite.MustRegisterScalarFunction("setseed", 1, pgSetseedFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("normalize", -1, normalizeFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("is_normalized", -1, isNormalizedFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("unicode_version", 0, unicodeVersionFunc)
@@ -3304,6 +3306,127 @@ func pgRandomFunc(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, er
 	n := uint64(b[0]) | uint64(b[1])<<8 | uint64(b[2])<<16 | uint64(b[3])<<24 |
 		uint64(b[4])<<32 | uint64(b[5])<<40 | uint64(b[6])<<48 | uint64(b[7])<<56
 	return float64(n) / float64(1<<64), nil
+}
+
+// pgRandomDispatchFunc dispatches random() and random(min, max).
+func pgRandomDispatchFunc(ctx *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) == 0 {
+		return pgRandomFunc(ctx, args)
+	}
+	if len(args) == 2 {
+		return pgRandomRangeFunc(ctx, args)
+	}
+	return nil, fmt.Errorf("wrong number of arguments to function random()")
+}
+
+// pgRandomNormalDispatchFunc dispatches random_normal() and random_normal(mean, stddev).
+func pgRandomNormalDispatchFunc(ctx *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) == 0 {
+		return pgRandomNormalFunc(ctx, args)
+	}
+	if len(args) == 2 {
+		return pgRandomNormalParamsFunc(ctx, args)
+	}
+	return nil, fmt.Errorf("wrong number of arguments to function random_normal()")
+}
+
+// driverValueToFloat converts a driver.Value to float64.
+func driverValueToFloat(v driver.Value) (float64, error) {
+	switch x := v.(type) {
+	case float64:
+		return x, nil
+	case int64:
+		return float64(x), nil
+	case string:
+		f, err := strconv.ParseFloat(x, 64)
+		if err != nil {
+			return 0, fmt.Errorf("cannot convert %q to float", x)
+		}
+		return f, nil
+	case nil:
+		return 0, fmt.Errorf("cannot convert NULL to float")
+	default:
+		f, err := strconv.ParseFloat(fmt.Sprint(x), 64)
+		if err != nil {
+			return 0, fmt.Errorf("cannot convert %v to float", v)
+		}
+		return f, nil
+	}
+}
+
+// pgRandomRangeFunc implements random(min, max) — returns a uniform random value in [min, max].
+func pgRandomRangeFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	lo, err := driverValueToFloat(args[0])
+	if err != nil {
+		return nil, fmt.Errorf("invalid argument for random(min,max): %v", err)
+	}
+	hi, err := driverValueToFloat(args[1])
+	if err != nil {
+		return nil, fmt.Errorf("invalid argument for random(min,max): %v", err)
+	}
+	if math.IsNaN(lo) || math.IsNaN(hi) || math.IsInf(lo, 0) || math.IsInf(hi, 0) {
+		return nil, fmt.Errorf("random range bounds must be finite")
+	}
+	if lo > hi {
+		return nil, fmt.Errorf("lower bound must be less than or equal to upper bound")
+	}
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return nil, err
+	}
+	n := uint64(b[0]) | uint64(b[1])<<8 | uint64(b[2])<<16 | uint64(b[3])<<24 |
+		uint64(b[4])<<32 | uint64(b[5])<<40 | uint64(b[6])<<48 | uint64(b[7])<<56
+	r := float64(n) / float64(1<<64)
+	_, loIsInt := args[0].(int64)
+	_, hiIsInt := args[1].(int64)
+	if loIsInt && hiIsInt {
+		return lo + math.Floor(r*(hi-lo+1)), nil
+	}
+	return lo + r*(hi-lo), nil
+}
+
+// pgRandomNormalBoxMuller returns a standard normal random variable using Box-Muller.
+func pgRandomNormalBoxMuller() (float64, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return 0, err
+	}
+	u1f := (float64(uint64(b[0])|uint64(b[1])<<8|uint64(b[2])<<16|uint64(b[3])<<24|
+		uint64(b[4])<<32|uint64(b[5])<<40|uint64(b[6])<<48|uint64(b[7])<<56) + 1) / float64(1<<64)
+	u2f := float64(uint64(b[8])|uint64(b[9])<<8|uint64(b[10])<<16|uint64(b[11])<<24|
+		uint64(b[12])<<32|uint64(b[13])<<40|uint64(b[14])<<48|uint64(b[15])<<56) / float64(1<<64)
+	return math.Sqrt(-2.0*math.Log(u1f)) * math.Cos(2.0*math.Pi*u2f), nil
+}
+
+// pgRandomNormalFunc implements random_normal() — standard normal random.
+func pgRandomNormalFunc(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
+	z, err := pgRandomNormalBoxMuller()
+	if err != nil {
+		return nil, err
+	}
+	return z, nil
+}
+
+// pgRandomNormalParamsFunc implements random_normal(mean, stddev).
+func pgRandomNormalParamsFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	mean, err := driverValueToFloat(args[0])
+	if err != nil {
+		return nil, fmt.Errorf("invalid mean for random_normal: %v", err)
+	}
+	stddev, err := driverValueToFloat(args[1])
+	if err != nil {
+		return nil, fmt.Errorf("invalid stddev for random_normal: %v", err)
+	}
+	z, err := pgRandomNormalBoxMuller()
+	if err != nil {
+		return nil, err
+	}
+	return mean + stddev*z, nil
+}
+
+// pgSetseedFunc implements setseed(seed) — no-op in SQLite context.
+func pgSetseedFunc(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
+	return nil, nil
 }
 
 func genRandomUUIDFunc(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {

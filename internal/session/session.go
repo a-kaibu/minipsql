@@ -117,10 +117,8 @@ func (s *Session) Execute(ctx context.Context, sql string, args []backend.Value)
 			s.txCatalogUndos = nil
 			return nil, &backend.CommandTag{Tag: "COMMIT"}, nil
 		case "rollback":
-			if err := s.Backend.Rollback(ctx); err != nil {
-				s.TxState = TxFailed
-				return nil, nil, err
-			}
+			// PostgreSQL silently ignores ROLLBACK outside a transaction; minipsql does the same.
+			_ = s.Backend.Rollback(ctx)
 			s.TxState = TxIdle
 			for i := len(s.txCatalogUndos) - 1; i >= 0; i-- {
 				s.txCatalogUndos[i]()

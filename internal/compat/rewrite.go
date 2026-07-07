@@ -36,6 +36,7 @@ var (
 	asNullRE           = regexp.MustCompile(`(?i)\bAS\s+null\b`)
 	tableColumnAliasRE = regexp.MustCompile(`(?i)\b(int2_tbl|int4_tbl|int8_tbl)\b\s*\)?\s*(?:AS\s+)?([A-Za-z0-9_]+)\s*\(\s*([A-Za-z0-9_, ]+)\s*\)`)
 	tableKeywordRE     = regexp.MustCompile(`(?i)(^|[^a-zA-Z0-9_.])(?:([a-zA-Z0-9_]+)\s+)?\bTABLE\s+([A-Za-z0-9_]+)\b`)
+	arrayConstructorRE = regexp.MustCompile(`(?i)\bARRAY\s*\[(.*?)\]`)
 )
 
 var idxCounter atomic.Int64
@@ -62,6 +63,7 @@ func Rewrite(sql string) string {
 		return res
 	})
 	out = rewriteTableColumnAlias(out)
+	out = arrayConstructorRE.ReplaceAllString(out, "minipsql_array($1)")
 	out = rewriteStringContinuation(out)
 	out = rewriteDollarQuotes(out)
 	out = rewriteRegexFunctions(out)

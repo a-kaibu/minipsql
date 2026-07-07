@@ -93,6 +93,9 @@ func init() {
 	sqlite.MustRegisterDeterministicScalarFunction("boolne", 2, boolneFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("gcd", 2, gcdFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("lcm", 2, lcmFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("makeaclitem", 4, makeaclitemFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("array_fill", -1, arrayFillFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("minipsql_array", -1, minipsqlArrayFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("right", 2, rightFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("rpad", -1, rpadFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("translate", 3, translateFunc)
@@ -2452,6 +2455,90 @@ func lcmFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, erro
 
 	return z.Int64(), nil
 }
+
+func quoteACLName(name string) string {
+	if strings.Contains(name, `"`) {
+		return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+	}
+	return name
+}
+
+func makeaclitemFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 4 {
+		return nil, fmt.Errorf("makeaclitem requires 4 arguments")
+	}
+	if args[0] == nil || args[1] == nil || args[2] == nil || args[3] == nil {
+		return nil, nil
+	}
+	grantee := valueString(args[0])
+	grantor := valueString(args[1])
+	privsStr := valueString(args[2])
+	isGrantable := valueInt(args[3]) != 0
+
+	var chars strings.Builder
+	parts := strings.Split(privsStr, ",")
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		switch strings.ToUpper(p) {
+		case "SELECT":
+			chars.WriteByte('r')
+		case "INSERT":
+			chars.WriteByte('a')
+		case "UPDATE":
+			chars.WriteByte('w')
+		case "DELETE":
+			chars.WriteByte('d')
+		case "USAGE":
+			chars.WriteByte('U')
+		case "TRUNCATE":
+			chars.WriteByte('D')
+		case "REFERENCES":
+			chars.WriteByte('x')
+		case "TRIGGER":
+			chars.WriteByte('t')
+		default:
+			return nil, &compat.PGError{
+				Code:    "22023",
+				Message: fmt.Sprintf("unrecognized privilege type: %q", p),
+			}
+		}
+	}
+
+	privPart := chars.String()
+	if isGrantable {
+		privPart += "*"
+	}
+
+	res := fmt.Sprintf("%s=%s/%s", quoteACLName(grantee), privPart, quoteACLName(grantor))
+	return res, nil
+}
+
+func arrayFillFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) < 1 {
+		return nil, fmt.Errorf("array_fill requires at least 1 argument")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	val := valueString(args[0])
+	return "{" + val + "}", nil
+}
+
+func minipsqlArrayFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	var parts []string
+	for _, arg := range args {
+		if arg == nil {
+			parts = append(parts, "NULL")
+		} else {
+			parts = append(parts, valueString(arg))
+		}
+	}
+	return "{" + strings.Join(parts, ",") + "}", nil
+}
+
 
 
 

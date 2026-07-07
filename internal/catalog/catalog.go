@@ -139,6 +139,24 @@ func (c *Catalog) CreateDatabase(ctx context.Context, name string) error {
 	return c.createDB(ctx, name)
 }
 
+// RenameDatabase renames a database.
+func (c *Catalog) RenameDatabase(ctx context.Context, oldName, newName string) error {
+	oldName = strings.ToLower(oldName)
+	newName = strings.ToLower(newName)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.dbs[oldName]
+	if !ok || e.dropped {
+		return &compat.PGError{Code: "3D000", Message: "database \"" + oldName + "\" does not exist"}
+	}
+	if dup, ok := c.dbs[newName]; ok && !dup.dropped {
+		return &compat.PGError{Code: "42P04", Message: "database \"" + newName + "\" already exists"}
+	}
+	delete(c.dbs, oldName)
+	c.dbs[newName] = e
+	return nil
+}
+
 // DropDatabase marks a database as dropped.
 // Returns error 42501 for "default", error 3D000 if it does not exist.
 // The entry stays in the map until all active connections disconnect so that

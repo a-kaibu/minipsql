@@ -21,6 +21,7 @@ const (
 // CatalogOperations is implemented by catalog.Catalog; defined here to avoid import cycles.
 type CatalogOperations interface {
 	CreateDatabase(ctx context.Context, name string) error
+	RenameDatabase(ctx context.Context, oldName, newName string) error
 	DropDatabase(ctx context.Context, name string) error
 }
 
@@ -36,6 +37,7 @@ type Session struct {
 
 	PreparedStatements map[string]*PreparedStatement
 	Portals            map[string]*Portal
+	txCatalogUndos     []func()
 }
 
 type PreparedStatement struct {
@@ -97,6 +99,7 @@ func (s *Session) Execute(ctx context.Context, sql string, args []backend.Value)
 				return nil, nil, err
 			}
 			s.TxState = TxIdle
+			s.txCatalogUndos = nil
 			return nil, &backend.CommandTag{Tag: "COMMIT"}, nil
 		case "rollback":
 			if err := s.Backend.Rollback(ctx); err != nil {
@@ -104,6 +107,10 @@ func (s *Session) Execute(ctx context.Context, sql string, args []backend.Value)
 				return nil, nil, err
 			}
 			s.TxState = TxIdle
+			for i := len(s.txCatalogUndos) - 1; i >= 0; i-- {
+				s.txCatalogUndos[i]()
+			}
+			s.txCatalogUndos = nil
 			return nil, &backend.CommandTag{Tag: "ROLLBACK"}, nil
 		}
 	}
@@ -166,12 +173,6 @@ func checkUnsupportedDDL(sql string) error {
 		{"create foreign", "CREATE FOREIGN is not supported"},
 		{"alter foreign", "ALTER FOREIGN is not supported"},
 		{"drop foreign", "DROP FOREIGN is not supported"},
-		{"create role", "CREATE ROLE is not supported"},
-		{"alter role", "ALTER ROLE is not supported"},
-		{"drop role", "DROP ROLE is not supported"},
-		{"create user", "CREATE USER is not supported"},
-		{"alter user", "ALTER USER is not supported"},
-		{"drop user", "DROP USER is not supported"},
 		{"create domain", "CREATE DOMAIN is not supported"},
 		{"alter domain", "ALTER DOMAIN is not supported"},
 		{"drop domain", "DROP DOMAIN is not supported"},
@@ -283,6 +284,14 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 		return &backend.CommandTag{Tag: "REINDEX"}, true
 	case strings.HasPrefix(lower, "checkpoint"):
 		return &backend.CommandTag{Tag: "CHECKPOINT"}, true
+	case strings.HasPrefix(lower, "create role") || strings.HasPrefix(lower, "create user"):
+		return &backend.CommandTag{Tag: "CREATE ROLE"}, true
+	case strings.HasPrefix(lower, "alter role") || strings.HasPrefix(lower, "alter user"):
+		return &backend.CommandTag{Tag: "ALTER ROLE"}, true
+	case strings.HasPrefix(lower, "drop role") || strings.HasPrefix(lower, "drop user"):
+		return &backend.CommandTag{Tag: "DROP ROLE"}, true
+	case strings.HasPrefix(lower, "reassign owned"):
+		return &backend.CommandTag{Tag: "REASSIGN OWNED"}, true
 	}
 
 	return nil, false
@@ -317,6 +326,11 @@ func (s *Session) tryDatabaseCommand(ctx context.Context, sql string) (*backend.
 			}
 			return nil, err
 		}
+		if s.TxState == TxInTx {
+			s.txCatalogUndos = append(s.txCatalogUndos, func() {
+				_ = s.Catalog.DropDatabase(ctx, name)
+			})
+		}
 		return &backend.CommandTag{Tag: "CREATE DATABASE"}, nil
 	}
 
@@ -341,6 +355,36 @@ func (s *Session) tryDatabaseCommand(ctx context.Context, sql string) (*backend.
 			return nil, err
 		}
 		return &backend.CommandTag{Tag: "DROP DATABASE"}, nil
+	}
+
+	if strings.HasPrefix(lower, "alter database ") {
+		rest := q[len("alter database "):]
+		name := parseDatabaseName(rest)
+		
+		restLower := strings.ToLower(strings.TrimSpace(rest))
+		if len(restLower) > len(name) {
+			restLower = strings.TrimSpace(restLower[len(name):])
+		}
+		
+		if strings.HasPrefix(restLower, "rename to ") {
+			newNamePart := restLower[len("rename to "):]
+			newName := parseDatabaseName(newNamePart)
+			if s.Catalog == nil {
+				return &backend.CommandTag{Tag: "ALTER DATABASE"}, nil
+			}
+			err := s.Catalog.RenameDatabase(ctx, name, newName)
+			if err != nil {
+				return nil, err
+			}
+			if s.TxState == TxInTx {
+				s.txCatalogUndos = append(s.txCatalogUndos, func() {
+					_ = s.Catalog.RenameDatabase(ctx, newName, name)
+				})
+			}
+			return &backend.CommandTag{Tag: "ALTER DATABASE"}, nil
+		}
+		
+		return &backend.CommandTag{Tag: "ALTER DATABASE"}, nil
 	}
 
 	return nil, nil

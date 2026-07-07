@@ -315,6 +315,7 @@ func TestRewriteUnicodeLiterals(t *testing.T) {
 		"SELECT * FROM (VALUES (-2.5::float8), (1.5::float8)) t(x)":      "SELECT * FROM ((SELECT -CAST(2.5 AS real) AS x UNION ALL SELECT CAST(1.5 AS real)) t)",
 		"SELECT * FROM INT2_TBL AS f(a, b)":                              "SELECT * FROM (SELECT minipsql_error('table \"f\" has 1 columns available but 2 columns specified', '42601', '') FROM INT2_TBL) f",
 		"SELECT * FROM (TABLE int2_tbl) AS s(a, b)":                      "SELECT * FROM (SELECT * FROM (SELECT minipsql_error('table \"s\" has 1 columns available but 2 columns specified', '42601', '') FROM int2_tbl) s)",
+		"SELECT ARRAY[1, 2, 3]":                                          "SELECT minipsql_array(1, 2, 3)",
 	}
 	for sql, want := range cases {
 		t.Run(sql, func(t *testing.T) {

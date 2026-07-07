@@ -221,6 +221,19 @@ func init() {
 	sqlite.MustRegisterDeterministicScalarFunction("pg_size_bytes", 1, pgSizeBytesFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("xid8cmp", 2, xid8cmpFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("pg_column_compression", 1, pgColumnCompressionFunc)
+	// Register "regexp" so SQLite's REGEXP operator works: "text REGEXP pattern" calls regexp(pattern, text)
+	sqlite.MustRegisterDeterministicScalarFunction("regexp", 2, sqliteRegexpFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_get_viewdef", -1, pgGetViewdefFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("has_table_privilege", -1, hasTablePrivilegeFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("has_column_privilege", -1, hasColumnPrivilegeFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("has_schema_privilege", -1, hasSchemaPrivilegeFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("has_function_privilege", -1, hasSchemaPrivilegeFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("has_any_column_privilege", -1, hasSchemaPrivilegeFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("has_sequence_privilege", -1, hasSchemaPrivilegeFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("has_type_privilege", -1, hasSchemaPrivilegeFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("has_language_privilege", -1, hasSchemaPrivilegeFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("has_tablespace_privilege", -1, hasSchemaPrivilegeFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("pg_has_role", -1, hasSchemaPrivilegeFunc)
 }
 
 func asciiFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
@@ -4234,6 +4247,44 @@ func pgColumnCompressionFunc(_ *sqlite.FunctionContext, args []driver.Value) (dr
 	}
 	// SQLite has no compression; always return NULL
 	return nil, nil
+}
+
+// sqliteRegexpFunc enables SQLite's REGEXP operator: "text REGEXP pattern" calls regexp(pattern, text)
+func sqliteRegexpFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 2 {
+		return nil, fmt.Errorf("regexp requires 2 arguments")
+	}
+	if args[0] == nil || args[1] == nil {
+		return nil, nil
+	}
+	pattern := valueString(args[0])
+	text := valueString(args[1])
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("invalid regexp: %s", err)
+	}
+	return re.MatchString(text), nil
+}
+
+func pgGetViewdefFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) < 1 {
+		return nil, fmt.Errorf("pg_get_viewdef requires at least 1 argument")
+	}
+	// Return empty string; we don't track view definitions
+	return "", nil
+}
+
+// hasTablePrivilegeFunc always returns true (permissive mode)
+func hasTablePrivilegeFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	return int64(1), nil
+}
+
+func hasColumnPrivilegeFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	return int64(1), nil
+}
+
+func hasSchemaPrivilegeFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	return int64(1), nil
 }
 
 

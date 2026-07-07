@@ -53,6 +53,8 @@ var (
 	bareOffsetRE       = regexp.MustCompile(`(?i)\bOFFSET\s+(\d+)(?:\s+ROWS?)?(?:\s*[;)\s]|$)`)
 	offsetBeforeLimitRE = regexp.MustCompile(`(?i)\bOFFSET\s+(\S+)\s+LIMIT\s+(\S+)`)
 	dropCascadeRE       = regexp.MustCompile(`(?i)^(\s*DROP\s+(?:VIEW|INDEX|SCHEMA|SEQUENCE|FUNCTION|PROCEDURE|AGGREGATE|TYPE|DOMAIN|OPERATOR|RULE|TRIGGER|CAST|COLLATION|CONVERSION|STATISTICS|LANGUAGE|POLICY|EXTENSION|ACCESS\s+METHOD|OPERATOR\s+CLASS|OPERATOR\s+FAMILY|FOREIGN\s+(?:TABLE|DATA\s+WRAPPER|SERVER))\s+(?:IF\s+EXISTS\s+)?(?:[A-Za-z0-9_".,\s]+?))(\s+(?:CASCADE|RESTRICT))(\s*;?\s*)$`)
+	pgCatalogOperatorRE  = regexp.MustCompile(`(?i)\bOPERATOR\s*\(\s*(?:pg_catalog\s*\.\s*)?(~\*?|=|<>|!=|<|>|<=|>=|\|\|)\s*\)`)
+	pgCatalogCollateRE   = regexp.MustCompile(`(?i)\s+COLLATE\s+(?:pg_catalog\.[A-Za-z0-9_]+|"pg_catalog"\.[A-Za-z0-9_]+|[A-Za-z0-9_".-]+\.[A-Za-z0-9_"]+)`)
 	partitionByClauseRE = regexp.MustCompile(`(?i)\s+PARTITION\s+BY\s+(?:RANGE|LIST|HASH)\s*\([^)]*\)`)
 	partitionOfRE       = regexp.MustCompile(`(?i)^\s*CREATE\s+TABLE\s+\S+\s+PARTITION\s+OF\s+`)
 	attachPartitionRE   = regexp.MustCompile(`(?i)\bATTACH\s+PARTITION\b`)
@@ -84,6 +86,7 @@ func Rewrite(sql string) string {
 	out = rewriteLateral(out)
 	out = rewriteTablesample(out)
 	out = rewriteExtract(out)
+	out = pgCatalogCollateRE.ReplaceAllString(out, "")
 	out = rewriteSchemaPrefix(out)
 	out = rewriteViewOptions(out)
 	out = rewriteTableWithOptions(out)
@@ -91,6 +94,7 @@ func Rewrite(sql string) string {
 	out = rewriteCreateTableColList(out)
 	out = rewriteWithOrdinality(out)
 	out = rewriteDropCascade(out)
+	out = rewritePGCatalogOperator(out)
 	out = rewritePartitionBy(out)
 	out = rewriteOffsetBeforeLimit(out)
 	out = rewriteBareOffset(out)
@@ -2351,6 +2355,44 @@ func rewriteCreateTableColList(sql string) string {
 // rewriteWithOrdinality strips WITH ORDINALITY (not supported by SQLite).
 func rewriteWithOrdinality(sql string) string {
 	return withOrdinalityRE.ReplaceAllString(sql, "")
+}
+
+// rewritePGCatalogOperator rewrites OPERATOR(pg_catalog.op) to the bare operator for SQLite compatibility.
+// e.g. OPERATOR(pg_catalog.~) -> REGEXP, OPERATOR(pg_catalog.=) -> =
+func rewritePGCatalogOperator(sql string) string {
+	lower := strings.ToLower(sql)
+	if !strings.Contains(lower, "operator") {
+		return sql
+	}
+	return pgCatalogOperatorRE.ReplaceAllStringFunc(sql, func(m string) string {
+		sub := pgCatalogOperatorRE.FindStringSubmatch(m)
+		if len(sub) < 2 {
+			return m
+		}
+		op := sub[1]
+		switch op {
+		case "~":
+			return "REGEXP"
+		case "~*":
+			return "REGEXP" // case-insensitive, approximate
+		case "=":
+			return "="
+		case "<>", "!=":
+			return "!="
+		case "<":
+			return "<"
+		case ">":
+			return ">"
+		case "<=":
+			return "<="
+		case ">=":
+			return ">="
+		case "||":
+			return "||"
+		default:
+			return op
+		}
+	})
 }
 
 // rewriteDropCascade strips CASCADE/RESTRICT from DROP statements that SQLite doesn't support.

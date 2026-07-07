@@ -102,6 +102,11 @@ func (s *Session) Execute(ctx context.Context, sql string, args []backend.Value)
 	if tx := compat.TxCommand(sql); tx != "" {
 		switch tx {
 		case "begin":
+			if s.TxState == TxInTx {
+				// PostgreSQL issues a WARNING but continues when BEGIN is called inside a transaction.
+				s.TxState = TxInTx
+				return nil, &backend.CommandTag{Tag: "BEGIN"}, nil
+			}
 			if err := s.Backend.Begin(ctx); err != nil {
 				s.TxState = TxFailed
 				return nil, nil, err
@@ -358,6 +363,8 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 		return &backend.CommandTag{Tag: "LOAD"}, true
 	case lower == "do" || strings.HasPrefix(lower, "do "):
 		return &backend.CommandTag{Tag: "DO"}, true
+	case strings.HasPrefix(lower, "call "):
+		return &backend.CommandTag{Tag: "CALL"}, true
 	case strings.HasPrefix(lower, "explain "):
 		return &backend.CommandTag{Tag: "EXPLAIN"}, true
 	case strings.HasPrefix(lower, "discard "):

@@ -889,6 +889,7 @@ func SplitStatements(sql string) []string {
 	inSingle := false
 	inLineComment := false
 	blockDepth := 0
+	parenDepth := 0
 	dollarTag := ""
 	for i := 0; i < len(sql); i++ {
 		if inLineComment {
@@ -961,7 +962,13 @@ func SplitStatements(sql string) []string {
 			continue
 		}
 
-		if sql[i] == ';' {
+		if sql[i] == '(' {
+			parenDepth++
+		} else if sql[i] == ')' {
+			parenDepth--
+		}
+
+		if sql[i] == ';' && parenDepth == 0 {
 			if s := strings.TrimSpace(b.String()); s != "" {
 				stmts = append(stmts, s)
 			}

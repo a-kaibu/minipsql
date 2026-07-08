@@ -3500,8 +3500,41 @@ func driverValueToFloat(v driver.Value) (float64, error) {
 	}
 }
 
+// driverValueToEpoch converts a driver.Value to a Unix epoch (float64).
+// Handles numeric types and timestamp/date strings.
+func driverValueToEpoch(v driver.Value) (float64, bool) {
+	if t, ok := parseTimestamp(v); ok {
+		return float64(t.UnixNano()) / 1e9, true
+	}
+	return 0, false
+}
+
 // pgRandomRangeFunc implements random(min, max) — returns a uniform random value in [min, max].
+// Supports numeric and timestamp/date types.
 func pgRandomRangeFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	// Check if arguments are timestamp/date types
+	loEpoch, loIsTS := driverValueToEpoch(args[0])
+	hiEpoch, hiIsTS := driverValueToEpoch(args[1])
+	if loIsTS && hiIsTS {
+		if loEpoch > hiEpoch {
+			return nil, fmt.Errorf("lower bound must be less than or equal to upper bound")
+		}
+		var b [8]byte
+		if _, err := rand.Read(b[:]); err != nil {
+			return nil, err
+		}
+		n := uint64(b[0]) | uint64(b[1])<<8 | uint64(b[2])<<16 | uint64(b[3])<<24 |
+			uint64(b[4])<<32 | uint64(b[5])<<40 | uint64(b[6])<<48 | uint64(b[7])<<56
+		r := float64(n) / float64(1<<64)
+		// Return as epoch value (float64 seconds)
+		// For dates (floor to day), the result should be a date; for timestamps it's a timestamp.
+		// We return the epoch float and PostgreSQL can cast it back.
+		epochResult := loEpoch + r*(hiEpoch-loEpoch)
+		// Format as timestamp string so the caller can display it
+		resultTime := time.Unix(int64(epochResult), int64((epochResult-float64(int64(epochResult)))*1e9)).UTC()
+		return resultTime.Format("2006-01-02 15:04:05.999999"), nil
+	}
+
 	lo, err := driverValueToFloat(args[0])
 	if err != nil {
 		return nil, fmt.Errorf("invalid argument for random(min,max): %v", err)

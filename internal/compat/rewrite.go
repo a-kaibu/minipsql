@@ -20,6 +20,9 @@ var (
 	charLiteralRE      = regexp.MustCompile(`(?i)\bchar\s+('(?:''|[^'])*')`)
 	pgLsnLiteralRE     = regexp.MustCompile(`(?i)\bpg_lsn\s+('(?:''|[^'])*')`)
 	pointLiteralRE     = regexp.MustCompile(`(?i)\bpoint\s+('(?:''|[^'])*')`)
+	// typedLiteralWithArgRE handles PostgreSQL type-with-modifier literals like
+	// char(20) 'text', varchar(50) 'text', character(10) 'text' → 'text'
+	typedLiteralWithArgRE = regexp.MustCompile(`(?i)\b(?:char|varchar|character\s+varying|character)\s*\(\s*\d+\s*\)\s+('(?:''|[^'])*')`)
 	typedLiteralRE     = regexp.MustCompile(`(?i)\b(int2|int4|int8|float4|float8|numeric|decimal|real|double|integer|smallint|bigint|text|varchar|bpchar|char|pg_lsn|point|bit|varbit|date|time|timestamp|timestamptz|interval|macaddr|macaddr8|uuid|regclass|regtype|oid|regproc|regoper|circle|path|line|lseg|polygon|box|cidr|inet|name|txid_snapshot|pg_snapshot|xid|xid8|tid|cid|money|json|jsonb|bytea)\s+('(?:''|[^'])*')`)
 	createIndexUsingRE = regexp.MustCompile(`(?i)(CREATE\s+(?:UNIQUE\s+)?INDEX\b.+?\bON\s+\S+)\s+USING\s+\S+\s*(\()`)
 	ilikeRE            = regexp.MustCompile(`(?i)\bILIKE\b`)
@@ -297,6 +300,10 @@ func Rewrite(sql string) string {
 	out = charLiteralRE.ReplaceAllString(out, "$1")
 	out = pgLsnLiteralRE.ReplaceAllString(out, "$1")
 	out = pointLiteralRE.ReplaceAllString(out, "$1")
+	out = typedLiteralWithArgRE.ReplaceAllStringFunc(out, func(m string) string {
+		sub := typedLiteralWithArgRE.FindStringSubmatch(m)
+		return sub[1] // just the string literal
+	})
 	// rewriteGenerateSeries before typedLiteralRE so INTERVAL 'x' literals are still recognizable.
 	out = rewriteGenerateSeries(out)
 	out = typedLiteralRE.ReplaceAllStringFunc(out, func(m string) string {
@@ -2765,9 +2772,120 @@ func rewriteViewOptions(sql string) string {
 	return createViewWithOptsRE.ReplaceAllString(sql, "$1")
 }
 
-// rewriteTableWithOptions strips WITH (option=value) from CREATE TABLE ... AS SELECT.
+// rewriteTableWithOptions strips WITH (storage_option=value) from CREATE TABLE statements.
+// Uses bracket-aware parsing to correctly handle column definitions that contain
+// type arguments like bit(10) or timestamp(6), which confuse simple regexes.
 func rewriteTableWithOptions(sql string) string {
-	return createTableWithOptsRE.ReplaceAllString(sql, "$1")
+	// Quick check: must contain WITH (
+	lower := strings.ToLower(sql)
+	if !strings.Contains(lower, " with ") && !strings.Contains(lower, "\twith ") {
+		return sql
+	}
+	// Only apply to CREATE TABLE statements
+	trimmed := strings.TrimSpace(lower)
+	if !strings.HasPrefix(trimmed, "create ") {
+		return sql
+	}
+	// Find " WITH (" outside of quotes and balanced parens, then strip to end of that WITH(...)
+	result := stripTrailingStorageWith(sql)
+	return result
+}
+
+// stripTrailingStorageWith removes a trailing WITH (storage_options) clause from
+// CREATE TABLE ... (columns) WITH (opts) or CREATE TABLE ... AS SELECT ... WITH (opts).
+// Handles nested parentheses in column type definitions correctly.
+func stripTrailingStorageWith(sql string) string {
+	n := len(sql)
+	i := 0
+	depth := 0
+	inSingleQuote := false
+	inDoubleQuote := false
+
+	// Track positions of all " WITH (" occurrences at depth 0
+	// A storage WITH is at parenthesis depth 0 (after the column list closing paren).
+	type withPos struct{ start, end int }
+	var candidates []withPos
+
+	for i < n {
+		ch := sql[i]
+		if inSingleQuote {
+			if ch == '\'' {
+				if i+1 < n && sql[i+1] == '\'' {
+					i += 2
+					continue
+				}
+				inSingleQuote = false
+			}
+			i++
+			continue
+		}
+		if inDoubleQuote {
+			if ch == '"' {
+				inDoubleQuote = false
+			}
+			i++
+			continue
+		}
+		switch ch {
+		case '\'':
+			inSingleQuote = true
+		case '"':
+			inDoubleQuote = true
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		default:
+			// Check for WITH ( at depth 0
+			if depth == 0 && (ch == 'W' || ch == 'w') && i+5 < n {
+				sub := sql[i : i+5]
+				if strings.EqualFold(sub, "WITH ") || strings.EqualFold(sub[:4], "WITH") && (sub[4] == ' ' || sub[4] == '\t' || sub[4] == '\n' || sub[4] == '\r') {
+					// Look ahead for '('
+					j := i + 4
+					for j < n && (sql[j] == ' ' || sql[j] == '\t' || sql[j] == '\n' || sql[j] == '\r') {
+						j++
+					}
+					if j < n && sql[j] == '(' {
+						// Check this is not WITH NO DATA or WITH ORDINALITY
+						ahead := strings.TrimSpace(sql[i+4:])
+						if !strings.HasPrefix(strings.ToUpper(ahead), "NO ") && !strings.HasPrefix(strings.ToUpper(ahead), "ORDINALITY") {
+							// Find matching close paren
+							k := j + 1
+							d := 1
+							for k < n && d > 0 {
+								if sql[k] == '(' {
+									d++
+								} else if sql[k] == ')' {
+									d--
+								}
+								k++
+							}
+							if d == 0 {
+								candidates = append(candidates, withPos{i, k})
+							}
+						}
+					}
+				}
+			}
+		}
+		i++
+	}
+
+	if len(candidates) == 0 {
+		return sql
+	}
+	// Only strip the last candidate (the storage WITH at the end)
+	last := candidates[len(candidates)-1]
+	// Make sure it's actually at the end (only trailing whitespace/semicolons after it)
+	after := strings.TrimSpace(sql[last.end:])
+	after = strings.TrimRight(after, ";")
+	after = strings.TrimSpace(after)
+	if after != "" {
+		return sql
+	}
+	return strings.TrimRight(sql[:last.start], " \t\r\n")
 }
 
 // rewriteArrayIndex converts PostgreSQL 1-based array index access to json_extract.

@@ -358,6 +358,7 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 			val := strings.TrimSpace(parts[1])
 			val = strings.Trim(val, "'\"")
 			s.Params[name] = val
+			sqlitebackend.UpdatePGSetting(name, val)
 		}
 		return &backend.CommandTag{Tag: "SET"}, true
 	}
@@ -487,6 +488,8 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 		return &backend.CommandTag{Tag: "ALTER FUNCTION"}, true
 	case strings.HasPrefix(lower, "alter procedure ") || lower == "alter procedure":
 		return &backend.CommandTag{Tag: "ALTER PROCEDURE"}, true
+	case strings.HasPrefix(lower, "create procedure ") || strings.HasPrefix(lower, "create or replace procedure "):
+		return &backend.CommandTag{Tag: "CREATE PROCEDURE"}, true
 	case strings.HasPrefix(lower, "alter default privileges"):
 		return &backend.CommandTag{Tag: "ALTER DEFAULT PRIVILEGES"}, true
 	case strings.HasPrefix(lower, "set session authorization"):

@@ -124,6 +124,8 @@ var (
 	currentTimestampPrecRE = regexp.MustCompile(`(?i)\bcurrent_timestamp\s*\(\s*\d+\s*\)`)
 	// ROW(...) constructor — strip the ROW keyword, keep the parens
 	rowConstructorRE = regexp.MustCompile(`(?i)\bROW\s*\(`)
+	// Window EXCLUDE clause — SQLite does not support EXCLUDE in window frames
+	windowExcludeRE = regexp.MustCompile(`(?i)\s+EXCLUDE\s+(?:NO\s+OTHERS|CURRENT\s+ROW|GROUP|TIES)\b`)
 )
 
 var idxCounter atomic.Int64
@@ -153,6 +155,7 @@ func Rewrite(sql string) string {
 	out = rewriteIndexConcurrently(out)
 	out = rewriteFetchFirst(out)
 	out = rewriteLateral(out)
+	out = windowExcludeRE.ReplaceAllString(out, "")
 	out = rewriteTablesample(out)
 	// SQLite does not support EXCEPT ALL or INTERSECT ALL; strip the ALL modifier.
 	out = regexp.MustCompile(`(?i)\b(EXCEPT|INTERSECT)\s+ALL\b`).ReplaceAllString(out, "$1")
@@ -205,6 +208,7 @@ func Rewrite(sql string) string {
 	out = regexp.MustCompile(`(?i)(CREATE\s+(?:TEMP(?:ORARY)?\s+)?TABLE\s+\S+)\s*\(\s*\)\s*\(LIKE`).
 		ReplaceAllString(out, "$1 (LIKE")
 	out = rewritePartitionBy(out)
+	out = rewriteLimitParens(out)
 	out = rewriteOffsetBeforeLimit(out)
 	out = rewriteBareOffset(out)
 	out = rewriteDropMultiTable(out)
@@ -255,6 +259,7 @@ func Rewrite(sql string) string {
 	})
 	out = rewriteTableColumnAlias(out)
 	out = rewriteGenericTableColAlias(out)
+	out = rewriteUpdateAlias(out)
 	out = arrayConstructorRE.ReplaceAllString(out, "minipsql_array($1)")
 	out = usingLessRE.ReplaceAllString(out, "")
 	out = usingGreaterRE.ReplaceAllString(out, "DESC")
@@ -814,7 +819,7 @@ func rewritePGCast(sql string) string {
 func splitCastTypeTrailingSQL(typeName string) (string, string) {
 	lower := strings.ToLower(typeName)
 	minIdx := -1
-	for _, keyword := range []string{" placing ", " for ", " leading ", " trailing ", " both ", " from ", " where ", " order ", " group ", " limit ", " union ", " intersect ", " except ", " and ", " or ", " not ", " is ", " as ", " collate ", " like ", " ilike ", " similar ", " between "} {
+	for _, keyword := range []string{" placing ", " for ", " leading ", " trailing ", " both ", " from ", " where ", " order ", " group ", " limit ", " union ", " intersect ", " except ", " and ", " or ", " not ", " is ", " as ", " collate ", " like ", " ilike ", " similar ", " between ", " preceding", " following", " unbounded", " current"} {
 		if idx := strings.Index(lower, keyword); idx >= 0 {
 			if minIdx == -1 || idx < minIdx {
 				minIdx = idx
@@ -4609,4 +4614,127 @@ func rewriteGeometricOperators(sql string) string {
 	return geomIntersectsRE.ReplaceAllString(sql, "FALSE")
 }
 
+// updateTableAliasRE matches: UPDATE <table> [AS] <alias> SET (alias must not be a keyword)
+var updateTableAliasRE = regexp.MustCompile(`(?i)^\s*UPDATE\s+([A-Za-z_][A-Za-z0-9_.]*)\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*)\s+SET\s`)
+
+var updateAliasKeywords = map[string]bool{
+	"SET": true, "FROM": true, "WHERE": true, "RETURNING": true, "ONLY": true,
+}
+
+// rewriteUpdateAlias rewrites UPDATE table alias SET ... to UPDATE table SET ...
+// and replaces alias.col references with tablename.col throughout the statement.
+// SQLite does not support table aliases on the UPDATE target.
+func rewriteUpdateAlias(sql string) string {
+	lower := strings.ToLower(sql)
+	if !strings.HasPrefix(strings.TrimSpace(lower), "update ") {
+		return sql
+	}
+	m := updateTableAliasRE.FindStringSubmatchIndex(sql)
+	if m == nil {
+		return sql
+	}
+	tableName := sql[m[2]:m[3]]
+	aliasName := sql[m[4]:m[5]]
+	if updateAliasKeywords[strings.ToUpper(aliasName)] {
+		return sql
+	}
+	// Rebuild: UPDATE tableName SET <rest>
+	setStart := m[1] - len("SET ") // position of SET keyword was consumed by the regex \s
+	// m[1] points to just after "SET ", but we need to find where SET starts
+	// The regex ends after "SET\s", so m[1] is the position after the trailing space
+	// We need to replace from beginning up to "SET " with "UPDATE tableName SET "
+	prefix := sql[:m[0]]
+	rest := sql[m[1]:]
+	// Replace alias.col with tableName.col in rest (case-insensitive alias match)
+	_ = setStart
+	aliasPrefix := aliasName + "."
+	aliasPrefixLower := strings.ToLower(aliasPrefix)
+	var result strings.Builder
+	restLower := strings.ToLower(rest)
+	i := 0
+	for i < len(rest) {
+		if strings.HasPrefix(restLower[i:], aliasPrefixLower) {
+			// Check word boundary before alias
+			if i == 0 || !isIdentByte(rest[i-1]) {
+				result.WriteString(tableName)
+				result.WriteByte('.')
+				i += len(aliasPrefix)
+				continue
+			}
+		}
+		result.WriteByte(rest[i])
+		i++
+	}
+	return prefix + "UPDATE " + tableName + " SET " + result.String()
+}
+
+// rewriteLimitParens removes outer parentheses from LIMIT/OFFSET expressions.
+// SQLite does not support LIMIT (expr) — the parens must be removed.
+func rewriteLimitParens(sql string) string {
+	lower := strings.ToLower(sql)
+	if !strings.Contains(lower, "limit") && !strings.Contains(lower, "offset") {
+		return sql
+	}
+	var result strings.Builder
+	i := 0
+	n := len(sql)
+	for i < n {
+		// Check for LIMIT( or OFFSET( pattern
+		uLen := 0
+		lowerRem := strings.ToLower(sql[i:])
+		if strings.HasPrefix(lowerRem, "limit ") || strings.HasPrefix(lowerRem, "limit\t") || strings.HasPrefix(lowerRem, "limit\n") {
+			uLen = 6
+		} else if strings.HasPrefix(lowerRem, "offset ") || strings.HasPrefix(lowerRem, "offset\t") || strings.HasPrefix(lowerRem, "offset\n") {
+			uLen = 7
+		}
+		if uLen > 0 {
+			// Check if what follows (after optional whitespace) is '('
+			j := i + uLen
+			for j < n && (sql[j] == ' ' || sql[j] == '\t' || sql[j] == '\n') {
+				j++
+			}
+			if j < n && sql[j] == '(' {
+				// Find matching closing paren
+				depth := 1
+				k := j + 1
+				inSingle := false
+				for k < n && depth > 0 {
+					if !inSingle && sql[k] == '\'' {
+						inSingle = true
+					} else if inSingle {
+						if sql[k] == '\'' && k+1 < n && sql[k+1] == '\'' {
+							k++
+						} else if sql[k] == '\'' {
+							inSingle = false
+						}
+					} else if sql[k] == '(' {
+						depth++
+					} else if sql[k] == ')' {
+						depth--
+					}
+					k++
+				}
+				if depth == 0 {
+					inner := strings.TrimSpace(sql[j+1 : k-1])
+					innerLower := strings.ToLower(inner)
+					// Don't strip if it's a subquery or has nested subqueries
+					if strings.HasPrefix(innerLower, "select ") || strings.HasPrefix(innerLower, "with ") {
+						result.WriteString(sql[i : k])
+						i = k
+						continue
+					}
+					// Write keyword + space
+					result.WriteString(sql[i : i+uLen])
+					// Write inner content (without outer parens)
+					result.WriteString(inner)
+					i = k
+					continue
+				}
+			}
+		}
+		result.WriteByte(sql[i])
+		i++
+	}
+	return result.String()
+}
 

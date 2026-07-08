@@ -4842,6 +4842,8 @@ func toInt(v driver.Value) (int, bool) {
 	return 0, false
 }
 
+var pgSettingsMu sync.RWMutex
+
 // pgSettings stores GUC (Grand Unified Configuration) settings for current_setting/set_config
 var pgSettings = map[string]string{
 	"min_parallel_index_scan_size": "512kB",
@@ -4947,6 +4949,28 @@ var pgSettings = map[string]string{
 	"unix_socket_directories":      "/var/run/postgresql",
 	"data_checksums":               "off",
 	"icu_lib_version":              "73.2",
+	"max_prepared_transactions":    "64",
+	"vacuum_cost_delay":            "0",
+	"vacuum_cost_page_hit":         "1",
+	"vacuum_cost_page_miss":        "2",
+	"vacuum_cost_page_dirty":       "20",
+	"vacuum_cost_limit":            "200",
+	"track_io_timing":              "off",
+	"track_wal_io_timing":          "off",
+	"log_autovacuum_min_duration":  "-1",
+	"autovacuum_vacuum_cost_delay": "2ms",
+	"check_function_bodies":        "on",
+	"compute_query_id":             "auto",
+	"lo_compat_privileges":         "off",
+	"quote_all_identifiers":        "off",
+	"lock_timeout":                 "0",
+	"idle_in_transaction_session_timeout": "0",
+	"statement_timeout":            "0",
+	"deadlock_timeout":             "1s",
+	"enable_material":              "on",
+	"enable_tidscan":               "on",
+	"enable_gathermerge":           "on",
+	"enable_async_append":          "on",
 }
 
 func currentSettingFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
@@ -4966,12 +4990,15 @@ func currentSettingFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.
 			missingOk = strings.ToLower(v) == "true" || v == "1" || strings.ToLower(v) == "t"
 		}
 	}
-	if val, ok := pgSettings[key]; ok {
-		return val, nil
+	pgSettingsMu.RLock()
+	valLower, okLower := pgSettings[key]
+	valOrig, okOrig := pgSettings[valueString(args[0])]
+	pgSettingsMu.RUnlock()
+	if okLower {
+		return valLower, nil
 	}
-	// try original case key too
-	if val, ok := pgSettings[valueString(args[0])]; ok {
-		return val, nil
+	if okOrig {
+		return valOrig, nil
 	}
 	if missingOk {
 		return nil, nil
@@ -4991,9 +5018,19 @@ func setConfigFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value
 	if args[1] != nil {
 		val = valueString(args[1])
 	}
+	pgSettingsMu.Lock()
 	pgSettings[strings.ToLower(key)] = val
 	pgSettings[key] = val
+	pgSettingsMu.Unlock()
 	return val, nil
+}
+
+// UpdatePGSetting allows external packages to update a GUC setting at runtime.
+func UpdatePGSetting(key, val string) {
+	pgSettingsMu.Lock()
+	pgSettings[strings.ToLower(key)] = val
+	pgSettings[key] = val
+	pgSettingsMu.Unlock()
 }
 
 func pgSizePrettyFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {

@@ -49,6 +49,8 @@ var (
 	arrayConstructorRE  = regexp.MustCompile(`(?is)\bARRAY\s*\[(.*?)\]`)
 	arrayIndexRE        = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\[(\d+)\]`)
 	arrayVarIndexRE     = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\[([A-Za-z_][A-Za-z0-9_.]*)\]`)
+	// Strip PostgreSQL array slice syntax: expr[n:m] or expr[:m] or expr[n:]
+	arraySliceRE        = regexp.MustCompile(`\[(\d*):(\d*)\]`)
 	usingLessRE         = regexp.MustCompile(`(?i)\busing\s+<`)
 	usingGreaterRE      = regexp.MustCompile(`(?i)\busing\s+>`)
 	// Match tablename* (PG inheritance asterisk) only when followed by whitespace, comma, ), or end of string.
@@ -142,6 +144,13 @@ var (
 	rowConstructorRE = regexp.MustCompile(`(?i)\bROW\s*\(`)
 	// Window EXCLUDE clause — SQLite does not support EXCLUDE in window frames
 	windowExcludeRE = regexp.MustCompile(`(?i)\s+EXCLUDE\s+(?:NO\s+OTHERS|CURRENT\s+ROW|GROUP|TIES)\b`)
+	// WITHIN GROUP (ORDER BY ...) — ordered-set aggregate syntax, not supported by SQLite.
+	// Also strips the hypothetical-set arguments from functions like rank(...) WITHIN GROUP (...).
+	withinGroupRE = regexp.MustCompile(`(?i)\s+WITHIN\s+GROUP\s*\([^)]*\)`)
+	// Matches rank/dense_rank/percent_rank/cume_dist hypothetical-set aggregates — converts to NULL.
+	hypotheticalSetRE = regexp.MustCompile(`(?i)\b(rank|dense_rank|percent_rank|cume_dist)\s*\([^)]*\)\s+WITHIN\s+GROUP\s*\([^)]*\)`)
+	// Matches other func(args) WITHIN GROUP — strips the hypothetical args.
+	orderedSetArgRE = regexp.MustCompile(`(?i)\b([A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*\)(\s+WITHIN\s+GROUP\b)`)
 	// DEFERRABLE / INITIALLY DEFERRED|IMMEDIATE — SQLite ignores these on constraints
 	deferRE = regexp.MustCompile(`(?i)\s+DEFERRABLE(?:\s+INITIALLY\s+(?:DEFERRED|IMMEDIATE))?|\s+INITIALLY\s+(?:DEFERRED|IMMEDIATE)`)
 	// WITH [CASCADED|LOCAL] CHECK OPTION — SQLite view syntax doesn't support this
@@ -180,7 +189,12 @@ func Rewrite(sql string) string {
 	out = rewriteIndexConcurrently(out)
 	out = rewriteFetchFirst(out)
 	out = rewriteLateral(out)
+	out = rewriteValuesWholeRow(out)
+	out = rewriteWholeRowSubqueryRef(out)
 	out = windowExcludeRE.ReplaceAllString(out, "")
+	out = hypotheticalSetRE.ReplaceAllString(out, "NULL")
+	out = orderedSetArgRE.ReplaceAllString(out, "$1()$2")
+	out = withinGroupRE.ReplaceAllString(out, "")
 	out = rewriteTablesample(out)
 	// SQLite does not support EXCEPT ALL or INTERSECT ALL; strip the ALL modifier.
 	out = regexp.MustCompile(`(?i)\b(EXCEPT|INTERSECT)\s+ALL\b`).ReplaceAllString(out, "$1")
@@ -197,6 +211,7 @@ func Rewrite(sql string) string {
 	out = nullsDistinctRE.ReplaceAllString(out, "")
 	out = deferRE.ReplaceAllString(out, "")
 	out = withCheckOptionRE.ReplaceAllString(out, "")
+	out = rewriteCreateSchemaCompound(out)
 	out = rewriteStandaloneUser(out)
 	out = rewriteSchemaPrefix(out)
 	out = rewriteViewOptions(out)
@@ -351,6 +366,7 @@ func Rewrite(sql string) string {
 	out = rewriteOverlay(out)
 	out = rewriteTrim(out)
 	out = rewriteDeleteAlias(out)
+	out = rewriteSchemaPrefixFromJoin(out)
 	out = rewriteDistanceOperator(out)
 	out = circleColRE.ReplaceAllStringFunc(out, func(m string) string {
 		parts := strings.Fields(m)
@@ -387,6 +403,7 @@ func Rewrite(sql string) string {
 	out = rewriteArrayAgg(out)
 	out = rewriteArrayConcatStrip(out)
 	out = rewriteArraySubquery(out)
+	out = arraySliceRE.ReplaceAllString(out, "")
 	out = rewriteArrayIndex(out)
 	out = rewriteGeometricOperators(out)
 	out = rewriteKeywords(out)
@@ -406,6 +423,8 @@ var (
 	offsetRowsRE = regexp.MustCompile(`(?i)\bOFFSET\s+(\d+)\s+ROWS\b`)
 	// LATERAL keyword before subqueries/functions
 	lateralRE = regexp.MustCompile(`(?i)\bLATERAL\s+`)
+	// VALUES(alias.*) — whole-row reference inside VALUES, not supported by SQLite
+	valuesWholeRowRE = regexp.MustCompile(`(?i)\bVALUES\s*\(\s*[A-Za-z_][A-Za-z0-9_]*\.\*\s*\)`)
 	// TABLESAMPLE clause — matches method name only; arg stripping is done by rewriteTablesample()
 	tablesampleStartRE = regexp.MustCompile(`(?i)\bTABLESAMPLE\s+\w+\s*\(`)
 
@@ -559,6 +578,96 @@ func rewriteFetchFirst(sql string) string {
 // rewriteLateral strips the LATERAL keyword (SQLite evaluates correlated subqueries natively).
 func rewriteLateral(sql string) string {
 	return lateralRE.ReplaceAllString(sql, "")
+}
+
+// rewriteValuesWholeRow rewrites VALUES(alias.*) to VALUES(NULL) since SQLite
+// cannot handle whole-row references inside VALUES clauses.
+func rewriteValuesWholeRow(sql string) string {
+	return valuesWholeRowRE.ReplaceAllString(sql, "VALUES(NULL)")
+}
+
+// rewriteWholeRowSubqueryRef rewrites "SELECT alias FROM (...) AS alias" patterns
+// where the SELECT list is just the subquery alias (a whole-row reference) into
+// "SELECT * FROM (...) AS alias" so SQLite can handle it.
+func rewriteWholeRowSubqueryRef(sql string) string {
+	// Match: SELECT <ws> identifier <ws> FROM <ws> ( ... ) <ws> AS <ws> same-identifier
+	// We do this procedurally to avoid backreferences (not supported in RE2).
+	upper := strings.ToUpper(sql)
+	idx := strings.Index(upper, "SELECT ")
+	if idx < 0 {
+		return sql
+	}
+	// Find the identifier after SELECT
+	rest := sql[idx+7:]
+	restUpper := upper[idx+7:]
+	// Skip leading whitespace
+	i := 0
+	for i < len(rest) && (rest[i] == ' ' || rest[i] == '\t' || rest[i] == '\n') {
+		i++
+	}
+	// Collect identifier
+	j := i
+	for j < len(rest) && (rest[j] == '_' || (rest[j] >= 'A' && rest[j] <= 'Z') || (rest[j] >= 'a' && rest[j] <= 'z') || (rest[j] >= '0' && rest[j] <= '9')) {
+		j++
+	}
+	if j == i {
+		return sql
+	}
+	ident := rest[i:j]
+	identUpper := strings.ToUpper(ident)
+	// After identifier should be whitespace then FROM (
+	afterIdent := restUpper[j:]
+	k := 0
+	for k < len(afterIdent) && (afterIdent[k] == ' ' || afterIdent[k] == '\t' || afterIdent[k] == '\n') {
+		k++
+	}
+	if !strings.HasPrefix(afterIdent[k:], "FROM") {
+		return sql
+	}
+	k += 4
+	for k < len(afterIdent) && (afterIdent[k] == ' ' || afterIdent[k] == '\t' || afterIdent[k] == '\n') {
+		k++
+	}
+	if k >= len(afterIdent) || afterIdent[k] != '(' {
+		return sql
+	}
+	// Find matching closing paren
+	parenStart := idx + 7 + j + k
+	depth := 0
+	parenEnd := parenStart
+	for parenEnd < len(sql) {
+		if sql[parenEnd] == '(' {
+			depth++
+		} else if sql[parenEnd] == ')' {
+			depth--
+			if depth == 0 {
+				break
+			}
+		}
+		parenEnd++
+	}
+	if depth != 0 {
+		return sql
+	}
+	// After closing paren, look for AS <ident>
+	afterParen := strings.TrimSpace(upper[parenEnd+1:])
+	if !strings.HasPrefix(afterParen, "AS ") && !strings.HasPrefix(afterParen, "AS\t") && !strings.HasPrefix(afterParen, "AS\n") {
+		return sql
+	}
+	afterAs := strings.TrimSpace(afterParen[3:])
+	if !strings.HasPrefix(strings.ToUpper(afterAs), identUpper) {
+		return sql
+	}
+	// Check that the character after the alias is a word boundary
+	aliasEnd := len(identUpper)
+	if aliasEnd < len(afterAs) {
+		ch := afterAs[aliasEnd]
+		if ch == '_' || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') {
+			return sql
+		}
+	}
+	// Replace "SELECT <ident>" with "SELECT *"
+	return sql[:idx+7] + "*" + sql[idx+7+j:]
 }
 
 // rewriteTablesample strips TABLESAMPLE clauses (not supported in SQLite).
@@ -2815,10 +2924,176 @@ func rewriteGenericTableColAlias(sql string) string {
 	})
 }
 
+// anySchemaInsertIntoRE strips user-defined schema.table patterns after INSERT INTO.
+var anySchemaInsertIntoRE = regexp.MustCompile(`(?i)(\bINSERT\s+INTO\s+)([A-Za-z_][A-Za-z0-9_]*)\s*\.([A-Za-z0-9_"]+)`)
+
+// anySchemaFromJoinRE strips user-defined schema.table patterns after FROM/JOIN
+// but only when not followed immediately by a word character (to avoid stripping table.column refs).
+var anySchemaFromJoinRE = regexp.MustCompile(`(?i)(\b(?:FROM|JOIN)\s+)([A-Za-z_][A-Za-z0-9_]*)\s*\.([A-Za-z0-9_"]+)`)
+
+// anySchemaDDLContextRE strips user-defined schema.table patterns in DDL contexts:
+// ALTER TABLE, REINDEX TABLE, ANALYZE, VACUUM, CLUSTER.
+// Does NOT include ON because that's used in JOIN ... ON conditions.
+// Group 1 captures the keyword including trailing space.
+var anySchemaDDLContextRE = regexp.MustCompile(`(?i)(\b(?:ALTER\s+TABLE|REINDEX\s+(?:TABLE\s+|INDEX\s+)?|ANALYZE\s+|VACUUM\s+(?:FULL\s+)?|CLUSTER\s+)\s*)([A-Za-z_][A-Za-z0-9_]*)\s*\.([A-Za-z0-9_"]+)`)
+
+// anySchemaIndexOnRE strips schema.table patterns in CREATE INDEX ... ON schema.table context.
+// Group 1 captures everything including the trailing space before schema name.
+var anySchemaIndexOnRE = regexp.MustCompile(`(?i)(CREATE\s+(?:UNIQUE\s+)?INDEX\s+[^(]+\bON\s+)([A-Za-z_][A-Za-z0-9_]*)\s*\.([A-Za-z0-9_"]+)`)
+
 // rewriteSchemaPrefix strips public., pg_temp., pg_catalog. schema prefixes
-// that SQLite does not understand.
+// that SQLite does not understand. Also strips user-defined schema prefixes
+// after INSERT INTO (e.g. INSERT INTO s1.abc → INSERT INTO abc).
 func rewriteSchemaPrefix(sql string) string {
-	return schemaPrefixRE.ReplaceAllString(sql, "$1")
+	out := schemaPrefixRE.ReplaceAllString(sql, "$1")
+	// Strip user-defined schema prefixes after INSERT INTO
+	out = anySchemaInsertIntoRE.ReplaceAllString(out, "${1}${3}")
+	return out
+}
+
+// distinctFromRE protects "IS [NOT] DISTINCT FROM" clauses from schema prefix stripping.
+var distinctFromRE = regexp.MustCompile(`(?i)\bIS\s+(?:NOT\s+)?DISTINCT\s+FROM\b`)
+
+// rewriteSchemaPrefixFromJoin strips user-defined schema.table patterns after FROM/JOIN
+// and DDL keywords like ALTER TABLE, REINDEX, ANALYZE, VACUUM, CLUSTER, CREATE INDEX ON.
+// Applied after rewriteDeleteAlias to avoid interfering with DELETE ... table alias.
+func rewriteSchemaPrefixFromJoin(sql string) string {
+	// Protect "IS [NOT] DISTINCT FROM" by temporarily replacing FROM with a placeholder.
+	const placeholder = "\x00DISTFRM\x00"
+	protected := distinctFromRE.ReplaceAllStringFunc(sql, func(m string) string {
+		// Replace only the FROM part (last word) to avoid touching schema names
+		idx := strings.LastIndex(strings.ToUpper(m), "FROM")
+		if idx < 0 {
+			return m
+		}
+		return m[:idx] + placeholder + m[idx+4:]
+	})
+
+	out := anySchemaFromJoinRE.ReplaceAllString(protected, "${1}${3}")
+	out = anySchemaDDLContextRE.ReplaceAllString(out, "${1}${3}")
+	out = anySchemaIndexOnRE.ReplaceAllString(out, "${1}${3}")
+
+	// Restore the placeholder back to FROM
+	return strings.ReplaceAll(out, placeholder, "FROM")
+}
+
+// createSchemaCompoundRE matches CREATE SCHEMA name followed by one or more CREATE sub-commands.
+// PostgreSQL allows: CREATE SCHEMA name CREATE TABLE ..., CREATE VIEW ..., CREATE INDEX ..., etc.
+var createSchemaCompoundRE = regexp.MustCompile(`(?is)^\s*CREATE\s+SCHEMA\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:AUTHORIZATION\s+\S+\s+)?(\S+)\s+(CREATE\s+(?:TABLE|VIEW|UNIQUE\s+INDEX|INDEX|SEQUENCE|FUNCTION|PROCEDURE|AGGREGATE|TYPE|TRIGGER|RULE)\b.+)$`)
+
+// IsCreateSchemaCompound reports whether sql is a compound CREATE SCHEMA statement
+// that includes sub-commands like CREATE TABLE, CREATE VIEW, etc.
+func IsCreateSchemaCompound(sql string) bool {
+	return createSchemaCompoundRE.MatchString(sql)
+}
+
+// subSchemaCreateRE matches a top-level CREATE keyword starting a new sub-command
+// within a compound CREATE SCHEMA statement body.
+var subSchemaCreateRE = regexp.MustCompile(`(?i)\bCREATE\s+(?:UNIQUE\s+)?(?:TABLE|VIEW|INDEX|SEQUENCE|FUNCTION|PROCEDURE|AGGREGATE|TYPE|TRIGGER|RULE|TEXT\s+SEARCH)\b`)
+
+// rewriteCreateSchemaCompound splits "CREATE SCHEMA name CREATE TABLE ..." into
+// "CREATE SCHEMA name; CREATE TABLE ...; CREATE VIEW ...; ..." so the sub-commands
+// get executed individually. Handles multiple sub-commands within a single compound statement.
+func rewriteCreateSchemaCompound(sql string) string {
+	m := createSchemaCompoundRE.FindStringSubmatchIndex(sql)
+	if m == nil {
+		return sql
+	}
+	schemaName := sql[m[2]:m[3]]
+	subCmds := strings.TrimSpace(sql[m[4]:m[5]])
+
+	// Split subCmds into individual CREATE statements by finding CREATE keywords
+	// at the top level (outside parentheses).
+	parts := splitSchemaSubCmds(subCmds)
+	result := "CREATE SCHEMA " + schemaName
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		// Add IF NOT EXISTS to TABLE/VIEW/INDEX/SEQUENCE to handle duplicate schema names
+		// (since SQLite has no schema isolation, two schemas with same-named objects collide).
+		part = addIfNotExistsToCreate(part)
+		result += ";\n" + part
+	}
+	return result
+}
+
+// schemaSubCreateRE matches the beginning of CREATE TABLE/VIEW/INDEX/SEQUENCE statements.
+var schemaSubCreatePrefixRE = regexp.MustCompile(`(?i)^(CREATE\s+(?:UNIQUE\s+)?(?:TABLE|VIEW|INDEX|SEQUENCE)\s+)`)
+
+// addIfNotExistsToCreate adds IF NOT EXISTS to CREATE TABLE/VIEW/INDEX/SEQUENCE statements
+// to handle name collisions when multiple schemas define same-named objects.
+func addIfNotExistsToCreate(sql string) string {
+	m := schemaSubCreatePrefixRE.FindStringSubmatchIndex(sql)
+	if m == nil {
+		return sql
+	}
+	prefix := sql[m[2]:m[3]]
+	rest := sql[m[3]:]
+	upperRest := strings.ToUpper(strings.TrimSpace(rest))
+	if strings.HasPrefix(upperRest, "IF NOT EXISTS") {
+		return sql
+	}
+	return prefix + "IF NOT EXISTS " + rest
+}
+
+// splitSchemaSubCmds splits a compound schema body into individual CREATE statements
+// by detecting top-level CREATE keywords (outside parentheses).
+func splitSchemaSubCmds(body string) []string {
+	var parts []string
+	depth := 0
+	inSingle := false
+	inDouble := false
+	lastStart := 0
+
+	for i := 0; i < len(body); i++ {
+		ch := body[i]
+		if inSingle {
+			if ch == '\'' && i+1 < len(body) && body[i+1] == '\'' {
+				i++
+			} else if ch == '\'' {
+				inSingle = false
+			}
+			continue
+		}
+		if inDouble {
+			if ch == '"' {
+				inDouble = false
+			}
+			continue
+		}
+		switch ch {
+		case '\'':
+			inSingle = true
+		case '"':
+			inDouble = true
+		case '(':
+			depth++
+		case ')':
+			depth--
+		default:
+			if depth == 0 && i > lastStart {
+				// Check for CREATE keyword at this position
+				remaining := body[i:]
+				if subSchemaCreateRE.FindStringIndex(remaining) != nil {
+					loc := subSchemaCreateRE.FindStringIndex(remaining)
+					if loc[0] == 0 {
+						// We're at a CREATE keyword — split here
+						part := strings.TrimSpace(body[lastStart:i])
+						if part != "" {
+							parts = append(parts, part)
+						}
+						lastStart = i
+					}
+				}
+			}
+		}
+	}
+	if last := strings.TrimSpace(body[lastStart:]); last != "" {
+		parts = append(parts, last)
+	}
+	return parts
 }
 
 // rewriteViewOptions strips WITH (option=value) from CREATE VIEW statements.

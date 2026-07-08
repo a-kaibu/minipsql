@@ -126,7 +126,7 @@ func TestRewritePositionEdgeCases(t *testing.T) {
 func TestRewriteDeleteAlias(t *testing.T) {
 	cases := map[string]string{
 		"delete from delete_test dt where delete_test.a > 0": "delete from delete_test AS dt where dt.a > 0",
-		"DELETE FROM schema.table t WHERE schema.table.id = 1": "DELETE FROM schema.table AS t WHERE t.id = 1",
+		"DELETE FROM schema.table t WHERE schema.table.id = 1": "DELETE FROM table AS t WHERE t.id = 1",
 		"DELETE FROM my_table WHERE id = 1": "DELETE FROM my_table WHERE id = 1",
 		"DELETE FROM my_table AS t WHERE t.id = 1": "DELETE FROM my_table AS t WHERE t.id = 1",
 	}

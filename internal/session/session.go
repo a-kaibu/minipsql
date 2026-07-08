@@ -387,6 +387,11 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 	case strings.HasPrefix(lower, "discard "):
 		return &backend.CommandTag{Tag: "DISCARD ALL"}, true
 	case strings.HasPrefix(lower, "create schema"):
+		// If this is a compound CREATE SCHEMA ... CREATE TABLE/VIEW/... statement,
+		// let it fall through to Rewrite() which will split it into separate statements.
+		if compat.IsCreateSchemaCompound(strings.TrimSpace(sql)) {
+			return nil, false
+		}
 		return &backend.CommandTag{Tag: "CREATE SCHEMA"}, true
 	case strings.HasPrefix(lower, "alter schema "):
 		return &backend.CommandTag{Tag: "ALTER SCHEMA"}, true

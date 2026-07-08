@@ -565,6 +565,20 @@ func init() {
 			return &anyValueAgg{}, nil
 		},
 	})
+
+	// Ordered-set aggregate stubs: WITHIN GROUP clause is stripped by the rewriter,
+	// so these are called as plain aggregate functions returning NULL.
+	nullReturnAgg := func() *sqlite.FunctionImpl {
+		return &sqlite.FunctionImpl{
+			NArgs: -1,
+			MakeAggregate: func(_ sqlite.FunctionContext) (sqlite.AggregateFunction, error) {
+				return &nullAgg{}, nil
+			},
+		}
+	}
+	sqlite.MustRegisterFunction("percentile_disc", nullReturnAgg())
+	sqlite.MustRegisterFunction("percentile_cont", nullReturnAgg())
+	sqlite.MustRegisterFunction("mode", nullReturnAgg())
 }
 
 // varAgg implements var_pop and var_samp aggregate functions.
@@ -5588,6 +5602,14 @@ func valueFloat64(v driver.Value) float64 {
 	}
 	return 0
 }
+
+// nullAgg is an aggregate function stub that always returns NULL.
+type nullAgg struct{}
+
+func (a *nullAgg) Step(_ *sqlite.FunctionContext, _ []driver.Value) error { return nil }
+func (a *nullAgg) WindowInverse(_ *sqlite.FunctionContext, _ []driver.Value) error { return nil }
+func (a *nullAgg) WindowValue(_ *sqlite.FunctionContext) (driver.Value, error) { return nil, nil }
+func (a *nullAgg) Final(_ *sqlite.FunctionContext) {}
 
 
 

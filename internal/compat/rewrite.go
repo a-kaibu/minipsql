@@ -126,6 +126,8 @@ var (
 	rowConstructorRE = regexp.MustCompile(`(?i)\bROW\s*\(`)
 	// Window EXCLUDE clause — SQLite does not support EXCLUDE in window frames
 	windowExcludeRE = regexp.MustCompile(`(?i)\s+EXCLUDE\s+(?:NO\s+OTHERS|CURRENT\s+ROW|GROUP|TIES)\b`)
+	// DEFERRABLE / INITIALLY DEFERRED|IMMEDIATE — SQLite ignores these on constraints
+	deferRE = regexp.MustCompile(`(?i)\s+DEFERRABLE(?:\s+INITIALLY\s+(?:DEFERRED|IMMEDIATE))?|\s+INITIALLY\s+(?:DEFERRED|IMMEDIATE)`)
 )
 
 var idxCounter atomic.Int64
@@ -170,6 +172,7 @@ func Rewrite(sql string) string {
 	out = castCollateRE.ReplaceAllString(out, "$1$2")
 	out = pgCatalogCollateRE.ReplaceAllString(out, "")
 	out = nullsDistinctRE.ReplaceAllString(out, "")
+	out = deferRE.ReplaceAllString(out, "")
 	out = rewriteStandaloneUser(out)
 	out = rewriteSchemaPrefix(out)
 	out = rewriteViewOptions(out)
@@ -1332,11 +1335,15 @@ func TxCommand(sql string) string {
 	switch {
 	case lower == "begin" || lower == "begin transaction" || lower == "start transaction" ||
 		strings.HasPrefix(lower, "begin isolation level") || strings.HasPrefix(lower, "begin transaction isolation level") ||
-		strings.HasPrefix(lower, "start transaction isolation level"):
+		strings.HasPrefix(lower, "start transaction isolation level") ||
+		strings.HasPrefix(lower, "start transaction read") ||
+		strings.HasPrefix(lower, "begin transaction read") ||
+		strings.HasPrefix(lower, "begin transaction deferrable") ||
+		strings.HasPrefix(lower, "begin read"):
 		return "begin"
-	case lower == "commit" || lower == "end":
+	case lower == "commit" || lower == "end" || lower == "commit transaction" || lower == "commit work":
 		return "commit"
-	case lower == "rollback" || lower == "abort":
+	case lower == "rollback" || lower == "abort" || lower == "rollback transaction" || lower == "rollback work":
 		return "rollback"
 	default:
 		return ""
@@ -4717,8 +4724,8 @@ func rewriteLimitParens(sql string) string {
 				if depth == 0 {
 					inner := strings.TrimSpace(sql[j+1 : k-1])
 					innerLower := strings.ToLower(inner)
-					// Don't strip if it's a subquery or has nested subqueries
-					if strings.HasPrefix(innerLower, "select ") || strings.HasPrefix(innerLower, "with ") {
+					// Don't strip if it's a subquery or CASE expression
+					if strings.HasPrefix(innerLower, "select ") || strings.HasPrefix(innerLower, "with ") || strings.HasPrefix(innerLower, "case ") || innerLower == "case" {
 						result.WriteString(sql[i : k])
 						i = k
 						continue

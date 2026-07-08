@@ -627,6 +627,10 @@ func (s *Session) tryNoopCommand(sql string) (*backend.CommandTag, bool) {
 	case strings.HasPrefix(lower, "drop owned by ") || strings.HasPrefix(lower, "drop owned by;"):
 		return &backend.CommandTag{Tag: "DROP OWNED"}, true
 
+	// SET CONSTRAINTS is a no-op since SQLite doesn't support deferrable constraints
+	case strings.HasPrefix(lower, "set constraints "):
+		return &backend.CommandTag{Tag: "SET CONSTRAINTS"}, true
+
 	// MERGE is not supported by SQLite; no-op the entire statement
 	case strings.HasPrefix(lower, "merge ") || strings.HasPrefix(lower, "merge\n") || strings.HasPrefix(lower, "merge\t"):
 		return &backend.CommandTag{Tag: "MERGE 0"}, true
@@ -744,10 +748,17 @@ func tryAlterTableNoop(lower string) (*backend.CommandTag, bool) {
 	}
 	// Find the part after "alter table <name>"
 	rest := lower[len("alter table "):]
+	// Strip optional IF EXISTS / ONLY before the table name
+	if strings.HasPrefix(rest, "if exists ") {
+		rest = rest[len("if exists "):]
+	}
+	if strings.HasPrefix(rest, "only ") {
+		rest = rest[len("only "):]
+	}
 	// Skip table name (possibly quoted)
 	rest = skipTableName(rest)
 	rest = strings.TrimSpace(rest)
-	// Handle multi-action: strip "if exists" / "only"
+	// Also strip a second IF EXISTS / ONLY that might appear after the table name in some dialects
 	if strings.HasPrefix(rest, "if exists ") {
 		rest = rest[len("if exists "):]
 		rest = skipTableName(rest)

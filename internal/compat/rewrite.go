@@ -128,6 +128,8 @@ var (
 	windowExcludeRE = regexp.MustCompile(`(?i)\s+EXCLUDE\s+(?:NO\s+OTHERS|CURRENT\s+ROW|GROUP|TIES)\b`)
 	// DEFERRABLE / INITIALLY DEFERRED|IMMEDIATE — SQLite ignores these on constraints
 	deferRE = regexp.MustCompile(`(?i)\s+DEFERRABLE(?:\s+INITIALLY\s+(?:DEFERRED|IMMEDIATE))?|\s+INITIALLY\s+(?:DEFERRED|IMMEDIATE)`)
+	// WITH [CASCADED|LOCAL] CHECK OPTION — SQLite view syntax doesn't support this
+	withCheckOptionRE = regexp.MustCompile(`(?i)\s+WITH\s+(?:CASCADED\s+|LOCAL\s+)?CHECK\s+OPTION\b`)
 )
 
 var idxCounter atomic.Int64
@@ -173,6 +175,7 @@ func Rewrite(sql string) string {
 	out = pgCatalogCollateRE.ReplaceAllString(out, "")
 	out = nullsDistinctRE.ReplaceAllString(out, "")
 	out = deferRE.ReplaceAllString(out, "")
+	out = withCheckOptionRE.ReplaceAllString(out, "")
 	out = rewriteStandaloneUser(out)
 	out = rewriteSchemaPrefix(out)
 	out = rewriteViewOptions(out)
@@ -240,6 +243,8 @@ func Rewrite(sql string) string {
 	out = rewriteWithOids(out)
 	out = rewriteEmptyTable(out)
 	out = rewriteInsertDefault(out)
+	out = rewriteUpdateMultiColumn(out)
+	out = rewriteUpdateDefault(out)
 	out = rewriteInsertSelect(out)
 	out = rewriteUnicodeLiterals(out)
 	out = rewriteValuesAlias(out)
@@ -4724,9 +4729,27 @@ func rewriteLimitParens(sql string) string {
 				if depth == 0 {
 					inner := strings.TrimSpace(sql[j+1 : k-1])
 					innerLower := strings.ToLower(inner)
-					// Don't strip if it's a subquery or CASE expression
-					if strings.HasPrefix(innerLower, "select ") || strings.HasPrefix(innerLower, "with ") || strings.HasPrefix(innerLower, "case ") || innerLower == "case" {
+					// Don't strip if it's a subquery (SQLite needs the parens for SELECT)
+					if strings.HasPrefix(innerLower, "select ") || strings.HasPrefix(innerLower, "with ") {
 						result.WriteString(sql[i : k])
+						i = k
+						continue
+					}
+					// For CASE expressions: wrap with IFNULL(..., -1) so NULL LIMIT/OFFSET means no limit.
+					// LIMIT CASE ... must have parens stripped (SQLite doesn't allow LIMIT (CASE ...))
+					// OFFSET CASE ... must keep parens (SQLite doesn't allow OFFSET CASE ...)
+					if strings.HasPrefix(innerLower, "case ") || innerLower == "case" {
+						if uLen == 6 { // LIMIT
+							result.WriteString(sql[i : i+uLen])
+							result.WriteString("IFNULL(")
+							result.WriteString(inner)
+							result.WriteString(", -1)")
+						} else { // OFFSET — keep parens, wrap inner with IFNULL
+							result.WriteString(sql[i : i+uLen])
+							result.WriteString("(IFNULL(")
+							result.WriteString(inner)
+							result.WriteString(", 0))")
+						}
 						i = k
 						continue
 					}
@@ -4745,3 +4768,418 @@ func rewriteLimitParens(sql string) string {
 	return result.String()
 }
 
+// rewriteUpdateDefault replaces DEFAULT in UPDATE SET clauses with NULL.
+// SQLite does not support DEFAULT in UPDATE SET assignments.
+func rewriteUpdateDefault(sql string) string {
+	lower := strings.ToLower(sql)
+	if !strings.Contains(lower, "default") {
+		return sql
+	}
+	trimmed := strings.TrimSpace(lower)
+	if !strings.HasPrefix(trimmed, "update ") && !strings.HasPrefix(trimmed, "with ") {
+		return sql
+	}
+	// Find SET keyword
+	setIdx := indexKeywordOutsideQuotesAndParens(lower, "set")
+	if setIdx == -1 {
+		return sql
+	}
+	prefix := sql[:setIdx+3]
+	suffix := sql[setIdx+3:]
+	suffixLower := strings.ToLower(suffix)
+
+	var result strings.Builder
+	i := 0
+	n := len(suffix)
+	inSingle := false
+	inDouble := false
+	depth := 0
+	for i < n {
+		if inSingle {
+			if suffix[i] == '\'' && i+1 < n && suffix[i+1] == '\'' {
+				result.WriteString("''")
+				i += 2
+				continue
+			}
+			if suffix[i] == '\'' {
+				inSingle = false
+			}
+			result.WriteByte(suffix[i])
+			i++
+			continue
+		}
+		if inDouble {
+			if suffix[i] == '"' && i+1 < n && suffix[i+1] == '"' {
+				result.WriteString(`""`)
+				i += 2
+				continue
+			}
+			if suffix[i] == '"' {
+				inDouble = false
+			}
+			result.WriteByte(suffix[i])
+			i++
+			continue
+		}
+		if suffix[i] == '\'' {
+			inSingle = true
+			result.WriteByte(suffix[i])
+			i++
+			continue
+		}
+		if suffix[i] == '"' {
+			inDouble = true
+			result.WriteByte(suffix[i])
+			i++
+			continue
+		}
+		if suffix[i] == '(' {
+			depth++
+			result.WriteByte(suffix[i])
+			i++
+			continue
+		}
+		if suffix[i] == ')' {
+			depth--
+			result.WriteByte(suffix[i])
+			i++
+			continue
+		}
+		if depth == 0 && i+7 <= n && strings.ToLower(suffixLower[i:i+7]) == "default" {
+			leftBound := i == 0 || !isIdentByte(suffix[i-1])
+			rightBound := i+7 == n || !isIdentByte(suffix[i+7])
+			if leftBound && rightBound {
+				result.WriteString("NULL")
+				i += 7
+				continue
+			}
+		}
+		result.WriteByte(suffix[i])
+		i++
+	}
+	return prefix + result.String()
+}
+
+// rewriteUpdateMultiColumn rewrites PostgreSQL multi-column assignment syntax:
+//   UPDATE t SET (a, b, c) = (v1, v2, v3) ...
+// to standard SQL:
+//   UPDATE t SET a = v1, b = v2, c = v3 ...
+// SQLite does not support the tuple assignment form.
+func rewriteUpdateMultiColumn(sql string) string {
+	lower := strings.ToLower(sql)
+	trimmed := strings.TrimSpace(lower)
+	if !strings.HasPrefix(trimmed, "update ") && !strings.HasPrefix(trimmed, "with ") {
+		return sql
+	}
+	if !strings.Contains(lower, "set (") && !strings.Contains(lower, "set(") {
+		return sql
+	}
+	setIdx := indexKeywordOutsideQuotesAndParens(lower, "set")
+	if setIdx == -1 {
+		return sql
+	}
+
+	prefix := sql[:setIdx+3]
+	rest := sql[setIdx+3:]
+	restLower := strings.ToLower(rest)
+	_ = restLower
+
+	var assignments []string
+	i := 0
+	n := len(rest)
+	for i < n {
+		for i < n && (rest[i] == ' ' || rest[i] == '\t' || rest[i] == '\n' || rest[i] == ',') {
+			i++
+		}
+		if i >= n {
+			break
+		}
+
+		rem := strings.ToLower(rest[i:])
+		if strings.HasPrefix(rem, "where ") || strings.HasPrefix(rem, "where\t") ||
+			strings.HasPrefix(rem, "from ") || strings.HasPrefix(rem, "returning ") {
+			break
+		}
+
+		if rest[i] == '(' {
+			cols, colEnd := parseParenList(rest, i)
+			if colEnd == -1 || len(cols) == 0 {
+				return sql
+			}
+			j := colEnd
+			for j < n && (rest[j] == ' ' || rest[j] == '\t' || rest[j] == '\n') {
+				j++
+			}
+			if j >= n || rest[j] != '=' {
+				return sql
+			}
+			j++
+			for j < n && (rest[j] == ' ' || rest[j] == '\t' || rest[j] == '\n') {
+				j++
+			}
+			if j >= n {
+				return sql
+			}
+			if rest[j] == '(' {
+				valLower := strings.ToLower(rest[j+1:])
+				valLower = strings.TrimLeft(valLower, " \t\n")
+				if strings.HasPrefix(valLower, "select ") {
+					_, valEnd := readBalancedParen(rest, j)
+					if valEnd == -1 {
+						return sql
+					}
+					assignments = append(assignments, rest[i:valEnd])
+					i = valEnd
+					continue
+				}
+				vals, valEnd := parseParenList(rest, j)
+				if valEnd == -1 || len(vals) != len(cols) {
+					return sql
+				}
+				for idx, col := range cols {
+					assignments = append(assignments, col+" = "+vals[idx])
+				}
+				i = valEnd
+			} else {
+				return sql
+			}
+		} else {
+			end := findAssignmentEnd(rest, i)
+			assignments = append(assignments, strings.TrimSpace(rest[i:end]))
+			i = end
+		}
+	}
+
+	if len(assignments) == 0 {
+		return sql
+	}
+
+	suffix := findSuffixAfterAssignments(rest)
+	return prefix + " " + strings.Join(assignments, ", ") + suffix
+}
+
+// parseParenList parses a parenthesized comma-separated list starting at pos.
+// Returns (items, endPos) where endPos is the index after the closing ')'.
+func parseParenList(s string, pos int) ([]string, int) {
+	if pos >= len(s) || s[pos] != '(' {
+		return nil, -1
+	}
+	var items []string
+	var cur strings.Builder
+	depth := 0
+	inSingle := false
+	inDouble := false
+	i := pos
+	n := len(s)
+	for i < n {
+		c := s[i]
+		if inSingle {
+			if c == '\'' && i+1 < n && s[i+1] == '\'' {
+				cur.WriteByte(c)
+				cur.WriteByte(s[i+1])
+				i += 2
+				continue
+			}
+			if c == '\'' {
+				inSingle = false
+			}
+			cur.WriteByte(c)
+			i++
+			continue
+		}
+		if inDouble {
+			if c == '"' && i+1 < n && s[i+1] == '"' {
+				cur.WriteByte(c)
+				cur.WriteByte(s[i+1])
+				i += 2
+				continue
+			}
+			if c == '"' {
+				inDouble = false
+			}
+			cur.WriteByte(c)
+			i++
+			continue
+		}
+		switch c {
+		case '\'':
+			inSingle = true
+			cur.WriteByte(c)
+		case '"':
+			inDouble = true
+			cur.WriteByte(c)
+		case '(':
+			depth++
+			if depth > 1 {
+				cur.WriteByte(c)
+			}
+		case ')':
+			depth--
+			if depth == 0 {
+				items = append(items, strings.TrimSpace(cur.String()))
+				return items, i + 1
+			}
+			cur.WriteByte(c)
+		case ',':
+			if depth == 1 {
+				items = append(items, strings.TrimSpace(cur.String()))
+				cur.Reset()
+			} else {
+				cur.WriteByte(c)
+			}
+		default:
+			cur.WriteByte(c)
+		}
+		i++
+	}
+	return nil, -1
+}
+
+// readBalancedParen returns the substring including balanced parens starting at pos.
+func readBalancedParen(s string, pos int) (string, int) {
+	if pos >= len(s) || s[pos] != '(' {
+		return "", -1
+	}
+	depth := 0
+	inSingle := false
+	i := pos
+	n := len(s)
+	for i < n {
+		c := s[i]
+		if inSingle {
+			if c == '\'' && i+1 < n && s[i+1] == '\'' {
+				i += 2
+				continue
+			}
+			if c == '\'' {
+				inSingle = false
+			}
+			i++
+			continue
+		}
+		switch c {
+		case '\'':
+			inSingle = true
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return s[pos : i+1], i + 1
+			}
+		}
+		i++
+	}
+	return "", -1
+}
+
+// findAssignmentEnd finds the end of a single UPDATE assignment.
+// Stops at a top-level comma or WHERE/FROM/RETURNING keyword.
+func findAssignmentEnd(s string, start int) int {
+	n := len(s)
+	depth := 0
+	inSingle := false
+	inDouble := false
+	i := start
+	for i < n {
+		c := s[i]
+		if inSingle {
+			if c == '\'' && i+1 < n && s[i+1] == '\'' {
+				i += 2
+				continue
+			}
+			if c == '\'' {
+				inSingle = false
+			}
+			i++
+			continue
+		}
+		if inDouble {
+			if c == '"' && i+1 < n && s[i+1] == '"' {
+				i += 2
+				continue
+			}
+			if c == '"' {
+				inDouble = false
+			}
+			i++
+			continue
+		}
+		switch c {
+		case '\'':
+			inSingle = true
+		case '"':
+			inDouble = true
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				return i
+			}
+		}
+		if depth == 0 {
+			rem := strings.ToLower(s[i:])
+			if strings.HasPrefix(rem, "where ") || strings.HasPrefix(rem, "where\t") ||
+				strings.HasPrefix(rem, "from ") || strings.HasPrefix(rem, "returning ") {
+				return i
+			}
+		}
+		i++
+	}
+	return n
+}
+
+// findSuffixAfterAssignments finds WHERE/FROM/RETURNING suffix after UPDATE SET assignments.
+func findSuffixAfterAssignments(s string) string {
+	n := len(s)
+	depth := 0
+	inSingle := false
+	inDouble := false
+	i := 0
+	for i < n {
+		c := s[i]
+		if inSingle {
+			if c == '\'' && i+1 < n && s[i+1] == '\'' {
+				i += 2
+				continue
+			}
+			if c == '\'' {
+				inSingle = false
+			}
+			i++
+			continue
+		}
+		if inDouble {
+			if c == '"' && i+1 < n && s[i+1] == '"' {
+				i += 2
+				continue
+			}
+			if c == '"' {
+				inDouble = false
+			}
+			i++
+			continue
+		}
+		switch c {
+		case '\'':
+			inSingle = true
+		case '"':
+			inDouble = true
+		case '(':
+			depth++
+		case ')':
+			depth--
+		}
+		if depth == 0 {
+			rem := strings.ToLower(s[i:])
+			if strings.HasPrefix(rem, "where ") || strings.HasPrefix(rem, "where\t") ||
+				strings.HasPrefix(rem, "from ") || strings.HasPrefix(rem, "returning ") {
+				return " " + strings.TrimSpace(s[i:])
+			}
+		}
+		i++
+	}
+	return ""
+}

@@ -10,7 +10,7 @@ import (
 )
 
 var (
-	truncateRE         = regexp.MustCompile(`(?i)^\s*TRUNCATE\s+(?:TABLE\s+)?([A-Za-z0-9_".,\s]+?)(?:\s+(?:CASCADE|RESTRICT))?\s*;?\s*$`)
+	truncateRE         = regexp.MustCompile(`(?i)^\s*TRUNCATE\s+(?:TABLE\s+)?([A-Za-z0-9_".,\s]+?)(?:\s+(?:RESTART|CONTINUE)\s+IDENTITY)?(?:\s+(?:CASCADE|RESTRICT))?\s*;?\s*$`)
 	paramRE            = regexp.MustCompile(`\$([0-9]+)`)
 	serialRE           = regexp.MustCompile(`(?i)\bserial\b`)
 	boolRE             = regexp.MustCompile(`(?i)\bboolean\b|\bbool\b`)
@@ -3322,9 +3322,22 @@ func stripNonConstantDefaults(colDefs string) string {
 			// Check if it's a function call or complex expr (has '(')
 			// vs simple literal
 			val, end := readDefaultValue(colDefs, j)
-			if isSimpleLiteralDefault(val) || isSupportedDefaultExpr(val) {
-				// Keep it
+			if isSimpleLiteralDefault(val) {
+				// Keep simple literals as-is: DEFAULT 42, DEFAULT 'hello', DEFAULT NULL etc.
 				result.WriteString(colDefs[i:end])
+				i = end
+			} else if isSupportedDefaultExpr(val) {
+				// SQLite 3.38+ allows DEFAULT (expr) for function calls,
+				// but requires parentheses around non-trivial expressions.
+				result.WriteString("DEFAULT ")
+				// Wrap in parens if not already wrapped
+				if strings.HasPrefix(strings.TrimSpace(val), "(") {
+					result.WriteString(val)
+				} else {
+					result.WriteString("(")
+					result.WriteString(val)
+					result.WriteString(")")
+				}
 				i = end
 			} else {
 				// Strip DEFAULT ... entirely

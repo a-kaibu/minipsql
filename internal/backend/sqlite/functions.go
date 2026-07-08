@@ -3732,11 +3732,14 @@ func parseTimestamp(v driver.Value) (time.Time, bool) {
 			s = s[:end]
 		}
 	}
-	// Handle BC suffix (before common era dates)
+	// Handle BC/AD suffix
 	isBCE := false
 	if strings.HasSuffix(s, " BC") {
 		isBCE = true
 		s = strings.TrimSuffix(s, " BC")
+	} else if strings.HasSuffix(s, " AD") {
+		// AD is the default; just strip the suffix
+		s = strings.TrimSuffix(s, " AD")
 	}
 	// Normalize single-digit month/day (e.g. "0055-6-10" → "0055-06-10")
 	if parts := strings.SplitN(s, " ", 2); len(parts) >= 1 {
@@ -3801,20 +3804,28 @@ func datePartFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value,
 
 	tsStrDP := strings.ToLower(strings.TrimSpace(fmt.Sprint(args[1])))
 	if tsStrDP == "infinity" || tsStrDP == "+infinity" {
-		if field == "epoch" {
+		// PostgreSQL returns Infinity for monotonic fields (epoch, year, decade, century, millennium, julian, isoyear)
+		// and NULL for oscillating fields (day, month, quarter, week, dow, isodow, doy)
+		switch field {
+		case "epoch", "year", "decade", "century", "millennium", "julian", "isoyear":
 			return math.Inf(1), nil
+		default:
+			return nil, nil
 		}
-		return nil, fmt.Errorf("timestamp out of range")
 	}
 	if tsStrDP == "-infinity" {
-		if field == "epoch" {
+		switch field {
+		case "epoch", "year", "decade", "century", "millennium", "julian", "isoyear":
 			return math.Inf(-1), nil
+		default:
+			return nil, nil
 		}
-		return nil, fmt.Errorf("timestamp out of range")
 	}
 	t, ok := parseTimestamp(args[1])
 	if !ok {
-		return nil, fmt.Errorf("date_part: cannot parse timestamp: %v", args[1])
+		// Return NULL for unparseable dates (e.g. invalid dates like 1997-02-29 that
+		// PostgreSQL would reject at INSERT time — they shouldn't appear in our tables).
+		return nil, nil
 	}
 
 	switch field {
@@ -4006,7 +4017,9 @@ func toCharFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, e
 		if f, err := strconv.ParseFloat(trimmed, 64); err == nil {
 			return toCharNumeric(f, fmtStr), nil
 		}
-		return nil, fmt.Errorf("to_char: cannot parse value: %v", args[0])
+		// Return NULL for values that cannot be parsed (e.g. invalid dates
+		// stored as strings that PostgreSQL would have rejected at INSERT time).
+		return nil, nil
 	}
 	return toCharTimestamp(t, fmtStr), nil
 }
@@ -5087,44 +5100,88 @@ func pgSizeBytesFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Val
 	if args[0] == nil {
 		return nil, nil
 	}
-	s := strings.TrimSpace(valueString(args[0]))
-	// Parse PostgreSQL size notation: "128MB", "1GB", "512kB", etc.
-	s = strings.ToUpper(s)
-	var numStr, unit string
-	for i, c := range s {
-		if c == ' ' || c == '\t' {
-			continue
-		}
-		if (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '+' {
-			numStr += string(c)
-		} else {
-			unit = strings.TrimSpace(s[i:])
-			break
+	orig := valueString(args[0])
+	s := strings.TrimSpace(orig)
+	// Reject empty string
+	if s == "" {
+		return nil, fmt.Errorf("invalid size: \"%s\"", orig)
+	}
+
+	// Find the boundary between numeric part and unit.
+	// Numeric part: optional leading sign, digits, optional dot, optional exponent (e/E ± digits).
+	// Use a regex-like scan: accept [+-]?[0-9]*\.?[0-9]+([eE][+-]?[0-9]+)?
+	upper := strings.ToUpper(s)
+	i := 0
+	if i < len(upper) && (upper[i] == '+' || upper[i] == '-') {
+		i++
+	}
+	numStart := i
+	for i < len(upper) && (upper[i] >= '0' && upper[i] <= '9') {
+		i++
+	}
+	if i < len(upper) && upper[i] == '.' {
+		i++
+		for i < len(upper) && (upper[i] >= '0' && upper[i] <= '9') {
+			i++
 		}
 	}
-	if numStr == "" {
-		return nil, fmt.Errorf("invalid size: \"%s\"", valueString(args[0]))
+	if i < len(upper) && upper[i] == 'E' {
+		j := i + 1
+		if j < len(upper) && (upper[j] == '+' || upper[j] == '-') {
+			j++
+		}
+		expStart := j
+		for j < len(upper) && (upper[j] >= '0' && upper[j] <= '9') {
+			j++
+		}
+		if j > expStart { // had digits after E
+			i = j
+		}
 	}
+	if i == numStart {
+		return nil, fmt.Errorf("invalid size: \"%s\"", orig)
+	}
+	numStr := s[:i]
+	unit := strings.TrimSpace(upper[i:])
+
 	n, err := strconv.ParseFloat(numStr, 64)
-	if err != nil {
-		return nil, fmt.Errorf("invalid size: \"%s\"", valueString(args[0]))
+	if err != nil || math.IsInf(n, 0) || math.IsNaN(n) {
+		return nil, fmt.Errorf("invalid size: \"%s\"", orig)
 	}
+
+	// Validate unit
+	validUnits := map[string]bool{
+		"": true, "B": true, "BYTES": true, "BYTE": true,
+		"KB": true, "KIB": true,
+		"MB": true, "MIB": true,
+		"GB": true, "GIB": true,
+		"TB": true, "TIB": true,
+		"PB": true, "PIB": true,
+	}
+	if !validUnits[unit] {
+		return nil, fmt.Errorf("unrecognized size: \"%s\"", orig)
+	}
+
 	var multiplier float64
 	switch unit {
 	case "", "B", "BYTES", "BYTE":
 		multiplier = 1
-	case "KB", "KILOBYTES", "KIB":
+	case "KB", "KIB":
 		multiplier = 1024
-	case "MB", "MEGABYTES", "MIB":
+	case "MB", "MIB":
 		multiplier = 1024 * 1024
-	case "GB", "GIGABYTES", "GIB":
+	case "GB", "GIB":
 		multiplier = 1024 * 1024 * 1024
-	case "TB", "TERABYTES", "TIB":
+	case "TB", "TIB":
 		multiplier = 1024 * 1024 * 1024 * 1024
-	default:
-		return nil, fmt.Errorf("unrecognized size: \"%s\"", valueString(args[0]))
+	case "PB", "PIB":
+		multiplier = 1024 * 1024 * 1024 * 1024 * 1024
 	}
-	return int64(n * multiplier), nil
+	result := n * multiplier
+	if math.IsInf(result, 0) || result > math.MaxInt64 {
+		return nil, fmt.Errorf("invalid size: \"%s\"", orig)
+	}
+	return int64(result), nil
 }
 
 func xid8cmpFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {

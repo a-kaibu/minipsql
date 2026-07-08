@@ -205,7 +205,7 @@ func init() {
 	sqlite.MustRegisterDeterministicScalarFunction("regr_syy", 2, regrSyyFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("regr_sxy", 2, regrSxyFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("date_part", 2, datePartFunc)
-	sqlite.MustRegisterDeterministicScalarFunction("date_trunc", 2, dateTruncFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("date_trunc", -1, dateTruncFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("to_char", 2, toCharFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("to_date", 2, toDateFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("to_timestamp", -1, toTimestampFunc)
@@ -280,6 +280,13 @@ func init() {
 	sqlite.MustRegisterDeterministicScalarFunction("pg_indexes_size", 1, pgRelationSizeFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("current_setting", -1, currentSettingFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("set_config", 3, setConfigFunc)
+	// timezone(zone, ts) or timezone(ts) — return the value unchanged (no real TZ conversion)
+	sqlite.MustRegisterDeterministicScalarFunction("timezone", -1, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+		if len(args) == 0 {
+			return nil, nil
+		}
+		return args[len(args)-1], nil
+	})
 	sqlite.MustRegisterDeterministicScalarFunction("pg_size_pretty", 1, pgSizePrettyFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("pg_size_bytes", 1, pgSizeBytesFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("xid8cmp", 2, xid8cmpFunc)
@@ -3934,10 +3941,11 @@ func datePartFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value,
 	}
 }
 
-// dateTruncFunc implements date_trunc('field', timestamp).
+// dateTruncFunc implements date_trunc('field', timestamp [, timezone]).
+// The optional 3rd argument (timezone) is accepted but ignored.
 func dateTruncFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
-	if len(args) != 2 {
-		return nil, fmt.Errorf("date_trunc requires 2 arguments")
+	if len(args) < 2 || len(args) > 3 {
+		return nil, fmt.Errorf("date_trunc requires 2 or 3 arguments")
 	}
 	if args[0] == nil || args[1] == nil {
 		return nil, nil

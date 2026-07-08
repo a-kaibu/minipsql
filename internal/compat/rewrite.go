@@ -23,8 +23,8 @@ var (
 	// typedLiteralWithArgRE handles PostgreSQL type-with-modifier literals like
 	// char(20) 'text', varchar(50) 'text', character(10) 'text' → 'text'
 	typedLiteralWithArgRE = regexp.MustCompile(`(?i)\b(?:char|varchar|character\s+varying|character)\s*\(\s*\d+\s*\)\s+('(?:''|[^'])*')`)
-	typedLiteralRE     = regexp.MustCompile(`(?i)\b(int2|int4|int8|float4|float8|numeric|decimal|real|double|integer|smallint|bigint|text|varchar|bpchar|char|pg_lsn|point|bit|varbit|date|time|timestamp|timestamptz|interval|macaddr|macaddr8|uuid|regclass|regtype|oid|regproc|regoper|circle|path|line|lseg|polygon|box|cidr|inet|name|txid_snapshot|pg_snapshot|xid|xid8|tid|cid|money|json|jsonb|bytea)\s+('(?:''|[^'])*')`)
-	createIndexUsingRE = regexp.MustCompile(`(?i)(CREATE\s+(?:UNIQUE\s+)?INDEX\b.+?\bON\s+\S+)\s+USING\s+\S+\s*(\()`)
+	typedLiteralRE     = regexp.MustCompile(`(?i)\b(int2|int4|int8|float4|float8|numeric|decimal|real|double|integer|smallint|bigint|text|varchar|bpchar|char|pg_lsn|point|bit|varbit|date|time|timetz|timestamp|timestamptz|interval|macaddr|macaddr8|uuid|regclass|regtype|oid|regproc|regoper|circle|path|line|lseg|polygon|box|cidr|inet|name|txid_snapshot|pg_snapshot|xid|xid8|tid|cid|money|json|jsonb|bytea)\s+('(?:''|[^'])*')`)
+	createIndexUsingRE = regexp.MustCompile(`(?is)(CREATE\s+(?:UNIQUE\s+)?INDEX\b.+?\bON\s+\S+)\s+USING\s+\S+\s*(\()`)
 	ilikeRE            = regexp.MustCompile(`(?i)\bILIKE\b`)
 	returningRE        = regexp.MustCompile(`(?i)\bRETURNING\b`)
 	// Rewrites "RETURNING table.*" → "RETURNING *" because SQLite rejects table-qualified wildcards
@@ -100,6 +100,19 @@ var (
 	compressionRE      = regexp.MustCompile(`(?i)\bCOMPRESSION\s+\w+\b`)
 	withOidsRE         = regexp.MustCompile(`(?i)\s+WITH\s+OIDS\b|\s+WITH\s*\(\s*oids(?:\s*=\s*true)?\s*\)`)
 	withoutOidsRE      = regexp.MustCompile(`(?i)\s+WITHOUT\s+OIDS\b|\s+WITH\s*\(\s*oids\s*=\s*false\s*\)`)
+	// Strip USING access_method from CREATE TABLE/VIEW/MATVIEW/SEQUENCE/INDEX
+	// (e.g. CREATE TABLE t (cols) USING heap2; or CREATE TABLE t USING heap AS SELECT ...)
+	// Strip USING access_method clause that appears between table name and AS/PARTITION/column-list:
+	//   CREATE TABLE t USING heap AS SELECT ...    (between name and AS)
+	//   CREATE MATERIALIZED VIEW mv USING heap AS  (same)
+	// Captured groups: $1=before-USING, $2=AS/PARTITION/(
+	createUsingAMBeforeAS = regexp.MustCompile(`(?is)(CREATE\s+(?:UNLOGGED\s+|TEMP(?:ORARY)?\s+)?(?:TABLE|MATERIALIZED\s+VIEW|VIEW|SEQUENCE)\b.+?)\s+USING\s+[A-Za-z_][A-Za-z0-9_]*\s+(AS\b|PARTITION\s+BY\b)`)
+	// Strip trailing USING access_method at the end of CREATE TABLE/MATVIEW (after column list or table name)
+	// e.g. CREATE TABLE t (cols) USING heap2;  or  CREATE TABLE t (cols) PARTITION BY range (a) USING heap;
+	createUsingAMTrailingRE = regexp.MustCompile(`(?i)(CREATE\s+(?:UNLOGGED\s+|TEMP(?:ORARY)?\s+)?(?:TABLE|MATERIALIZED\s+VIEW|SEQUENCE)\b[^;]*?)\s+USING\s+[A-Za-z_][A-Za-z0-9_]*\s*;?\s*$`)
+	// Strip EXCLUDE USING constraints from CREATE/ALTER TABLE column definitions
+	// Matches: [,] EXCLUDE USING method (col WITH op [, ...]) [INCLUDE (cols)] [WHERE (...)]
+	excludeUsingRE = regexp.MustCompile(`(?i),?\s*EXCLUDE\s+USING\s+\w+\s*\([^)]*\)(?:\s*INCLUDE\s*\([^)]*\))?(?:\s*WHERE\s*\([^)]*\))?`)
 	emptyTableRE       = regexp.MustCompile(`(?i)(CREATE\s+(?:TEMP(?:ORARY)?\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[A-Za-z0-9_".]+)\s*\(\s*\)`)
 	insertDefaultRE    = regexp.MustCompile(`(?i)\bDEFAULT\b`)
 	insertSelectRE     = regexp.MustCompile(`(?i)^\s*(INSERT\s+INTO\s+[A-Za-z0-9_".]+)\s*\(\s*(SELECT\b.+)\)\s*$`)
@@ -133,6 +146,11 @@ var (
 	deferRE = regexp.MustCompile(`(?i)\s+DEFERRABLE(?:\s+INITIALLY\s+(?:DEFERRED|IMMEDIATE))?|\s+INITIALLY\s+(?:DEFERRED|IMMEDIATE)`)
 	// WITH [CASCADED|LOCAL] CHECK OPTION — SQLite view syntax doesn't support this
 	withCheckOptionRE = regexp.MustCompile(`(?i)\s+WITH\s+(?:CASCADED\s+|LOCAL\s+)?CHECK\s+OPTION\b`)
+	// AT TIME ZONE / AT LOCAL — SQLite has no time zone support; strip the operator and zone expression.
+	// Matches: AT TIME ZONE ('tz'|INTERVAL '...'|current_setting(...)|identifier)
+	atTimeZoneRE = regexp.MustCompile(`(?i)\s+AT\s+TIME\s+ZONE\s+(?:INTERVAL\s+'[^']*'(?:::[A-Za-z\s]+)?|current_setting\s*\([^)]*\)|'[^']*'|\w+(?:\.\w+)*)`)
+	// AT LOCAL — strip entirely
+	atLocalRE = regexp.MustCompile(`(?i)\s+AT\s+LOCAL\b`)
 )
 
 var idxCounter atomic.Int64
@@ -241,8 +259,13 @@ func Rewrite(sql string) string {
 	out = rowConstructorRE.ReplaceAllString(out, "(")
 	out = withoutTimeZoneRE.ReplaceAllString(out, "$1")
 	out = withTimeZoneRE.ReplaceAllString(out, "$1")
+	out = atTimeZoneRE.ReplaceAllString(out, "")
+	out = atLocalRE.ReplaceAllString(out, "")
 	out = rewriteCollateClause(out)
 	out = rewriteColumnCompression(out)
+	out = excludeUsingRE.ReplaceAllString(out, "")
+	out = rewriteCreateUsingAM(out)
+	out = createUsingAMTrailingRE.ReplaceAllString(out, "$1")
 	out = rewriteWithOids(out)
 	out = rewriteEmptyTable(out)
 	out = rewriteInsertDefault(out)
@@ -798,12 +821,38 @@ func rewriteParametersAndCasts(sql string) string {
 	return sb.String()
 }
 
+// isInsideSingleQuote returns true if position pos is inside a single-quoted string literal.
+func isInsideSingleQuote(sql string, pos int) bool {
+	inStr := false
+	for i := 0; i < pos; i++ {
+		if sql[i] == '\'' {
+			if !inStr {
+				inStr = true
+			} else if i+1 < pos && sql[i+1] == '\'' {
+				i++ // escaped quote
+			} else {
+				inStr = false
+			}
+		}
+	}
+	return inStr
+}
+
 func rewritePGCast(sql string) string {
+	offset := 0
 	for {
-		loc := castRE.FindStringIndex(sql)
+		loc := castRE.FindStringIndex(sql[offset:])
 		if loc == nil {
 			break
 		}
+		absStart := offset + loc[0]
+		absEnd := offset + loc[1]
+		// Skip casts inside string literals (e.g., '::ffff:...' matches castRE but is not a cast)
+		if isInsideSingleQuote(sql, absStart) {
+			offset = absEnd
+			continue
+		}
+		loc = []int{absStart, absEnd}
 		typeName := strings.TrimSpace(castRE.FindStringSubmatch(sql[loc[0]:])[1])
 		typeName, trailing := splitCastTypeTrailingSQL(typeName)
 		typeName, aliasTrailing := splitCastTypeAlias(typeName)
@@ -821,11 +870,14 @@ func rewritePGCast(sql string) string {
 		suffix := trailing + sql[loc[1]:]
 		if expr == "" {
 			sql = prefix + suffix
+			offset = 0
 		} else if origTypeName == "regclass" {
 			// Rewrite 'tablename'::regclass to look up oid in pg_class
 			sql = prefix + "(SELECT oid FROM pg_class WHERE relname = " + expr + ")" + suffix
+			offset = 0
 		} else {
 			sql = prefix + "CAST(" + expr + " AS " + typeName + ")" + suffix
+			offset = 0
 		}
 	}
 	return sql
@@ -2730,6 +2782,8 @@ var tableColAliasSQLKeywords = map[string]bool{
 	"LIKE": true, "BETWEEN": true, "CASE": true, "WHEN": true, "THEN": true,
 	"ELSE": true, "END": true, "SELECT": true, "FROM": true, "JOIN": true,
 	"AS": true, "WITH": true, "BY": true, "FETCH": true, "ROWS": true, "ROW": true,
+	"USING": true, "EXCLUDE": true, "WINDOW": true, "OVER": true, "FILTER": true,
+	"WITHIN": true, "PARTITION": true, "VALUES": true,
 }
 
 // rewriteGenericTableColAlias strips column alias lists from table references like
@@ -2778,7 +2832,7 @@ func rewriteViewOptions(sql string) string {
 func rewriteTableWithOptions(sql string) string {
 	// Quick check: must contain WITH (
 	lower := strings.ToLower(sql)
-	if !strings.Contains(lower, " with ") && !strings.Contains(lower, "\twith ") {
+	if !strings.Contains(lower, " with ") && !strings.Contains(lower, "\twith ") && !strings.Contains(lower, "\nwith ") && !strings.Contains(lower, "\rwith ") {
 		return sql
 	}
 	// Only apply to CREATE TABLE statements
@@ -4061,6 +4115,23 @@ func rewriteDropCascade(sql string) string {
 	return dropCascadeRE.ReplaceAllString(sql, "$1$3")
 }
 
+var dropIfExistsRE = regexp.MustCompile(`(?i)^\s*(DROP\s+(?:TABLE|INDEX|VIEW|SEQUENCE|FUNCTION|PROCEDURE|AGGREGATE|TYPE|DOMAIN|RULE|TRIGGER|SCHEMA|POLICY|EXTENSION|STATISTICS|COLLATION|CONVERSION|LANGUAGE|SERVER|FOREIGN\s+TABLE|MATERIALIZED\s+VIEW|PUBLICATION|SUBSCRIPTION|ROLE)\s+)(.*)`)
+
+// rewriteDropIfExists adds IF EXISTS to DROP statements that don't have it,
+// preventing errors when the object doesn't exist.
+func rewriteDropIfExists(sql string) string {
+	m := dropIfExistsRE.FindStringSubmatch(sql)
+	if m == nil {
+		return sql
+	}
+	rest := m[2]
+	if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(rest)), "IF EXISTS") ||
+		strings.HasPrefix(strings.ToUpper(strings.TrimLeft(rest, " \t")), "IF EXISTS") {
+		return sql
+	}
+	return m[1] + "IF EXISTS " + rest
+}
+
 // rewritePartitionBy strips PARTITION BY clauses from CREATE TABLE (SQLite has no partitioning).
 // CREATE TABLE ... PARTITION OF ... (partition child tables) become regular CREATE TABLE.
 func rewritePartitionBy(sql string) string {
@@ -4388,6 +4459,15 @@ func rewriteInsertDefault(sql string) string {
 		i++
 	}
 	return prefix + result.String()
+}
+
+// rewriteCreateUsingAM strips the USING access_method clause from CREATE TABLE/VIEW/MATVIEW/SEQUENCE.
+// Examples:
+//   CREATE TABLE t USING heap2 AS SELECT ...                  → CREATE TABLE t AS SELECT ...
+//   CREATE MATERIALIZED VIEW mv USING heap AS SELECT ...      → CREATE MATERIALIZED VIEW mv AS SELECT ...
+// Does NOT strip USING in EXCLUDE USING, DELETE/UPDATE USING, ORDER BY col USING op, JOIN USING.
+func rewriteCreateUsingAM(sql string) string {
+	return createUsingAMBeforeAS.ReplaceAllString(sql, "$1 $2")
 }
 
 // rewriteWithOids strips WITH OIDS and WITHOUT OIDS clauses (legacy PostgreSQL).

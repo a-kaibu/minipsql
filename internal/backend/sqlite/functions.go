@@ -149,6 +149,9 @@ func init() {
 	sqlite.MustRegisterDeterministicScalarFunction("boolne", 2, boolneFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("gcd", 2, gcdFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("lcm", 2, lcmFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("trim_scale", 1, trimScaleFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("min_scale", 1, minScaleFunc)
+	sqlite.MustRegisterDeterministicScalarFunction("scale", 1, scaleFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("makeaclitem", 4, makeaclitemFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("array_fill", -1, arrayFillFunc)
 	sqlite.MustRegisterDeterministicScalarFunction("minipsql_array", -1, minipsqlArrayFunc)
@@ -3751,6 +3754,10 @@ func parseTimestamp(v driver.Value) (time.Time, bool) {
 			}
 		}
 	}
+	// Normalize short timezone offsets like "-04" or "+05" to "-04:00" or "+05:00"
+	// so that Go's time.Parse can handle them with Z07:00 format.
+	s = normalizeShortTZ(s)
+
 	formats := []string{
 		"2006-01-02 15:04:05.999999999Z07:00",
 		"2006-01-02 15:04:05.999999999",
@@ -3761,7 +3768,9 @@ func parseTimestamp(v driver.Value) (time.Time, bool) {
 		"2006-01-02T15:04:05Z07:00",
 		"2006-01-02T15:04:05",
 		"2006-01-02",
+		"15:04:05.999999999Z07:00",
 		"15:04:05.999999999",
+		"15:04:05Z07:00",
 		"15:04:05",
 	}
 	for _, f := range formats {
@@ -5370,6 +5379,91 @@ func lastvalFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, 
 	defer s.mu.Unlock()
 	return s.value, nil
 }
+
+// trimScaleFunc removes trailing zeros from a numeric value.
+// trim_scale(1.500) = 1.5, trim_scale(1.000) = 1
+func trimScaleFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("trim_scale requires 1 argument")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	s := fmt.Sprintf("%v", args[0])
+	// Try to parse as a float/decimal string
+	if strings.Contains(s, ".") {
+		s = strings.TrimRight(s, "0")
+		s = strings.TrimRight(s, ".")
+	}
+	return s, nil
+}
+
+// minScaleFunc returns the minimum scale (decimal digits) needed to represent the value exactly.
+func minScaleFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("min_scale requires 1 argument")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	s := fmt.Sprintf("%v", args[0])
+	dotIdx := strings.Index(s, ".")
+	if dotIdx < 0 {
+		return int64(0), nil
+	}
+	frac := s[dotIdx+1:]
+	frac = strings.TrimRight(frac, "0")
+	return int64(len(frac)), nil
+}
+
+// scaleFunc returns the scale (number of decimal digits) of a numeric value.
+func scaleFunc(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("scale requires 1 argument")
+	}
+	if args[0] == nil {
+		return nil, nil
+	}
+	s := fmt.Sprintf("%v", args[0])
+	dotIdx := strings.Index(s, ".")
+	if dotIdx < 0 {
+		return int64(0), nil
+	}
+	return int64(len(s) - dotIdx - 1), nil
+}
+
+// normalizeShortTZ converts short timezone offsets like "-04" or "+05" to
+// "-04:00" or "+05:00" so Go's time.Parse can handle them with Z07:00 format.
+// Only applies when the string contains a time component (space or T separator),
+// to avoid converting date-only strings like "2015-04-01" incorrectly.
+func normalizeShortTZ(s string) string {
+	n := len(s)
+	if n < 3 {
+		return s
+	}
+	// Only normalize TZ if the string contains a time component (space or T separator).
+	// Date-only strings like "2015-04-01" must not be modified.
+	hasTime := strings.ContainsAny(s, " T")
+	if !hasTime {
+		return s
+	}
+	// Check if string ends with ±HH (length 3: sign + 2 digits)
+	tail := s[n-3:]
+	if (tail[0] == '+' || tail[0] == '-') && isDigit(tail[1]) && isDigit(tail[2]) {
+		// Make sure there's no colon already (avoid ±HH:MM)
+		if n >= 4 && s[n-4] == ':' {
+			return s
+		}
+		// Previous char should be a digit (end of seconds field like "25-04")
+		if n > 3 && !isDigit(s[n-4]) {
+			return s
+		}
+		return s[:n-3] + tail + ":00"
+	}
+	return s
+}
+
+func isDigit(c byte) bool { return c >= '0' && c <= '9' }
 
 func valueInt64(v driver.Value) int64 {
 	switch x := v.(type) {

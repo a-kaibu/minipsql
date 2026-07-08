@@ -88,7 +88,7 @@ var (
 	inheritsRE          = regexp.MustCompile(`(?i)\s+INHERITS\s*\(([^)]+)\)`)
 	generatedStoredRE   = regexp.MustCompile(`(?i)\s+GENERATED\s+ALWAYS\s+AS\s+\(([^)]+)\)\s+(?:STORED|VIRTUAL)`)
 	generatedByDefaultStoredRE = regexp.MustCompile(`(?i)\s+GENERATED\s+BY\s+DEFAULT\s+AS\s+\(([^)]+)\)\s+STORED`)
-	dropMultiTableRE   = regexp.MustCompile(`(?i)^\s*(DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?)([A-Za-z0-9_".,\s]+?)(\s+(?:CASCADE|RESTRICT))?\s*;?\s*$`)
+	dropMultiTableRE   = regexp.MustCompile(`(?i)^\s*(DROP\s+TABLE(?:\s+IF\s+EXISTS)?\s+)([A-Za-z0-9_".,\s]+?)(\s+(?:CASCADE|RESTRICT))?\s*;?\s*$`)
 	indexOpClassRE     = regexp.MustCompile(`(?i)\b([A-Za-z0-9_]+)\s+([A-Za-z0-9_]+_ops\b)(?:\s*\([^)]*\))?(?:\s+ASC|\s+DESC)?`)
 	nullsFirstLastRE   = regexp.MustCompile(`(?i)\bNULLS\s+(?:FIRST|LAST)\b`)
 	collateClauseRE    = regexp.MustCompile(`(?i)\bCOLLATE\s+(?:"([^"]*)"|([A-Za-z0-9_.]+))`)
@@ -4301,9 +4301,9 @@ func rewriteDropMultiTable(sql string) string {
 	if sub == nil {
 		return sql
 	}
-	prefix := sub[1]   // "DROP TABLE " or "DROP TABLE IF EXISTS "
+	prefix := sub[1] // "DROP TABLE " or "DROP TABLE IF EXISTS "
 	tableList := sub[2]
-	// sub[3] is cascade/restrict - we ignore it (strip it)
+	// sub[3] is CASCADE/RESTRICT — we ignore it (strip it)
 
 	tables := strings.Split(tableList, ",")
 	stmts := make([]string, 0, len(tables))

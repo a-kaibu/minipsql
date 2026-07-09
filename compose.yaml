@@ -12,6 +12,7 @@ services:
       REGRESS_BATCH: "${REGRESS_BATCH:-}"
       REGRESS_BATCH_COUNT: "${REGRESS_BATCH_COUNT:-}"
       REGRESS_PARALLELISM: "${REGRESS_PARALLELISM:-8}"
+      REGRESS_FILTER: "${REGRESS_FILTER:-}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

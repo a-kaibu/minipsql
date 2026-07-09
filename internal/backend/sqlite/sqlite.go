@@ -59,7 +59,25 @@ func initDatabase(ctx context.Context, db *sql.DB) error {
 			typdelim TEXT,
 			typrelid INTEGER,
 			typelem INTEGER,
-			typarray INTEGER
+			typarray INTEGER,
+			typalign TEXT DEFAULT 'i',
+			typstorage TEXT DEFAULT 'p',
+			typnotnull INTEGER DEFAULT 0,
+			typbasetype INTEGER DEFAULT 0,
+			typtypmod INTEGER DEFAULT -1,
+			typndims INTEGER DEFAULT 0,
+			typcollation INTEGER DEFAULT 0,
+			typdefaultbin TEXT,
+			typacl TEXT,
+			typdefault TEXT,
+			typinput TEXT DEFAULT '-',
+			typoutput TEXT DEFAULT '-',
+			typreceive TEXT DEFAULT '-',
+			typsend TEXT DEFAULT '-',
+			typmodin TEXT DEFAULT '-',
+			typmodout TEXT DEFAULT '-',
+			typanalyze TEXT DEFAULT '-',
+			typsubscript TEXT DEFAULT '-'
 		)`,
 		`CREATE TABLE IF NOT EXISTS main.pg_index (
 			indexrelid INTEGER PRIMARY KEY,
@@ -235,6 +253,580 @@ func initDatabase(ctx context.Context, db *sql.DB) error {
 			collctype TEXT,
 			colliculocale TEXT
 		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_authid (
+			oid INTEGER,
+			rolname TEXT PRIMARY KEY,
+			rolsuper INTEGER DEFAULT 0,
+			rolinherit INTEGER DEFAULT 1,
+			rolcreaterole INTEGER DEFAULT 0,
+			rolcreatedb INTEGER DEFAULT 0,
+			rolcanlogin INTEGER DEFAULT 1,
+			rolreplication INTEGER DEFAULT 0,
+			rolbypassrls INTEGER DEFAULT 0,
+			rolconnlimit INTEGER DEFAULT -1,
+			rolpassword TEXT,
+			rolvaliduntil TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_language (
+			oid INTEGER PRIMARY KEY,
+			lanname TEXT,
+			lanowner INTEGER,
+			lanispl INTEGER DEFAULT 0,
+			lanpltrusted INTEGER DEFAULT 0,
+			lanplcallfoid INTEGER DEFAULT 0,
+			laninline INTEGER DEFAULT 0,
+			lanvalidator INTEGER DEFAULT 0,
+			lanacl TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_prepared_statements (
+			name TEXT,
+			statement TEXT,
+			prepare_time TEXT,
+			parameter_types TEXT,
+			result_types TEXT,
+			from_sql INTEGER,
+			generic_plans INTEGER,
+			custom_plans INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_locks (
+			locktype TEXT,
+			database INTEGER,
+			datoid INTEGER,
+			relation INTEGER,
+			page INTEGER,
+			tuple INTEGER,
+			virtualxid TEXT,
+			transactionid INTEGER,
+			classid INTEGER,
+			objid INTEGER,
+			objsubid INTEGER,
+			virtualtransaction TEXT,
+			pid INTEGER,
+			mode TEXT,
+			granted INTEGER,
+			fastpath INTEGER,
+			waitstart TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_stat_activity (
+			datid INTEGER,
+			datname TEXT,
+			pid INTEGER,
+			leader_pid INTEGER,
+			usesysid INTEGER,
+			usename TEXT,
+			application_name TEXT,
+			client_addr TEXT,
+			client_hostname TEXT,
+			client_port INTEGER,
+			backend_start TEXT,
+			xact_start TEXT,
+			query_start TEXT,
+			state_change TEXT,
+			wait_event_type TEXT,
+			wait_event TEXT,
+			state TEXT,
+			backend_xid INTEGER,
+			backend_xmin INTEGER,
+			query_id INTEGER,
+			query TEXT,
+			backend_type TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_aggregate (
+			aggfnoid INTEGER PRIMARY KEY,
+			aggkind TEXT,
+			aggnumdirectargs INTEGER,
+			aggtransfn TEXT,
+			aggfinalfn TEXT,
+			aggcombinefn TEXT,
+			aggserialfn TEXT,
+			aggdeserialfn TEXT,
+			aggmtransfn TEXT,
+			aggminvtransfn TEXT,
+			aggmfinalfn TEXT,
+			aggfinalextra INTEGER,
+			aggmfinalextra INTEGER,
+			aggfinalmodify TEXT,
+			aggmfinalmodify TEXT,
+			aggsortop INTEGER,
+			aggtranstype INTEGER,
+			aggtransspace INTEGER,
+			aggmtranstype INTEGER,
+			aggmtransspace INTEGER,
+			agginitval TEXT,
+			aggminitval TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_cast (
+			oid INTEGER PRIMARY KEY,
+			castsource INTEGER,
+			casttarget INTEGER,
+			castfunc INTEGER,
+			castcontext TEXT,
+			castmethod TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_enum (
+			oid INTEGER PRIMARY KEY,
+			enumtypid INTEGER,
+			enumsortorder REAL,
+			enumlabel TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_trigger (
+			oid INTEGER PRIMARY KEY,
+			tgrelid INTEGER,
+			tgparentid INTEGER,
+			tgname TEXT,
+			tgfoid INTEGER,
+			tgtype INTEGER,
+			tgenabled TEXT,
+			tgisinternal INTEGER,
+			tgownedbyconstraint INTEGER,
+			tgconstrrelid INTEGER,
+			tgconstrindid INTEGER,
+			tgconstraint INTEGER,
+			tgdeferrable INTEGER,
+			tginitdeferred INTEGER,
+			tgnargs INTEGER,
+			tgattr TEXT,
+			tgargs TEXT,
+			tgqual TEXT,
+			tgoldtable TEXT,
+			tgnewtable TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_statistic_ext (
+			oid INTEGER PRIMARY KEY,
+			stxrelid INTEGER,
+			stxname TEXT,
+			stxnamespace INTEGER,
+			stxowner INTEGER,
+			stxstattarget INTEGER,
+			stxkeys TEXT,
+			stxkind TEXT,
+			stxexprs TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_statistic_ext_data (
+			stxoid INTEGER,
+			stxdinherit INTEGER,
+			stxdndistinct TEXT,
+			stxddependencies TEXT,
+			stxdmcv TEXT,
+			stxdexpr TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_inherits (
+			inhrelid INTEGER,
+			inhparent INTEGER,
+			inhseqno INTEGER,
+			inhdetachpending INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_opfamily (
+			oid INTEGER PRIMARY KEY,
+			opfmethod INTEGER,
+			opfname TEXT,
+			opfnamespace INTEGER,
+			opfowner INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_amop (
+			oid INTEGER PRIMARY KEY,
+			amopfamily INTEGER,
+			amoplefttype INTEGER,
+			amoprighttype INTEGER,
+			amopstrategy INTEGER,
+			amoppurpose TEXT,
+			amopopr INTEGER,
+			amopmethod INTEGER,
+			amopsortfamily INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_amproc (
+			oid INTEGER PRIMARY KEY,
+			amprocfamily INTEGER,
+			amproclefttype INTEGER,
+			amprocrighttype INTEGER,
+			amprocnum INTEGER,
+			amproc INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_description (
+			objoid INTEGER,
+			classoid INTEGER,
+			objsubid INTEGER,
+			description TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_shdescription (
+			objoid INTEGER,
+			classoid INTEGER,
+			description TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_ts_config (
+			oid INTEGER PRIMARY KEY,
+			cfgname TEXT,
+			cfgnamespace INTEGER,
+			cfgowner INTEGER,
+			cfgparser INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_ts_dict (
+			oid INTEGER PRIMARY KEY,
+			dictname TEXT,
+			dictnamespace INTEGER,
+			dictowner INTEGER,
+			dicttemplate INTEGER,
+			dictinitoption TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_ts_parser (
+			oid INTEGER PRIMARY KEY,
+			prsname TEXT,
+			prsnamespace INTEGER,
+			prsstart INTEGER,
+			prstoken INTEGER,
+			prsend INTEGER,
+			prsheadline INTEGER,
+			prslextype INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_ts_template (
+			oid INTEGER PRIMARY KEY,
+			tmplname TEXT,
+			tmplnamespace INTEGER,
+			tmplinit INTEGER,
+			tmpllexize INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_range (
+			rngtypid INTEGER PRIMARY KEY,
+			rngsubtype INTEGER,
+			rngmultitypid INTEGER,
+			rngcollation INTEGER,
+			rngsubopc INTEGER,
+			rngcanonical INTEGER,
+			rngsubdiff INTEGER,
+			rngconstruct2 INTEGER DEFAULT 0,
+			rngconstruct3 INTEGER DEFAULT 0,
+			rngmltconstruct0 INTEGER DEFAULT 0,
+			rngmltconstruct1 INTEGER DEFAULT 0,
+			rngmltconstruct2 INTEGER DEFAULT 0
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_roles (
+			oid INTEGER,
+			rolname TEXT PRIMARY KEY,
+			rolsuper INTEGER,
+			rolinherit INTEGER,
+			rolcreaterole INTEGER,
+			rolcreatedb INTEGER,
+			rolcanlogin INTEGER,
+			rolreplication INTEGER,
+			rolconnlimit INTEGER,
+			rolpassword TEXT,
+			rolvaliduntil TEXT,
+			rolbypassrls INTEGER,
+			rolconfig TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_tablespace (
+			oid INTEGER PRIMARY KEY,
+			spcname TEXT,
+			spcowner INTEGER,
+			spcacl TEXT,
+			spcoptions TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_foreign_server (
+			oid INTEGER PRIMARY KEY,
+			srvname TEXT,
+			srvowner INTEGER,
+			srvfdw INTEGER,
+			srvtype TEXT,
+			srvversion TEXT,
+			srvacl TEXT,
+			srvoptions TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_foreign_data_wrapper (
+			oid INTEGER PRIMARY KEY,
+			fdwname TEXT,
+			fdwowner INTEGER,
+			fdwhandler INTEGER,
+			fdwvalidator INTEGER,
+			fdwacl TEXT,
+			fdwoptions TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_conversion (
+			oid INTEGER PRIMARY KEY,
+			conname TEXT,
+			connamespace INTEGER,
+			conowner INTEGER,
+			conforencoding INTEGER,
+			contoencoding INTEGER,
+			conproc INTEGER,
+			condefault INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_publication (
+			oid INTEGER PRIMARY KEY,
+			pubname TEXT,
+			pubowner INTEGER,
+			puballtables INTEGER,
+			pubinsert INTEGER,
+			pubupdate INTEGER,
+			pubdelete INTEGER,
+			pubtruncate INTEGER,
+			pubviaroot INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_subscription (
+			oid INTEGER PRIMARY KEY,
+			subdbid INTEGER,
+			subskiplsn TEXT,
+			subname TEXT,
+			subowner INTEGER,
+			subenabled INTEGER,
+			subbinary INTEGER,
+			substream INTEGER,
+			subtwophasestate TEXT,
+			subdisableonerr INTEGER,
+			subpasswordrequired INTEGER,
+			subrunasowner INTEGER,
+			subfailover INTEGER,
+			subconninfo TEXT,
+			subslotname TEXT,
+			subsynccommit TEXT,
+			subpublications TEXT,
+			suborigin TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_stat_user_tables (
+			relid INTEGER,
+			schemaname TEXT,
+			relname TEXT,
+			seq_scan INTEGER,
+			last_seq_scan TEXT,
+			seq_tup_read INTEGER,
+			idx_scan INTEGER,
+			last_idx_scan TEXT,
+			idx_tup_fetch INTEGER,
+			n_tup_ins INTEGER,
+			n_tup_upd INTEGER,
+			n_tup_del INTEGER,
+			n_tup_hot_upd INTEGER,
+			n_tup_newpage_upd INTEGER,
+			n_live_tup INTEGER,
+			n_dead_tup INTEGER,
+			n_mod_since_analyze INTEGER,
+			n_ins_since_vacuum INTEGER,
+			last_vacuum TEXT,
+			last_autovacuum TEXT,
+			last_analyze TEXT,
+			last_autoanalyze TEXT,
+			vacuum_count INTEGER,
+			autovacuum_count INTEGER,
+			analyze_count INTEGER,
+			autoanalyze_count INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_stat_all_tables (
+			relid INTEGER,
+			schemaname TEXT,
+			relname TEXT,
+			seq_scan INTEGER,
+			last_seq_scan TEXT,
+			seq_tup_read INTEGER,
+			idx_scan INTEGER,
+			last_idx_scan TEXT,
+			idx_tup_fetch INTEGER,
+			n_tup_ins INTEGER,
+			n_tup_upd INTEGER,
+			n_tup_del INTEGER,
+			n_tup_hot_upd INTEGER,
+			n_tup_newpage_upd INTEGER,
+			n_live_tup INTEGER,
+			n_dead_tup INTEGER,
+			n_mod_since_analyze INTEGER,
+			n_ins_since_vacuum INTEGER,
+			last_vacuum TEXT,
+			last_autovacuum TEXT,
+			last_analyze TEXT,
+			last_autoanalyze TEXT,
+			vacuum_count INTEGER,
+			autovacuum_count INTEGER,
+			analyze_count INTEGER,
+			autoanalyze_count INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_stats (
+			schemaname TEXT,
+			tablename TEXT,
+			attname TEXT,
+			inherited INTEGER,
+			null_frac REAL,
+			avg_width INTEGER,
+			n_distinct REAL,
+			most_common_vals TEXT,
+			most_common_freqs TEXT,
+			histogram_bounds TEXT,
+			correlation REAL,
+			most_common_elems TEXT,
+			most_common_elem_freqs TEXT,
+			elem_count_histogram TEXT,
+			range_length_histogram TEXT,
+			range_empty_frac REAL,
+			range_bounds_histogram TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_auth_members (
+			oid INTEGER PRIMARY KEY,
+			roleid INTEGER,
+			member INTEGER,
+			grantor INTEGER,
+			admin_option INTEGER,
+			inherit_option INTEGER,
+			set_option INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_indexes (
+			schemaname TEXT,
+			tablename TEXT,
+			indexname TEXT,
+			tablespace TEXT,
+			indexdef TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_views (
+			schemaname TEXT,
+			viewname TEXT,
+			viewowner TEXT,
+			definition TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_rules (
+			schemaname TEXT,
+			tablename TEXT,
+			rulename TEXT,
+			definition TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_stat_user_functions (
+			funcid INTEGER,
+			schemaname TEXT,
+			funcname TEXT,
+			calls INTEGER,
+			total_time REAL,
+			self_time REAL
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_cursors (
+			name TEXT,
+			statement TEXT,
+			is_holdable INTEGER,
+			is_binary INTEGER,
+			is_scrollable INTEGER,
+			creation_time TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_prepared_xacts (
+			"transaction" INTEGER,
+			gid TEXT,
+			prepared TEXT,
+			owner TEXT,
+			database TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_largeobject_metadata (
+			oid INTEGER PRIMARY KEY,
+			lomowner INTEGER,
+			lomacl TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_statistic (
+			starelid INTEGER,
+			staattnum INTEGER,
+			stainherit INTEGER,
+			stanullfrac REAL,
+			stawidth INTEGER,
+			stadistinct REAL,
+			stakind1 INTEGER,
+			stakind2 INTEGER,
+			stakind3 INTEGER,
+			stakind4 INTEGER,
+			stakind5 INTEGER,
+			staop1 INTEGER,
+			staop2 INTEGER,
+			staop3 INTEGER,
+			staop4 INTEGER,
+			staop5 INTEGER,
+			stacoll1 INTEGER,
+			stacoll2 INTEGER,
+			stacoll3 INTEGER,
+			stacoll4 INTEGER,
+			stacoll5 INTEGER,
+			stanumbers1 TEXT,
+			stanumbers2 TEXT,
+			stanumbers3 TEXT,
+			stanumbers4 TEXT,
+			stanumbers5 TEXT,
+			stavalues1 TEXT,
+			stavalues2 TEXT,
+			stavalues3 TEXT,
+			stavalues4 TEXT,
+			stavalues5 TEXT
+		)`,
+		// Partition catalog tables (always empty — minipsql doesn't support partitioning)
+		`CREATE TABLE IF NOT EXISTS main.pg_partition_tree (
+			relid INTEGER,
+			parentrelid INTEGER,
+			isleaf INTEGER,
+			level INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_partition_ancestors (
+			relid INTEGER
+		)`,
+		// System views (always empty stubs)
+		`CREATE TABLE IF NOT EXISTS main.pg_available_extensions (
+			name TEXT, default_version TEXT, installed_version TEXT, comment TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_available_extension_versions (
+			name TEXT, version TEXT, installed INTEGER, superuser INTEGER,
+			trusted INTEGER, relocatable INTEGER, schema TEXT, requires TEXT, comment TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_config (
+			name TEXT, setting TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_file_settings (
+			sourcefile TEXT, sourceline INTEGER, seqno INTEGER, name TEXT,
+			setting TEXT, applied INTEGER, error TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_hba_file_rules (
+			rule_number INTEGER, file_name TEXT, line_number INTEGER,
+			type TEXT, database TEXT, user_name TEXT, address TEXT,
+			netmask TEXT, auth_method TEXT, options TEXT, error TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_ident_file_mappings (
+			map_number INTEGER, file_name TEXT, line_number INTEGER,
+			map_name TEXT, sys_name TEXT, pg_username TEXT, error TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_backend_memory_contexts (
+			type TEXT, name TEXT, ident TEXT, parent TEXT, level INTEGER,
+			path TEXT, total_bytes INTEGER, total_nblocks INTEGER,
+			free_bytes INTEGER, free_chunks INTEGER, used_bytes INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_stat_slru (
+			name TEXT, blks_zeroed INTEGER, blks_hit INTEGER, blks_read INTEGER,
+			blks_written INTEGER, blks_exists INTEGER, flushes INTEGER,
+			truncates INTEGER, stats_reset TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_stat_wal (
+			wal_records INTEGER, wal_fpi INTEGER, wal_bytes INTEGER,
+			wal_buffers_full INTEGER, wal_write INTEGER, wal_sync INTEGER,
+			wal_write_time INTEGER, wal_sync_time INTEGER, stats_reset TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_stat_wal_receiver (
+			pid INTEGER, status TEXT, receive_start_lsn TEXT, receive_start_tli INTEGER,
+			written_lsn TEXT, flushed_lsn TEXT, received_tli INTEGER,
+			last_msg_send_time TIMESTAMP, last_msg_receipt_time TIMESTAMP,
+			latest_end_lsn TEXT, latest_end_time TIMESTAMP, slot_name TEXT,
+			sender_host TEXT, sender_port INTEGER, conninfo TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_stat_recovery (
+			pid INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_timezone_abbrevs (
+			abbrev TEXT, utc_offset TEXT, is_dst INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_timezone_names (
+			name TEXT, abbrev TEXT, utc_offset TEXT, is_dst INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_wait_events (
+			type TEXT, name TEXT, description TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_settings (
+			name TEXT, setting TEXT, unit TEXT, category TEXT,
+			short_desc TEXT, extra_desc TEXT, context TEXT, vartype TEXT,
+			source TEXT, min_val TEXT, max_val TEXT, enumvals TEXT,
+			boot_val TEXT, reset_val TEXT, sourcefile TEXT, sourceline INTEGER,
+			pending_restart INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS main.pg_stat_io (
+			backend_type TEXT, object TEXT, context TEXT, reads INTEGER,
+			read_time INTEGER, writes INTEGER, write_time INTEGER,
+			writebacks INTEGER, writeback_time INTEGER, extends INTEGER,
+			extend_time INTEGER, op_bytes INTEGER, hits INTEGER, evictions INTEGER,
+			reuses INTEGER, fsyncs INTEGER, fsync_time INTEGER, stats_reset TIMESTAMP
+		)`,
 	}
 
 	for _, ddl := range ddls {
@@ -246,8 +838,8 @@ func initDatabase(ctx context.Context, db *sql.DB) error {
 	// Create dynamic views in main schema
 	views := []string{
 		`CREATE VIEW IF NOT EXISTS main.pg_class AS
-		SELECT 
-			10000 + rowid AS oid,
+		SELECT
+			CAST(10000 + rowid AS TEXT) AS oid,
 			name AS relname,
 			2200 AS relnamespace,
 			0 AS reltype,
@@ -263,7 +855,7 @@ func initDatabase(ctx context.Context, db *sql.DB) error {
 			0 AS relhasindex,
 			0 AS relisshared,
 			'p' AS relpersistence,
-			'r' AS relkind,
+			CASE type WHEN 'view' THEN 'v' ELSE 'r' END AS relkind,
 			0 AS relnatts,
 			0 AS relchecks,
 			0 AS relhasrules,
@@ -276,13 +868,15 @@ func initDatabase(ctx context.Context, db *sql.DB) error {
 			0 AS relispartition,
 			0 AS relrewrite,
 			0 AS relfrozenxid,
-			0 AS relminmxid
+			0 AS relminmxid,
+			NULL AS reloptions,
+			NULL AS relpartbound
 		FROM sqlite_schema
-		WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`,
+		WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'pg_%'`,
 
 		`CREATE VIEW IF NOT EXISTS main.pg_attribute AS
-		SELECT 
-			10000 + t.rowid AS attrelid,
+		SELECT
+			CAST(10000 + t.rowid AS TEXT) AS attrelid,
 			p.name AS attname,
 			CASE 
 				WHEN lower(p.type) = 'integer' THEN 23
@@ -299,18 +893,21 @@ func initDatabase(ctx context.Context, db *sql.DB) error {
 			p."notnull" AS attnotnull,
 			0 AS atthasdef,
 			0 AS atthasmissing,
+			NULL AS attmissingval,
 			'' AS attidentity,
 			'' AS attgenerated,
 			0 AS attisdropped,
 			1 AS attislocal,
 			0 AS attinhcount,
-			0 AS attcollation
+			0 AS attcollation,
+			'' AS attcompression,
+			-1 AS attstattarget
 		FROM sqlite_schema t
 		JOIN pragma_table_info(t.name) p
-		WHERE t.type = 'table' AND t.name NOT LIKE 'sqlite_%'`,
+		WHERE t.type = 'table' AND t.name NOT LIKE 'sqlite_%' AND t.name NOT LIKE 'pg_%'`,
 
 		`CREATE VIEW IF NOT EXISTS main.pg_tables AS
-		SELECT 
+		SELECT
 			'public' AS schemaname,
 			name AS tablename,
 			'mini' AS tableowner,
@@ -321,6 +918,40 @@ func initDatabase(ctx context.Context, db *sql.DB) error {
 			0 AS rowsecurity
 		FROM sqlite_schema
 		WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`,
+
+		// pg_attrdef: column default values (always empty in minipsql)
+		`CREATE VIEW IF NOT EXISTS main.pg_attrdef AS
+		SELECT
+			0 AS oid,
+			0 AS adrelid,
+			0 AS adnum,
+			'' AS adbin
+		WHERE 1 = 0`,
+
+		// pg_collation: collation definitions (always empty in minipsql)
+		`CREATE VIEW IF NOT EXISTS main.pg_collation AS
+		SELECT
+			0 AS oid,
+			'' AS collname,
+			0 AS collnamespace,
+			0 AS collowner,
+			'' AS collprovider,
+			0 AS collisdeterministic,
+			0 AS collencoding,
+			'' AS collcollate,
+			'' AS collctype,
+			NULL AS collictarget,
+			NULL AS collversion
+		WHERE 1 = 0`,
+
+		// pg_am: access methods (index types)
+		`CREATE VIEW IF NOT EXISTS main.pg_am AS
+		SELECT
+			0 AS oid,
+			'' AS amname,
+			0 AS amhandler,
+			'' AS amtype
+		WHERE 1 = 0`,
 	}
 
 	for _, view := range views {
@@ -352,6 +983,9 @@ func initDatabase(ctx context.Context, db *sql.DB) error {
 		INSERT OR IGNORE INTO main.pg_type (oid, typname, typnamespace) VALUES (2950, 'uuid', 11);
 
 		INSERT OR IGNORE INTO main.pg_init_privs (objoid, classid, objsubid, privtype, initprivs) VALUES (0, 0, 0, 'i', '{}');
+		INSERT OR IGNORE INTO main.pg_database (oid, datname, datdba, encoding, datcollate, datctype, datistemplate, datallowconn, datconnlimit) VALUES (1, 'default', 10, 6, 'C', 'C', 0, 1, -1);
+		INSERT OR IGNORE INTO main.pg_database (oid, datname, datdba, encoding, datcollate, datctype, datistemplate, datallowconn, datconnlimit) VALUES (2, 'minipsql', 10, 6, 'C', 'C', 0, 1, -1);
+		INSERT OR IGNORE INTO main.pg_database (oid, datname, datdba, encoding, datcollate, datctype, datistemplate, datallowconn, datconnlimit) VALUES (3, 'regression', 10, 6, 'C', 'C', 0, 1, -1);
 	`
 	if _, err := db.ExecContext(ctx, populateSQL); err != nil {
 		return err
@@ -410,7 +1044,7 @@ func (s *sessionBackend) Query(ctx context.Context, query string, args []backend
 		if i < len(types) {
 			dbType = types[i].DatabaseTypeName()
 		}
-		cols[i] = backend.Column{Name: name, TypeOID: compat.TypeOID(dbType)}
+		cols[i] = backend.Column{Name: normalizeSQLiteColName(name), TypeOID: compat.TypeOID(dbType)}
 	}
 	var out [][]backend.Value
 	for rows.Next() {
@@ -435,6 +1069,15 @@ func (s *sessionBackend) Query(ctx context.Context, query string, args []backend
 		return nil, err
 	}
 	return &backend.Result{Columns: cols, Rows: out}, nil
+}
+
+// normalizeSQLiteColName removes trailing () from function call column names.
+// e.g. "txid_current()" → "txid_current", "current_user()" → "current_user"
+func normalizeSQLiteColName(name string) string {
+	if strings.HasSuffix(name, "()") {
+		return name[:len(name)-2]
+	}
+	return name
 }
 
 func (s *sessionBackend) Exec(ctx context.Context, query string, args []backend.Value) (*backend.CommandTag, error) {
@@ -537,7 +1180,7 @@ func (b *Backend) Query(ctx context.Context, query string, args []backend.Value)
 		if i < len(types) {
 			dbType = types[i].DatabaseTypeName()
 		}
-		cols[i] = backend.Column{Name: name, TypeOID: compat.TypeOID(dbType), Format: 0}
+		cols[i] = backend.Column{Name: normalizeSQLiteColName(name), TypeOID: compat.TypeOID(dbType), Format: 0}
 	}
 
 	var out [][]backend.Value

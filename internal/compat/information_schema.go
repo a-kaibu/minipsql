@@ -16,6 +16,8 @@ func tryInformationSchema(ctx context.Context, b backend.Backend, sql string, in
 		return informationSchemaTables(ctx, b, info)
 	case strings.Contains(lower, "information_schema.columns"):
 		return informationSchemaColumns(ctx, b, info)
+	case strings.Contains(lower, "information_schema.views"):
+		return informationSchemaViews(ctx, b, info)
 	default:
 		return nil, false, nil
 	}
@@ -80,6 +82,33 @@ func informationSchemaColumns(ctx context.Context, b backend.Backend, info Sessi
 		}
 	}
 	return result, true, nil
+}
+
+func informationSchemaViews(ctx context.Context, b backend.Backend, info SessionInfo) (*backend.Result, bool, error) {
+	result, err := b.Query(ctx, "select name, sql from sqlite_master where type = 'view' order by name", nil)
+	if err != nil {
+		return nil, true, err
+	}
+	out := &backend.Result{
+		Columns: textColumns("table_catalog", "table_schema", "table_name", "view_definition"),
+	}
+	for _, row := range result.Rows {
+		if len(row) < 2 {
+			continue
+		}
+		name := fmt.Sprint(row[0].Value)
+		viewDef := ""
+		if row[1].Kind != backend.ValueNull {
+			viewDef = fmt.Sprint(row[1].Value)
+		}
+		out.Rows = append(out.Rows, []backend.Value{
+			textValue(info.Database),
+			textValue("public"),
+			textValue(name),
+			textValue(viewDef),
+		})
+	}
+	return out, true, nil
 }
 
 type sqliteColumn struct {

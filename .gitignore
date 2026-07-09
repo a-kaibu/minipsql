@@ -1,3 +1,5 @@
 reports/
 bin/
 dist/
+/minipsql
+/minipsql.old

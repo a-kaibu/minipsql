@@ -31,6 +31,34 @@ if [[ "${#sql_files[@]}" -eq 0 ]]; then
   exit 2
 fi
 
+# Apply filter if set
+filter_pattern="${REGRESS_FILTER:-${FILTER:-}}"
+if [[ -n "$filter_pattern" ]]; then
+  glob_pattern="${filter_pattern//%/*}"
+  glob_pattern="${glob_pattern//_/?}"
+  if [[ "$glob_pattern" != *'*'* && "$glob_pattern" != *'?'* ]]; then
+    glob_pattern="*${glob_pattern}*"
+  fi
+  filtered=()
+  for file in "${sql_files[@]}"; do
+    name="$(basename "$file" .sql)"
+    shopt -s nocasematch
+    if [[ "$name" == $glob_pattern ]]; then
+      filtered+=("$file")
+    fi
+    shopt -u nocasematch
+  done
+  sql_files=("${filtered[@]}")
+  if [[ "${#sql_files[@]}" -eq 0 ]]; then
+    printf 'no SQL files matched filter: %s\n' "$filter_pattern" >&2
+    exit 0
+  fi
+fi
+
+export PG_ABS_SRCDIR="$regress"
+export PG_LIBDIR="$regress"
+export PG_DLSUFFIX=".so"
+
 if [[ -n "${REGRESS_BATCH:-}" && -n "${REGRESS_BATCH_COUNT:-}" ]]; then
   total="${#sql_files[@]}"
   batch_size=$(( (total + REGRESS_BATCH_COUNT - 1) / REGRESS_BATCH_COUNT ))
@@ -81,6 +109,7 @@ run_one_file() {
     cd "$regress"
     timeout "${REGRESS_FILE_TIMEOUT:-30}" \
       psql -X -h "$host" -p "$port" -U "$user" "$dbname" \
+        -v abs_srcdir="$regress" \
         -c '\set ON_ERROR_STOP off' \
         -c '\pset pager off' \
         -c '\timing off' \
@@ -94,12 +123,58 @@ run_one_file() {
     || printf 'WARNING: DROP DATABASE %s failed\n' "$dbname" >&2
 }
 export -f run_one_file
-export regress host port user db per_file_dir
+export regress host port user db per_file_dir PG_ABS_SRCDIR PG_LIBDIR PG_DLSUFFIX
+
+# Always run test_setup.sql first to populate the template database, if it exists
+if [[ -f "$sqldir/test_setup.sql" ]]; then
+  setup_db="regress_sql_test_setup_sql"
+  # Try to create the database. If it fails, it means another batch is already initializing the template.
+  if ! PGPASSWORD= psql -X -h "$host" -p "$port" -U "$user" "$db" \
+    -c "CREATE DATABASE \"$setup_db\"" >/dev/null 2>&1; then
+    printf 'Another batch is initializing the template. Waiting for it to complete...\n'
+    while PGPASSWORD= psql -X -h "$host" -p "$port" -U "$user" "$setup_db" -c "SELECT 1" >/dev/null 2>&1; do
+      sleep 1
+    done
+    printf 'Template initialization complete.\n'
+  else
+    # We successfully created it, so we run the file and drop it
+    printf 'Initializing template schema by running test_setup.sql...\n'
+    setup_slug="sql_test_setup_sql"
+    setup_out="$per_file_dir/${setup_slug}.stdout"
+    setup_err="$per_file_dir/${setup_slug}.stderr"
+    if (
+      cd "$regress"
+      timeout "${REGRESS_FILE_TIMEOUT:-30}" \
+        psql -X -h "$host" -p "$port" -U "$user" "$setup_db" \
+          -v abs_srcdir="$regress" \
+          -c '\set ON_ERROR_STOP off' \
+          -c '\pset pager off' \
+          -c '\timing off' \
+          -f "sql/test_setup.sql"
+    ) >"$setup_out" 2>"$setup_err"; then
+      :
+    fi
+    PGPASSWORD= psql -X -h "$host" -p "$port" -U "$user" "$db" \
+      -c "DROP DATABASE IF EXISTS \"$setup_db\"" >/dev/null 2>&1 \
+      || printf 'WARNING: DROP DATABASE %s failed\n' "$setup_db" >&2
+  fi
+fi
+
+# Filter out test_setup.sql from the parallel run list
+filtered_files=()
+for f in "${sql_files[@]}"; do
+  if [[ "$f" != *"/test_setup.sql" ]]; then
+    filtered_files+=("$f")
+  fi
+done
+sql_files=("${filtered_files[@]}")
 
 printf 'Running %d SQL files with parallelism=%s\n' "${#sql_files[@]}" "$parallelism"
 
-printf '%s\n' "${sql_files[@]}" | \
-  xargs -P "$parallelism" -I{} bash -c 'run_one_file "$@"' _ {}
+if [[ "${#sql_files[@]}" -gt 0 ]]; then
+  printf '%s\n' "${sql_files[@]}" | \
+    xargs -P "$parallelism" -I{} bash -c 'run_one_file "$@"' _ {}
+fi
 
 success_files=0
 failed_files=0

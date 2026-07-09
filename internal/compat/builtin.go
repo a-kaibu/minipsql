@@ -58,6 +58,44 @@ func TryHandleBuiltin(ctx context.Context, b backend.Backend, sql string, info S
 		return emptyColumns("relname", "nspname"), true, nil
 	}
 
+	// \d FK query uses pg_partition_ancestors which SQLite can't execute
+	if strings.Contains(lower, "pg_partition_ancestors") {
+		return emptyColumns("sametable", "conname", "condef", "ontable"), true, nil
+	}
+
+	// \d policy query
+	if strings.Contains(lower, "from pg_catalog.pg_policy pol") || strings.Contains(lower, "from pg_policy pol") {
+		return emptyColumns("polname", "polpermissive", "polroles", "polqual", "polwithcheck", "cmd"), true, nil
+	}
+
+	// \d statistics query
+	if strings.Contains(lower, "from pg_catalog.pg_statistic_ext") || strings.Contains(lower, "from pg_statistic_ext") {
+		return emptyColumns("oid", "stxrelid", "nsp", "stxname", "columns", "ndist_enabled", "deps_enabled", "mcv_enabled", "stxstattarget"), true, nil
+	}
+
+	// \d constraint FK query (without pg_partition_ancestors - first FK query)
+	if strings.Contains(lower, "from pg_catalog.pg_constraint r") && strings.Contains(lower, "conparentid") {
+		return emptyColumns("sametable", "conname", "condef", "ontable"), true, nil
+	}
+
+	// \d+ index query
+	if strings.Contains(lower, "from pg_catalog.pg_index i") && strings.Contains(lower, "pg_catalog.pg_class") {
+		return emptyColumns("relname", "nspname"), true, nil
+	}
+
+	// \d publication query
+	if strings.Contains(lower, "pg_publication") {
+		return emptyColumns("pubname", "puballtables", "pubinsert"), true, nil
+	}
+
+	// queries against catalog tables minipsql doesn't implement
+	if strings.Contains(lower, "pg_inherits") || strings.Contains(lower, "pg_trigger") ||
+		strings.Contains(lower, "pg_rewrite") || strings.Contains(lower, "pg_depend") ||
+		strings.Contains(lower, "pg_roles") || strings.Contains(lower, "pg_auth_members") ||
+		strings.Contains(lower, "pg_stat_") {
+		return emptyColumns("x"), true, nil
+	}
+
 	if strings.Contains(lower, "from pg_class") &&
 		strings.Contains(lower, "relfilenode <> 0") {
 		return emptyColumns("relname", "relkind"), true, nil

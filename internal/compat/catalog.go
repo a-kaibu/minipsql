@@ -10,10 +10,22 @@ import (
 
 var joinRE = regexp.MustCompile(`(?i)\b(join|left\s+outer)\b`)
 
+// simpleFromRE matches queries that reference a pg_catalog table in the main FROM clause
+// (not in a subquery), without JOIN or comma-joins.
+var (
+	pgNamespaceSimpleRE  = regexp.MustCompile(`(?i)\bfrom\s+pg_catalog\.pg_namespace\b`)
+	pgTypeSimpleRE       = regexp.MustCompile(`(?i)\bfrom\s+pg_catalog\.pg_type\b`)
+	pgTablesSimpleRE     = regexp.MustCompile(`(?i)\bfrom\s+pg_catalog\.pg_tables\b`)
+)
+
 func tryPGCatalog(ctx context.Context, b backend.Backend, sql string, info SessionInfo) (*backend.Result, bool, error) {
 	_ = info
 	lower := strings.ToLower(strings.TrimSpace(sql))
 	if joinRE.MatchString(lower) {
+		return nil, false, nil
+	}
+	// Also skip if comma-joins are present (e.g. FROM pg_collation c, pg_type t)
+	if strings.Contains(lower, "pg_catalog.pg_collation") || strings.Contains(lower, "pg_catalog.pg_attrdef") {
 		return nil, false, nil
 	}
 	switch {
@@ -21,16 +33,14 @@ func tryPGCatalog(ctx context.Context, b backend.Backend, sql string, info Sessi
 		return pgInitPrivs(lower), true, nil
 	case strings.Contains(lower, "pg_shmem_allocations_numa"):
 		return pgShmemAllocationsNuma(lower), true, nil
-	case strings.Contains(lower, "pg_catalog.pg_namespace"):
+	case pgNamespaceSimpleRE.MatchString(lower):
 		return pgNamespace(), true, nil
-	case strings.Contains(lower, "pg_catalog.pg_type"):
+	case pgTypeSimpleRE.MatchString(lower):
 		return pgType(), true, nil
-	case strings.Contains(lower, "pg_catalog.pg_tables"):
+	case pgTablesSimpleRE.MatchString(lower):
 		return pgTables(ctx, b, info)
-	case strings.Contains(lower, "pg_catalog.pg_class"):
-		return pgClass(ctx, b)
-	case strings.Contains(lower, "pg_catalog.pg_attribute"):
-		return pgAttribute(ctx, b)
+	// pg_class and pg_attribute are handled by SQLite's main.pg_class/main.pg_attribute views,
+	// which have all columns and consistent OIDs. Don't intercept here.
 	default:
 		return nil, false, nil
 	}

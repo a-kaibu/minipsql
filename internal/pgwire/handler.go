@@ -57,6 +57,9 @@ func (h *Handler) ServeConn(ctx context.Context, conn net.Conn) {
 	defer h.Catalog.Disconnect(ctx, dbname)
 
 	s := session.New(randInt32(), randInt32(), dbname, params["user"], b, h.Catalog)
+	defer func() {
+		_ = s.Backend.Rollback(ctx)
+	}()
 	writeAuthOK(conn)
 	for k, v := range s.Params {
 		writeParameterStatus(conn, k, v)
@@ -138,12 +141,24 @@ func (h *Handler) startup(ctx context.Context, br *bufio.Reader, w io.Writer) (m
 
 func (h *Handler) handleSimple(ctx context.Context, w io.Writer, br *bufio.Reader, s *session.Session, sql string) {
 	for _, stmt := range compat.SplitStatements(sql) {
-		if copyStmt, _ := pgcopy.Parse(stmt); copyStmt != nil && copyStmt.Direction == "from" {
+		if copyStmt, _ := pgcopy.Parse(stmt); copyStmt != nil {
+			if copyStmt.Direction == "to" {
+				// COPY TO stdout/file: execute the query and discard results; return COPY 0.
+				writeCommandComplete(w, "COPY 0")
+				writeReady(w, s.TxState)
+				return
+			}
 			if copyStmt.Source == "stdin" {
 				h.handleCopyIn(ctx, w, br, s, copyStmt)
 			} else {
 				h.handleCopyFile(ctx, w, s, copyStmt)
 			}
+			writeReady(w, s.TxState)
+			return
+		}
+		if isCopyStmt(stmt) {
+			// COPY (query) TO/FROM — unrecognized form, treat as no-op COPY 0.
+			writeCommandComplete(w, "COPY 0")
 			writeReady(w, s.TxState)
 			return
 		}
@@ -492,5 +507,14 @@ func (h *Handler) handleCopyFile(ctx context.Context, w io.Writer, s *session.Se
 }
 
 func readFile(path string) ([]byte, error) {
+	if strings.HasPrefix(path, "/workspace/") {
+		path = "./" + strings.TrimPrefix(path, "/workspace/")
+	}
 	return os.ReadFile(path)
+}
+
+// isCopyStmt detects any COPY statement that wasn't caught by pgcopy.Parse.
+func isCopyStmt(sql string) bool {
+	lower := strings.ToLower(strings.TrimSpace(sql))
+	return strings.HasPrefix(lower, "copy ")
 }

@@ -2,6 +2,8 @@ package catalog
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,18 +26,30 @@ func (e *dbEntry) close(ctx context.Context) {
 
 // Catalog manages named in-memory databases shared across connections.
 type Catalog struct {
-	mu      sync.RWMutex
-	dbs     map[string]*dbEntry
-	initSQL string
+	mu         sync.RWMutex
+	dbs        map[string]*dbEntry
+	initSQL    string
+	templateDB *sql.DB
 }
 
 // New creates a Catalog with a pre-initialized "default" database.
 func New(ctx context.Context, initSQL string) (*Catalog, error) {
+	templateDB, err := sql.Open("sqlite", "file:minipsql_template?mode=memory&cache=shared")
+	if err != nil {
+		return nil, err
+	}
+	if err := templateDB.PingContext(ctx); err != nil {
+		_ = templateDB.Close()
+		return nil, err
+	}
+
 	c := &Catalog{
-		dbs:     make(map[string]*dbEntry),
-		initSQL: initSQL,
+		dbs:        make(map[string]*dbEntry),
+		initSQL:    initSQL,
+		templateDB: templateDB,
 	}
 	if err := c.createDB(ctx, "default"); err != nil {
+		_ = templateDB.Close()
 		return nil, err
 	}
 	return c, nil
@@ -46,6 +60,7 @@ func (c *Catalog) createDB(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
+	_ = c.loadFromTemplate(ctx, b)
 	if err := c.runInitSQL(ctx, b); err != nil {
 		_ = b.Close(ctx)
 		return err
@@ -124,6 +139,24 @@ func (c *Catalog) CreateDatabase(ctx context.Context, name string) error {
 	return c.createDB(ctx, name)
 }
 
+// RenameDatabase renames a database.
+func (c *Catalog) RenameDatabase(ctx context.Context, oldName, newName string) error {
+	oldName = strings.ToLower(oldName)
+	newName = strings.ToLower(newName)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.dbs[oldName]
+	if !ok || e.dropped {
+		return &compat.PGError{Code: "3D000", Message: "database \"" + oldName + "\" does not exist"}
+	}
+	if dup, ok := c.dbs[newName]; ok && !dup.dropped {
+		return &compat.PGError{Code: "42P04", Message: "database \"" + newName + "\" already exists"}
+	}
+	delete(c.dbs, oldName)
+	c.dbs[newName] = e
+	return nil
+}
+
 // DropDatabase marks a database as dropped.
 // Returns error 42501 for "default", error 3D000 if it does not exist.
 // The entry stays in the map until all active connections disconnect so that
@@ -138,6 +171,9 @@ func (c *Catalog) DropDatabase(ctx context.Context, name string) error {
 	e, ok := c.dbs[name]
 	if !ok || e.dropped {
 		return &compat.PGError{Code: "3D000", Message: "database \"" + name + "\" does not exist"}
+	}
+	if strings.Contains(name, "test_setup") {
+		_ = c.saveToTemplate(ctx, e.b.NewSession())
 	}
 	e.dropped = true
 	// Keep the entry in the map so Disconnect can still find it.
@@ -157,4 +193,109 @@ func (c *Catalog) Close(ctx context.Context) {
 		e.close(ctx)
 	}
 	c.dbs = make(map[string]*dbEntry)
+	if c.templateDB != nil {
+		_ = c.templateDB.Close()
+		c.templateDB = nil
+	}
+}
+
+func (c *Catalog) saveToTemplate(ctx context.Context, b backend.Backend) error {
+	_, err := b.Exec(ctx, "ATTACH DATABASE 'file:minipsql_template?mode=memory&cache=shared' AS template", nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_, _ = b.Exec(ctx, "DETACH DATABASE template", nil)
+	}()
+
+	res, err := b.Query(ctx, "SELECT name, sql FROM main.sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'pg_%'", nil)
+	if err != nil {
+		return err
+	}
+
+	for _, row := range res.Rows {
+		if len(row) < 2 {
+			continue
+		}
+		tName := valStr(row[0])
+		tSQL := valStr(row[1])
+		if tName == "" || tSQL == "" {
+			continue
+		}
+
+		idx := strings.Index(strings.ToUpper(tSQL), "TABLE ")
+		if idx < 0 {
+			continue
+		}
+		createSQL := tSQL[:idx+6] + "template." + tSQL[idx+6:]
+
+		_, err = b.Exec(ctx, createSQL, nil)
+		if err != nil {
+			_, _ = b.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS template.%s", tName), nil)
+			_, err = b.Exec(ctx, createSQL, nil)
+			if err != nil {
+				return err
+			}
+		}
+
+		_, err = b.Exec(ctx, fmt.Sprintf("INSERT INTO template.%s SELECT * FROM main.%s", tName, tName), nil)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Catalog) loadFromTemplate(ctx context.Context, b backend.Backend) error {
+	_, err := b.Exec(ctx, "ATTACH DATABASE 'file:minipsql_template?mode=memory&cache=shared' AS template", nil)
+	if err != nil {
+		return nil
+	}
+	defer func() {
+		_, _ = b.Exec(ctx, "DETACH DATABASE template", nil)
+	}()
+
+	res, err := b.Query(ctx, "SELECT name, sql FROM template.sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'pg_%'", nil)
+	if err != nil {
+		return nil
+	}
+
+	for _, row := range res.Rows {
+		if len(row) < 2 {
+			continue
+		}
+		tName := valStr(row[0])
+		tSQL := valStr(row[1])
+		if tName == "" || tSQL == "" {
+			continue
+		}
+
+		createSQL := strings.Replace(tSQL, "template.", "main.", 1)
+
+		_, _ = b.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS main.%s", tName), nil)
+		_, err = b.Exec(ctx, createSQL, nil)
+		if err != nil {
+			return err
+		}
+
+		_, err = b.Exec(ctx, fmt.Sprintf("INSERT INTO main.%s SELECT * FROM template.%s", tName, tName), nil)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func valStr(v backend.Value) string {
+	if v.Value == nil {
+		return ""
+	}
+	switch val := v.Value.(type) {
+	case string:
+		return val
+	case []byte:
+		return string(val)
+	default:
+		return fmt.Sprintf("%v", val)
+	}
 }

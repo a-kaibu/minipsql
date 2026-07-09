@@ -445,3 +445,27 @@ func TestCircleRegress(t *testing.T) {
 	}
 	_ = tag
 }
+
+func TestCreateSchemaCompound(t *testing.T) {
+	ctx := context.Background()
+	b, err := sqlite.New(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = b.Close(ctx) }()
+	s := session.New(1, 1, "default", "mini", b, nil)
+	
+	// CREATE SCHEMA with embedded CREATE TABLE
+	_, tag, err := s.Execute(ctx, "CREATE SCHEMA s1\n  CREATE TABLE abc (f1 int)", nil)
+	if err != nil {
+		t.Fatalf("Execute CREATE SCHEMA compound: %v", err)
+	}
+	t.Logf("tag: %v", tag)
+
+	// Table should exist
+	result, _, err := s.Execute(ctx, "SELECT * FROM abc", nil)
+	if err != nil {
+		t.Fatalf("SELECT from abc: %v", err)
+	}
+	t.Logf("rows: %v", result)
+}
